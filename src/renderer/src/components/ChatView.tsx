@@ -180,8 +180,8 @@ export function ChatView({ session }: { session: Session }): ReactNode {
           ) : (
             messages.map((message) => <MessageRow key={message.id} message={message} />)
           )}
-          {approvals.map((request) => (
-            <ApprovalCard key={request.id} request={request} />
+          {approvals.map((request, index) => (
+            <ApprovalCard key={request.id} request={request} active={index === 0} />
           ))}
         </div>
       </div>

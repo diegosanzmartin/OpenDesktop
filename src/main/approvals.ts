@@ -62,6 +62,7 @@ export function requestApproval(input: {
   tool: string
   title: string
   detail: string
+  summary?: string
   preview?: string
   environmentId: string
   cwd: string

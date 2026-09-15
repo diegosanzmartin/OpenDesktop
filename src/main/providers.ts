@@ -59,7 +59,14 @@ async function providerFor(
   if (cached) return cached
 
   const options: Record<string, unknown> = { ...provider.options }
-  if (provider.npm === '@ai-sdk/openai-compatible') options.name = provider.id
+  if (provider.npm === '@ai-sdk/openai-compatible') {
+    options.name = provider.id
+    // An OpenAI-compatible endpoint reports no token usage while streaming
+    // unless the request asks for it, which is why the transcript had nothing
+    // to count. Opt in unless the config says otherwise — a server that does
+    // not understand stream_options ignores it.
+    options.includeUsage = provider.options.includeUsage ?? true
+  }
 
   let factory = FACTORIES[provider.npm]
   if (!factory) {

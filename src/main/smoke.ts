@@ -22,6 +22,8 @@ import {
   startBackgroundTask
 } from './background'
 import { buildUserMessage } from './agent/runner'
+import { createServer } from 'node:http'
+import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -37,7 +39,8 @@ import { decide, matchesAny, splitCommand } from './approvals'
 import { parseGcloudCommand } from '@shared/gcloud'
 import { filterSessions, groupSessions, nestSubtasks, sortSessions, splitPinned } from '@shared/sessions'
 import { activityOf, duration, tokenRate } from '@shared/progress'
-import type { Block, Board, Message, Session, SessionQuery } from '@shared/types'
+import { approvalDetail, approvalQuestion } from '@shared/approvals'
+import type { ApprovalRequest, Block, Board, Message, Session, SessionQuery } from '@shared/types'
 import {
   columnForStatus,
   columnOfKind,
@@ -827,6 +830,201 @@ async function main(): Promise<void> {
     )
   }
 
+  section('approval wording')
+  {
+    const ask = (over: Partial<ApprovalRequest>): ApprovalRequest =>
+      ({
+        id: 'a',
+        sessionId: 's',
+        blockId: 'b',
+        tool: 'bash',
+        title: 'python3 shuffle_text.py',
+        detail: 'python3 shuffle_text.py',
+        environmentId: 'local',
+        cwd: '/tmp',
+        createdAt: 0,
+        ...over
+      }) as ApprovalRequest
+
+    check(
+      "a command is described in the agent's own words",
+      approvalQuestion(ask({ summary: 'Run the shuffle script with two seeds' }), 'Auto') ===
+        'Allow Auto to run the shuffle script with two seeds?',
+      approvalQuestion(ask({ summary: 'Run the shuffle script with two seeds' }), 'Auto')
+    )
+    check(
+      'and without one it still says what kind of thing it is',
+      approvalQuestion(ask({}), 'Auto') === 'Allow Auto to run this command?'
+    )
+    check(
+      'file work reads as the act itself',
+      approvalQuestion(ask({ tool: 'write', detail: 'Overwrite /tmp/a.ts' }), 'Auto') ===
+        'Allow Auto to overwrite /tmp/a.ts?' &&
+        approvalQuestion(ask({ tool: 'edit', detail: 'Edit /tmp/a.ts' }), 'Auto') ===
+          'Allow Auto to edit /tmp/a.ts?'
+    )
+    check(
+      'an unnamed agent is still named something',
+      approvalQuestion(ask({}), '') === 'Allow the agent to run this command?'
+    )
+    check(
+      'the line beneath is what the agent said it was doing',
+      approvalDetail(ask({ summary: 'Run the shuffle script' })) === 'Run the shuffle script'
+    )
+    check(
+      'falling back to the command when it said nothing',
+      approvalDetail(ask({})) === 'python3 shuffle_text.py'
+    )
+  }
+
+  section('streaming usage')
+  {
+    // The count was always zero because an OpenAI-compatible endpoint omits
+    // usage from a stream unless the request opts in. Asserted on the wire
+    // rather than on the setting, so it survives the provider changing how the
+    // option is spelled.
+    let body: Record<string, unknown> | null = null
+    const capture = async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
+      throw new Error('captured')
+    }
+
+    const probe = {
+      ...defaultConfig(),
+      provider: {
+        probe: {
+          id: 'probe',
+          npm: '@ai-sdk/openai-compatible',
+          name: 'Probe',
+          options: { baseURL: 'http://127.0.0.1:9/v1', apiKey: 'test-key', fetch: capture },
+          models: { m: { id: 'm', name: 'M' } }
+        }
+      }
+    }
+
+    try {
+      const resolved = await providers.resolveModel(probe, 'probe/m')
+      // LanguageModel is a union with the string shorthand; a resolved one is
+      // always the object form.
+      const model = resolved.model as unknown as {
+        doStream: (options: unknown) => Promise<unknown>
+      }
+      await model.doStream({ prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] })
+    } catch {
+      /* the capture rejects on purpose; the body is what matters */
+    }
+
+    const streamOptions = (body as { stream_options?: { include_usage?: boolean } } | null)
+      ?.stream_options
+    check('the stream request asks for usage', streamOptions?.include_usage === true, body)
+    providers.invalidateProviderCache()
+  }
+
+  section('usage while streaming')
+  {
+    /**
+     * A stand-in for an OpenAI-compatible endpoint that reports usage the way
+     * the real ones do: in a final chunk, after the text. Proves the whole read
+     * path — stream to message to the line under the turn — rather than just
+     * that the request asked for it.
+     */
+    const chunk = (body: Record<string, unknown>): string => `data: ${JSON.stringify(body)}\n\n`
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+      res.write(
+        chunk({
+          id: '1',
+          object: 'chat.completion.chunk',
+          created: 0,
+          model: 'm',
+          choices: [{ index: 0, delta: { role: 'assistant', content: 'ok' }, finish_reason: null }]
+        })
+      )
+      res.write(
+        chunk({
+          id: '1',
+          object: 'chat.completion.chunk',
+          created: 0,
+          model: 'm',
+          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }]
+        })
+      )
+      res.write(
+        chunk({
+          id: '1',
+          object: 'chat.completion.chunk',
+          created: 0,
+          model: 'm',
+          choices: [],
+          usage: { prompt_tokens: 11, completion_tokens: 5, total_tokens: 16 }
+        })
+      )
+      res.write('data: [DONE]\n\n')
+      res.end()
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const port = (server.address() as { port: number }).port
+
+    const model = createOpenAICompatible({
+      name: 'probe',
+      baseURL: `http://127.0.0.1:${port}/v1`,
+      apiKey: 'test-key',
+      includeUsage: true
+    })('m')
+
+    providers.setModelResolverOverride(() => ({
+      providerId: 'probe',
+      modelId: 'm',
+      label: 'Probe',
+      model
+    }))
+
+    const usageSession = store.createSession({
+      title: 'usage',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: 'auto',
+      model: 'probe/m'
+    })
+    history.clearHistory(usageSession.id)
+
+    // Recorded in order, to tell a live report from one written at the end.
+    const seen: { usage: boolean; completed: boolean }[] = []
+    const stop = bus.subscribe((event) => {
+      if (event.type !== 'message.updated' || event.message.role !== 'assistant') return
+      seen.push({
+        usage: (event.message.usage?.output ?? 0) > 0,
+        completed: Boolean(event.message.completedAt)
+      })
+    })
+
+    await runTurn({ sessionId: usageSession.id, userText: 'hi' })
+    stop()
+    providers.setModelResolverOverride(null)
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+
+    const assistant = store.listMessages(usageSession.id).find((m) => m.role === 'assistant')
+    check(
+      'the endpoint\'s counts reach the message',
+      assistant?.usage?.input === 11 && assistant?.usage?.output === 5,
+      assistant?.usage
+    )
+    const firstUsage = seen.findIndex((entry) => entry.usage)
+    const firstCompleted = seen.findIndex((entry) => entry.completed)
+    check(
+      'and arrive while the turn is still running, not only at the end',
+      firstUsage !== -1 && (firstCompleted === -1 || firstUsage < firstCompleted),
+      { firstUsage, firstCompleted }
+    )
+    check(
+      'the session total is credited too',
+      (store.getSession(usageSession.id)?.usage.output ?? 0) === 5
+    )
+
+    store.deleteSession(usageSession.id)
+    history.clearHistory(usageSession.id)
+  }
+
   section('live turn status')
   {
     const msg = (parts: { type: string; text?: string; blockId?: string }[]): Message =>
@@ -873,8 +1071,12 @@ async function main(): Promise<void> {
       activityOf(msg([{ type: 'reasoning', text: 'hmm' }]), []) === 'Thinking…'
     )
     check(
-      'between steps it falls back, rather than guessing',
-      activityOf(msg([{ type: 'block', blockId: 'b' }]), [blk('bash', 'success')]) === 'Working…'
+      'between steps the model is being called, so it says so',
+      activityOf(msg([{ type: 'block', blockId: 'b' }]), [blk('bash', 'success')]) === 'Thinking…'
+    )
+    check(
+      'and a turn that has only just begun says the same',
+      activityOf(msg([]), []) === 'Thinking…'
     )
 
     check('seconds read as seconds', duration(45) === '45s')

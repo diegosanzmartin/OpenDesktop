@@ -116,6 +116,7 @@ async function withBlock(
           tool: spec.tool,
           title: spec.title,
           detail: spec.permission.detail,
+          summary: spec.subtitle,
           preview: spec.permission.preview,
           environmentId: ctx.environmentId,
           cwd: ctx.cwd

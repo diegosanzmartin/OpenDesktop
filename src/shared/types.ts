@@ -253,6 +253,8 @@ export interface ApprovalRequest {
   tool: string
   title: string
   detail: string
+  /** The agent's own description of what it is about to do, when it gave one. */
+  summary?: string
   /** A diff preview for write/edit, the command for bash. */
   preview?: string
   environmentId: string

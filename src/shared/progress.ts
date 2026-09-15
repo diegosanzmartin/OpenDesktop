@@ -32,8 +32,12 @@ export function activityOf(message: Message, blocks: Block[]): string {
   const last = message.parts[message.parts.length - 1]
   if (last?.type === 'reasoning') return 'Thinking…'
   if (last?.type === 'text') return 'Writing…'
-  // Between steps: a tool has returned and the model has not spoken yet.
-  return 'Working…'
+
+  // Nothing is running and the model has not spoken since: either the turn has
+  // just begun or a tool has returned and the model is being called with its
+  // result. Both are the model thinking, which is more use than "working" —
+  // that was true of every moment of a turn and so said nothing at all.
+  return 'Thinking…'
 }
 
 export function duration(seconds: number): string {
