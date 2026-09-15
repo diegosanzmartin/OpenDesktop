@@ -4,7 +4,7 @@ export type BlockStatus = 'pending' | 'awaiting-approval' | 'running' | 'success
 
 export type SessionStatus = 'idle' | 'running' | 'awaiting-approval' | 'error'
 
-export type EnvironmentKind = 'local' | 'ssh'
+export type EnvironmentKind = 'local' | 'ssh' | 'gcp-workstation'
 
 export interface EnvironmentConfig {
   id: string
@@ -12,6 +12,20 @@ export interface EnvironmentConfig {
   kind: EnvironmentKind
   /** Default working directory for new sessions on this environment. */
   cwd?: string
+  /** Reached through `gcloud workstations start-tcp-tunnel`, then plain SSH. */
+  workstation?: {
+    project: string
+    region: string
+    cluster: string
+    config: string
+    workstation: string
+    /** The login on the workstation; gcloud defaults this to "user". */
+    user?: string
+    /** Pass --start-workstation, which boots a stopped workstation. */
+    startWorkstation?: boolean
+    /** Key gcloud provisions for workstation access. */
+    privateKey?: string
+  }
   ssh?: {
     host: string
     port?: number

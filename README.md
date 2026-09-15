@@ -118,7 +118,38 @@ Hosts already in your `~/.ssh/config` appear in a dropdown — pick one and the 
 and key come from that block, so there is nothing to retype. **Test connection** runs `uname`
 on the far end and reports what came back.
 
-The equivalent config, if you prefer the file:
+### Google Cloud Workstations
+
+*Add Cloud Workstation* takes the five coordinates a workstation needs — project, region,
+cluster, config and name — plus the login user and whether a stopped workstation may be
+started. Paste the `gcloud workstations ssh …` command you already have into the box at the
+top and the fields fill themselves in.
+
+It connects the way the gcloud CLI does: `gcloud workstations start-tcp-tunnel` opens a local
+port onto port 22 of the workstation, and the ordinary SSH runtime takes it from there. One
+connection serves commands, file reads and writes, and the terminal — rather than paying
+gcloud's start-up cost on every tool call. Authentication uses
+`~/.ssh/google_compute_engine`, which gcloud writes the first time you run
+`gcloud workstations ssh`.
+
+```json
+"environment": {
+  "workstation": {
+    "name": "Secdevops workstation",
+    "kind": "gcp-workstation",
+    "cwd": "/home/user",
+    "workstation": {
+      "project": "my-project",
+      "region": "europe-west1",
+      "cluster": "workstation-cluster",
+      "config": "my-workstation-config",
+      "workstation": "my-workstation"
+    }
+  }
+}
+```
+
+The equivalent config for a plain SSH host, if you prefer the file:
 
 ```json
 "environment": {

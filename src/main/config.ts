@@ -202,9 +202,10 @@ export function normalizeConfig(raw: Record<string, unknown>): AppConfig {
     merged.environment[id] = {
       id,
       name: e.name ?? id,
-      kind: e.kind ?? (e.ssh ? 'ssh' : 'local'),
+      kind: e.kind ?? (e.workstation ? 'gcp-workstation' : e.ssh ? 'ssh' : 'local'),
       cwd: e.cwd,
-      ssh: e.ssh
+      ssh: e.ssh,
+      workstation: e.workstation
     }
   }
   if (!merged.environment.local) merged.environment.local = DEFAULT_ENVIRONMENTS.local

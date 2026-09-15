@@ -2,13 +2,11 @@ import clsx from 'clsx'
 import type { ReactNode, SelectHTMLAttributes } from 'react'
 
 export function Panel({ className, children }: { className?: string; children: ReactNode }): ReactNode {
-  return <div className={clsx('bg-ink-850 border-ink-700 rounded-lg border', className)}>{children}</div>
+  return <div className={clsx('bg-ink-850 border-ink-800 rounded-xl border', className)}>{children}</div>
 }
 
 export function Label({ children }: { children: ReactNode }): ReactNode {
-  return (
-    <span className="text-ink-500 text-[10px] font-semibold uppercase tracking-[0.08em]">{children}</span>
-  )
+  return <span className="text-ink-500 text-[11.5px]">{children}</span>
 }
 
 interface SelectProps extends SelectHTMLAttributes<HTMLSelectElement> {
@@ -22,7 +20,7 @@ export function Select({ label, options, className, ...rest }: SelectProps): Rea
       {label ? <Label>{label}</Label> : null}
       <select
         {...rest}
-        className="bg-ink-800 border-ink-700 text-ink-200 hover:border-ink-600 focus:border-brand cursor-pointer rounded border px-1.5 py-0.5 text-[11px] outline-none"
+        className="bg-ink-800 border-ink-800 text-ink-300 hover:text-ink-100 focus:border-ink-600 cursor-pointer rounded-md border px-2 py-1 text-[12px] outline-none"
       >
         {options.map((option) => (
           <option key={option.value} value={option.value}>
@@ -58,8 +56,8 @@ export function Button({
       disabled={disabled}
       onClick={onClick}
       className={clsx(
-        'inline-flex items-center gap-1.5 rounded font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40',
-        size === 'sm' ? 'px-1.5 py-0.5 text-[11px]' : 'px-2.5 py-1 text-xs',
+        'inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40',
+        size === 'sm' ? 'px-2 py-1 text-[11.5px]' : 'px-3 py-1.5 text-[12.5px]',
         variant === 'primary' && 'bg-brand hover:bg-brand-dim text-ink-950',
         variant === 'danger' && 'bg-bad/15 text-bad hover:bg-bad/25',
         variant === 'outline' && 'border-ink-700 text-ink-200 hover:border-ink-600 hover:bg-ink-800 border',

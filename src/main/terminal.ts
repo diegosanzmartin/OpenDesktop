@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { nanoid } from 'nanoid'
 import type { ClientChannel } from 'ssh2'
+import type { EnvironmentKind } from '@shared/types'
 import { bus } from './bus'
 import { getRuntime } from './runtime'
 import { SshRuntime } from './runtime/ssh'
@@ -80,7 +81,7 @@ interface Session {
   id: string
   environmentId: string
   cwd: string
-  kind: 'local' | 'ssh'
+  kind: EnvironmentKind
   child?: ChildProcess
   /** fd 3 on the helper, used to push window sizes. */
   control?: NodeJS.WritableStream

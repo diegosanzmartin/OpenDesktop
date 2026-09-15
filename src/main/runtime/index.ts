@@ -3,6 +3,7 @@ import { resolvedConfig } from '../config'
 import { bus } from '../bus'
 import { LocalRuntime } from './local'
 import { SshRuntime } from './ssh'
+import { GcpWorkstationRuntime } from './gcp'
 import { RuntimeError, type Runtime } from './types'
 
 export * from './types'
@@ -11,6 +12,10 @@ export { shellQuote } from './ssh'
 const runtimes = new Map<string, Runtime>()
 
 function build(env: EnvironmentConfig): Runtime {
+  const onStatus = (connected: boolean, message?: string): void =>
+    bus.emit({ type: 'environment.status', environmentId: env.id, connected, message })
+
+  if (env.kind === 'gcp-workstation') return new GcpWorkstationRuntime(env, onStatus)
   if (env.kind === 'ssh') {
     return new SshRuntime(env, (connected, message) =>
       bus.emit({ type: 'environment.status', environmentId: env.id, connected, message })

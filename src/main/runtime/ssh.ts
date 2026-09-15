@@ -96,14 +96,21 @@ export class SshRuntime implements Runtime {
   private home: string | null = null
 
   constructor(
-    private readonly env: EnvironmentConfig,
-    private readonly onStatus?: (connected: boolean, message?: string) => void
+    protected readonly env: EnvironmentConfig,
+    protected readonly onStatus?: (connected: boolean, message?: string) => void
   ) {
     this.id = env.id
     this.label = env.name
   }
 
-  private settings(): SshHostSettings & { privateKey?: Buffer; passphrase?: string; password?: string } {
+  /** Runs before every connect, for subclasses that must set something up. */
+  protected async prepare(): Promise<void> {}
+
+  protected settings(): SshHostSettings & {
+    privateKey?: Buffer
+    passphrase?: string
+    password?: string
+  } {
     const ssh = this.env.ssh
     if (!ssh) throw new RuntimeError(`environment "${this.env.id}" has no ssh block`)
     const fromAlias = ssh.alias ? readSshConfigAlias(ssh.alias) : {}
@@ -138,7 +145,16 @@ export class SshRuntime implements Runtime {
     if (this.client) return Promise.resolve()
     if (this.connecting) return this.connecting
 
-    this.connecting = new Promise<void>((resolveConnect, rejectConnect) => {
+    this.connecting = (async () => {
+      await this.prepare()
+      return this.openConnection()
+    })()
+
+    return this.connecting
+  }
+
+  private openConnection(): Promise<void> {
+    return new Promise<void>((resolveConnect, rejectConnect) => {
       const cfg = this.settings()
       const client = new Client()
 
@@ -179,8 +195,6 @@ export class SshRuntime implements Runtime {
           agent: process.env.SSH_AUTH_SOCK
         })
     })
-
-    return this.connecting
   }
 
   private async sftp(): Promise<SFTPWrapper> {

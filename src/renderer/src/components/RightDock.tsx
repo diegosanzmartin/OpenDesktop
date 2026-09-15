@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { useCallback, useEffect, useRef, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Maximize2, Minimize2, X } from 'lucide-react'
 import { useStore, type DockTab } from '../state/store'
 import { BrowserPane } from './BrowserPane'
@@ -18,6 +18,10 @@ const TITLES: Record<DockTab, string> = {
 
 export function RightDock(): ReactNode {
   const dock = useStore((s) => s.dock)
+  // Which panes have ever been opened. Mounting them lazily keeps a session
+  // that never opens the terminal from spawning a shell, and keeping them
+  // mounted afterwards preserves the guest and the PTY.
+  const [opened, setOpened] = useState<Set<DockTab>>(() => new Set())
   const closeDock = useStore((s) => s.closeDock)
   const setDockWidth = useStore((s) => s.setDockWidth)
   const dragging = useRef(false)
@@ -43,12 +47,21 @@ export function RightDock(): ReactNode {
     }
   }, [onMove])
 
-  if (!dock.open) return null
+  useEffect(() => {
+    if (!dock.open || opened.has(dock.tab)) return
+    setOpened((current) => new Set(current).add(dock.tab))
+  }, [dock.open, dock.tab, opened])
 
   const wide = dock.width > 700
 
   return (
-    <div className="relative flex shrink-0" style={{ width: dock.width }}>
+    // Hidden rather than unmounted: taking the dock out of the tree destroys the
+    // <webview>'s guest and the PTY, and Electron then throws
+    // "Invalid guestInstanceId" the next time the pane is opened.
+    <div
+      className={clsx('relative shrink-0', dock.open ? 'flex' : 'hidden')}
+      style={{ width: dock.width }}
+    >
       {/* The drag handle sits in the gutter so it never overlaps pane content. */}
       <div
         onMouseDown={() => {
@@ -81,17 +94,20 @@ export function RightDock(): ReactNode {
         </div>
 
         <div className="flex min-h-0 flex-1 flex-col">
-          {/* The browser and terminal keep their guest/PTY alive across tab
-              switches, so they are hidden rather than unmounted. */}
-          <div className={clsx('min-h-0 flex-1 flex-col', dock.tab === 'browser' ? 'flex' : 'hidden')}>
-            <BrowserPane />
-          </div>
-          <div className={clsx('min-h-0 flex-1 flex-col', dock.tab === 'terminal' ? 'flex' : 'hidden')}>
-            <TerminalPane />
-          </div>
-          {dock.tab === 'changes' ? <ChangesPane /> : null}
-          {dock.tab === 'files' ? <FilesPane /> : null}
-          {dock.tab === 'activity' ? <ActivityPane /> : null}
+          {/* Mounted on first open, then kept alive and merely hidden. */}
+          {opened.has('browser') ? (
+            <div className={clsx('min-h-0 flex-1 flex-col', dock.tab === 'browser' ? 'flex' : 'hidden')}>
+              <BrowserPane />
+            </div>
+          ) : null}
+          {opened.has('terminal') ? (
+            <div className={clsx('min-h-0 flex-1 flex-col', dock.tab === 'terminal' ? 'flex' : 'hidden')}>
+              <TerminalPane />
+            </div>
+          ) : null}
+          {dock.open && dock.tab === 'changes' ? <ChangesPane /> : null}
+          {dock.open && dock.tab === 'files' ? <FilesPane /> : null}
+          {dock.open && dock.tab === 'activity' ? <ActivityPane /> : null}
         </div>
       </div>
     </div>

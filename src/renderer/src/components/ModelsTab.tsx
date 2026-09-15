@@ -41,7 +41,7 @@ function Field({
         placeholder={placeholder}
         onChange={(event) => onChange(event.target.value)}
         className={clsx(
-          'border-ink-700 bg-ink-900 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 rounded border px-2 py-1 text-[11.5px] outline-none',
+          'border-ink-800 bg-ink-900 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 rounded-md border px-2.5 py-1.5 text-[12.5px] outline-none',
           mono && 'font-mono'
         )}
       />
@@ -88,14 +88,14 @@ function ApiKeyRow({ providerId, onStored }: { providerId: string; onStored: () 
   }
 
   return (
-    <div className="border-ink-700 bg-ink-900 rounded border px-2.5 py-2">
+    <div className="border-ink-800 bg-ink-900 rounded-md border px-2.5 py-2">
       <div className="mb-1.5 flex items-center gap-2">
         <KeyRound className="text-ink-500 h-3.5 w-3.5" />
         <Label>API key</Label>
         {status ? (
           <span
             className={clsx(
-              'flex items-center gap-1 text-[10px]',
+              'flex items-center gap-1 text-[11px]',
               status.resolved ? 'text-ok' : 'text-warn'
             )}
           >
@@ -107,17 +107,17 @@ function ApiKeyRow({ providerId, onStored }: { providerId: string; onStored: () 
             {status.resolved ? `resolved from ${status.source}` : `not resolved (${status.source})`}
           </span>
         ) : null}
-        {hint ? <span className="text-ink-500 ml-auto font-mono text-[10.5px]">{hint}</span> : null}
+        {hint ? <span className="text-ink-500 ml-auto font-mono text-[11.5px]">{hint}</span> : null}
       </div>
 
       {unreadable ? (
-        <div className="border-warn/40 bg-warn/10 text-warn mb-1.5 rounded border px-2 py-1 text-[10.5px]">
+        <div className="border-warn/40 bg-warn/10 text-warn mb-1.5 rounded-md border px-2 py-1 text-[11.5px]">
           A key is stored for this provider but this build cannot decrypt it — the keychain entry
           was written by a different app identity or on another machine. Paste it again to replace it.
         </div>
       ) : null}
       {!secrets.available ? (
-        <div className="text-warn text-[10.5px]">
+        <div className="text-warn text-[11.5px]">
           The system keychain is unavailable, so keys cannot be stored here. Use{' '}
           <span className="font-mono">{'{env:VAR}'}</span> or{' '}
           <span className="font-mono">{'{file:~/path}'}</span> in the config file instead.
@@ -134,7 +134,7 @@ function ApiKeyRow({ providerId, onStored }: { providerId: string; onStored: () 
             onKeyDown={(event) => {
               if (event.key === 'Enter') void save()
             }}
-            className="border-ink-700 bg-ink-850 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 min-w-0 flex-1 rounded border px-2 py-1 font-mono text-[11.5px] outline-none"
+            className="border-ink-800 bg-ink-900 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 min-w-0 flex-1 rounded-md border px-2.5 py-1.5 font-mono text-[12.5px] outline-none"
           />
           <Button size="sm" onClick={() => setReveal(!reveal)} title={reveal ? 'Hide' : 'Show'}>
             {reveal ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
@@ -150,8 +150,8 @@ function ApiKeyRow({ providerId, onStored }: { providerId: string; onStored: () 
         </div>
       )}
 
-      {error ? <div className="text-bad mt-1 text-[10.5px]">{error}</div> : null}
-      <div className="text-ink-600 mt-1 text-[10px]">
+      {error ? <div className="text-bad mt-1 text-[11.5px]">{error}</div> : null}
+      <div className="text-ink-600 mt-1 text-[11px]">
         Encrypted with the system keychain and written to secrets.json. It never goes into the
         config file, which only stores the reference{' '}
         <span className="font-mono">{`{secret:${providerId}}`}</span>.
@@ -187,8 +187,8 @@ function ProviderCard({
   return (
     <Panel className="px-3 py-3">
       <div className="mb-2 flex items-center gap-2">
-        <span className="text-ink-100 text-[12.5px] font-semibold">{provider.name || provider.id}</span>
-        <span className="border-ink-700 text-ink-500 rounded border px-1.5 font-mono text-[10px]">
+        <span className="text-ink-100 text-[13.5px] font-medium">{provider.name || provider.id}</span>
+        <span className="border-ink-700 text-ink-500 rounded-md border px-1.5 font-mono text-[11px]">
           {provider.id}
         </span>
         <Button size="sm" variant="danger" className="ml-auto" onClick={onRemove}>
@@ -204,7 +204,7 @@ function ProviderCard({
           <select
             value={provider.npm}
             onChange={(event) => patch({ npm: event.target.value })}
-            className="border-ink-700 bg-ink-900 text-ink-200 focus:border-ink-600 cursor-pointer rounded border px-2 py-1 font-mono text-[11.5px] outline-none"
+            className="border-ink-800 bg-ink-900 text-ink-200 focus:border-ink-600 cursor-pointer rounded-md border px-2.5 py-1.5 font-mono text-[12.5px] outline-none"
           >
             {PRESETS.map((preset) => (
               <option key={preset.npm} value={preset.npm}>
@@ -232,10 +232,10 @@ function ProviderCard({
         <ApiKeyRow providerId={provider.id} onStored={onKeyStored} />
       </div>
 
-      <div className="border-ink-700 rounded border">
+      <div className="border-ink-700 rounded-md border">
         <div className="border-ink-700 flex items-center gap-2 border-b px-2.5 py-1.5">
           <Label>Models</Label>
-          <span className="text-ink-600 text-[10px]">
+          <span className="text-ink-600 text-[11px]">
             referenced as {provider.id}/&lt;id&gt;
           </span>
           <Button
@@ -263,7 +263,7 @@ function ProviderCard({
                   next[index] = { ...model, id: event.target.value }
                   setModels(next)
                 }}
-                className="border-ink-700 bg-ink-900 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 w-[38%] rounded border px-2 py-1 font-mono text-[11px] outline-none"
+                className="border-ink-800 bg-ink-900 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 w-[38%] rounded-md border px-2.5 py-1.5 font-mono text-[12px] outline-none"
               />
               <input
                 value={model.name}
@@ -273,7 +273,7 @@ function ProviderCard({
                   next[index] = { ...model, name: event.target.value }
                   setModels(next)
                 }}
-                className="border-ink-700 bg-ink-900 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 min-w-0 flex-1 rounded border px-2 py-1 text-[11px] outline-none"
+                className="border-ink-800 bg-ink-900 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 min-w-0 flex-1 rounded-md border px-2 py-1 text-[11px] outline-none"
               />
               <input
                 value={model.contextWindow ? String(model.contextWindow) : ''}
@@ -285,7 +285,7 @@ function ProviderCard({
                   next[index] = { ...model, contextWindow: parsed || undefined }
                   setModels(next)
                 }}
-                className="border-ink-700 bg-ink-900 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 w-20 rounded border px-2 py-1 font-mono text-[11px] outline-none"
+                className="border-ink-800 bg-ink-900 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 w-20 rounded-md border px-2.5 py-1.5 font-mono text-[12px] outline-none"
               />
               <button
                 type="button"
@@ -373,7 +373,7 @@ export function ModelsTab(): ReactNode {
           onChange={(event) => setDraft({ ...draft, model: event.target.value })}
           options={allModels.length ? allModels : [{ value: draft.model, label: draft.model }]}
         />
-        <span className="text-ink-600 text-[10px]">Used by new sessions and by agents with no model of their own.</span>
+        <span className="text-ink-600 text-[11px]">Used by new sessions and by agents with no model of their own.</span>
         <Button variant="primary" className="ml-auto" disabled={!dirty} onClick={() => void save()}>
           <Save className="h-3 w-3" />
           {dirty ? 'Save changes' : 'Saved'}
@@ -383,7 +383,7 @@ export function ModelsTab(): ReactNode {
       {status ? (
         <div
           className={clsx(
-            'rounded border px-2.5 py-1.5 text-[11px]',
+            'rounded-md border px-2.5 py-1.5 text-[11px]',
             status.kind === 'ok' ? 'border-ok/40 bg-ok/10 text-ok' : 'border-bad/40 bg-bad/10 text-bad'
           )}
         >
@@ -405,10 +405,13 @@ export function ModelsTab(): ReactNode {
               setDraft({ ...draft, provider: rest })
             }}
             onKeyStored={() => {
-              // Point the config at the keychain entry that was just written.
+              // Point the config at the keychain entry that was just written, and
+              // persist it now: leaving it as an unsaved edit makes storing a key
+              // look like it did nothing, because the provider keeps reading
+              // whatever placeholder was there before.
               const current = draft.provider[provider.id]
               if (current && current.options.apiKey !== `{secret:${provider.id}}`) {
-                setDraft({
+                const next: AppConfig = {
                   ...draft,
                   provider: {
                     ...draft.provider,
@@ -417,7 +420,19 @@ export function ModelsTab(): ReactNode {
                       options: { ...current.options, apiKey: `{secret:${provider.id}}` }
                     }
                   }
-                })
+                }
+                setDraft(next)
+                void window.opendesktop.config
+                  .save(next)
+                  .then(() => refreshConfig())
+                  .then(() => refreshSecrets())
+                  .then(() =>
+                    setStatus({
+                      kind: 'ok',
+                      message: `Stored the key and pointed ${provider.name || provider.id} at it.`
+                    })
+                  )
+                return
               }
               void refreshSecrets()
             }}
@@ -435,7 +450,7 @@ export function ModelsTab(): ReactNode {
               onKeyDown={(event) => {
                 if (event.key === 'Enter') addProvider()
               }}
-              className="border-ink-700 bg-ink-900 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 w-44 rounded border px-2 py-1 font-mono text-[11.5px] outline-none"
+              className="border-ink-800 bg-ink-900 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 w-44 rounded-md border px-2.5 py-1.5 font-mono text-[12.5px] outline-none"
             />
           </label>
           <Select

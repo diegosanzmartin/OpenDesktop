@@ -17,6 +17,7 @@ import * as providers from './providers'
 import { getRuntime } from './runtime'
 import { diffLines, renderDiff } from './diff'
 import { decide, matchesAny, splitCommand } from './approvals'
+import { parseGcloudCommand } from '@shared/gcloud'
 
 const failures: string[] = []
 let checks = 0
@@ -185,6 +186,39 @@ async function main(): Promise<void> {
   check('rm -rf / is denied', decide(perms, 'bash', 'rm -rf /etc').mode === 'deny')
   check('command splitting', splitCommand('a && b | c; d').length === 4)
   check('glob matching', matchesAny('git status --short', ['git status*']))
+
+  section('gcloud workstation command parsing')
+  const pasted = parseGcloudCommand(`gcloud workstations ssh \\
+  --project=acme--global--wkstations--01 \\
+  --region=europe-west1 \\
+  --cluster=workstation-cluster \\
+  --config=wkstations-secdevops-ubuntu-config \\
+  wkstations-diego-sanz-workstation`)
+  check('the multi-line command parses', pasted !== null)
+  check('project', pasted?.project === 'acme--global--wkstations--01', pasted?.project)
+  check('region', pasted?.region === 'europe-west1', pasted?.region)
+  check('cluster', pasted?.cluster === 'workstation-cluster', pasted?.cluster)
+  check('config', pasted?.config === 'wkstations-secdevops-ubuntu-config', pasted?.config)
+  check(
+    'the positional workstation name',
+    pasted?.workstation === 'wkstations-diego-sanz-workstation',
+    pasted?.workstation
+  )
+
+  const oneLine = parseGcloudCommand(
+    'gcloud workstations ssh --project p --region r --cluster c --config cfg --user dev my-ws'
+  )
+  check('space-separated flags parse', oneLine?.cluster === 'c', oneLine?.cluster)
+  check('a flag value is not mistaken for the name', oneLine?.workstation === 'my-ws', oneLine?.workstation)
+  check('user is picked up', oneLine?.user === 'dev', oneLine?.user)
+
+  const tunnel = parseGcloudCommand(
+    'gcloud workstations start-tcp-tunnel --project=p --region=r --cluster=c --config=cfg ws 22'
+  )
+  check('the tunnel form parses too', tunnel?.workstation === 'ws', tunnel?.workstation)
+  check('the trailing port is not the name', tunnel?.workstation !== '22')
+  check('quoted values are unquoted', parseGcloudCommand('gcloud workstations ssh --project="a b" w')?.project === 'a b')
+  check('unrelated text is rejected', parseGcloudCommand('ls -la') === null)
 
   section('diff')
   const d = diffLines('a\nb\nc', 'a\nB\nc')

@@ -50,7 +50,7 @@ function ConfigEditor(): ReactNode {
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2">
       <div className="flex items-center gap-2">
-        <span className="text-ink-500 font-mono text-[10.5px]">{path}</span>
+        <span className="text-ink-500 font-mono text-[11.5px]">{path}</span>
         <Button size="sm" onClick={() => void window.opendesktop.config.reveal()}>
           <FolderOpen className="h-3 w-3" />
           Reveal
@@ -70,7 +70,7 @@ function ConfigEditor(): ReactNode {
       {status ? (
         <div
           className={clsx(
-            'rounded border px-2.5 py-1.5 text-[11px]',
+            'rounded-md border px-2.5 py-1.5 text-[11px]',
             status.kind === 'ok' ? 'border-ok/40 bg-ok/10 text-ok' : 'border-bad/40 bg-bad/10 text-bad'
           )}
         >
@@ -82,9 +82,9 @@ function ConfigEditor(): ReactNode {
         value={text}
         spellCheck={false}
         onChange={(event) => setText(event.target.value)}
-        className="border-ink-700 bg-ink-950 text-ink-200 focus:border-ink-600 min-h-0 flex-1 resize-none rounded border p-3 font-mono text-[11.5px] leading-[1.6] outline-none"
+        className="border-ink-800 bg-ink-950 text-ink-200 focus:border-ink-600 min-h-0 flex-1 resize-none rounded-md border p-3 font-mono text-[11.5px] leading-[1.6] outline-none"
       />
-      <p className="text-ink-600 text-[10.5px]">
+      <p className="text-ink-600 text-[11.5px]">
         Secrets stay as placeholders: write <span className="font-mono">{'{env:MY_VAR}'}</span> or{' '}
         <span className="font-mono">{'{file:~/.secret}'}</span> and they are resolved at call time,
         never stored in this file.
@@ -103,23 +103,23 @@ function AgentsTab(): ReactNode {
         <Panel key={agent.id} className="px-3 py-2.5">
           <div className="flex items-center gap-2">
             <span className="h-2 w-2 rounded-full" style={{ background: agent.color ?? '#d97757' }} />
-            <span className="text-ink-100 text-[12.5px] font-semibold">{agent.name}</span>
-            <span className="text-ink-600 font-mono text-[10px]">{agent.id}</span>
-            <span className="border-ink-700 text-ink-400 rounded-full border px-1.5 text-[9.5px] uppercase">
+            <span className="text-ink-100 text-[13.5px] font-medium">{agent.name}</span>
+            <span className="text-ink-600 font-mono text-[11px]">{agent.id}</span>
+            <span className="border-ink-700 text-ink-400 rounded-full border px-1.5 text-[10.5px] uppercase">
               {agent.mode}
             </span>
             {agent.model ? (
-              <span className="text-ink-500 font-mono text-[10px]">{agent.model}</span>
+              <span className="text-ink-500 font-mono text-[11px]">{agent.model}</span>
             ) : (
-              <span className="text-ink-700 text-[10px]">session model</span>
+              <span className="text-ink-700 text-[11px]">session model</span>
             )}
           </div>
-          <p className="text-ink-400 mt-1 text-[11.5px]">{agent.description}</p>
+          <p className="text-ink-400 mt-1 text-[12.5px]">{agent.description}</p>
           <div className="mt-1.5 flex flex-wrap gap-1.5">
             {Object.entries(agent.tools ?? {})
               .filter(([, enabled]) => enabled === false)
               .map(([tool]) => (
-                <span key={tool} className="bg-bad/10 text-bad rounded px-1.5 py-[1px] text-[9.5px]">
+                <span key={tool} className="bg-bad/10 text-bad rounded px-1.5 py-[1px] text-[10.5px]">
                   no {tool}
                 </span>
               ))}
@@ -128,7 +128,7 @@ function AgentsTab(): ReactNode {
               .map(([key, mode]) => (
                 <span
                   key={key}
-                  className="border-ink-700 text-ink-500 rounded border px-1.5 py-[1px] text-[9.5px]"
+                  className="border-ink-700 text-ink-500 rounded-md border px-1.5 py-[1px] text-[10.5px]"
                 >
                   {key}: {String(mode)}
                 </span>
@@ -136,7 +136,7 @@ function AgentsTab(): ReactNode {
           </div>
         </Panel>
       ))}
-      <p className="text-ink-600 text-[10.5px]">
+      <p className="text-ink-600 text-[11.5px]">
         Add agents under <span className="font-mono">agent</span> in the config file. A{' '}
         <span className="font-mono">subagent</span> or <span className="font-mono">all</span> mode makes
         it callable by the <span className="font-mono">task</span> tool; primary agents appear in the
@@ -150,8 +150,8 @@ export function SettingsPane(): ReactNode {
   const [tab, setTab] = useState<Tab>('providers')
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col px-5 py-4">
-      <div className="mb-3 flex items-center gap-1">
+    <div className="flex min-h-0 flex-1 flex-col px-6 py-5">
+      <div className="mb-4 flex items-center gap-1">
         {TABS.map((item) => (
           <button
             key={item.id}
