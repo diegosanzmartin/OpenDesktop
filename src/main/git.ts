@@ -95,6 +95,29 @@ export async function readChanges(environmentId: string, cwd: string): Promise<R
   }
 }
 
+/**
+ * Just the branch and whether anything is dirty, for the session list.
+ *
+ * Deliberately not `readChanges`: that runs three commands and counts every
+ * line, which is far too much to do once per row. One command answers both
+ * questions.
+ */
+export async function readBranchSummary(
+  environmentId: string,
+  cwd: string
+): Promise<{ isRepo: boolean; branch: string; dirty: number }> {
+  const runtime = getRuntime(environmentId)
+  await runtime.connect()
+  const res = await runtime.exec(
+    'git rev-parse --abbrev-ref HEAD 2>/dev/null && git status --porcelain=v1 2>/dev/null | wc -l',
+    { cwd, timeoutMs: 15_000 }
+  )
+  if (res.exitCode !== 0) return { isRepo: false, branch: '', dirty: 0 }
+  const [branch, count] = res.stdout.trim().split('\n')
+  if (!branch) return { isRepo: false, branch: '', dirty: 0 }
+  return { isRepo: true, branch, dirty: Number((count ?? '').trim()) || 0 }
+}
+
 /** The unified diff for one file, for the expanded row in the Changes pane. */
 export async function readFileDiff(
   environmentId: string,

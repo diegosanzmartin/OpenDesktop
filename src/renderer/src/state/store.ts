@@ -7,9 +7,11 @@ import type {
   ApprovalRequest,
   BackgroundTask,
   Block,
+  GitSummary,
   Message,
   RepoChanges,
   Session,
+  SessionQuery,
   Skill
 } from '@shared/types'
 import { AUTO_AGENT } from '@shared/types'
@@ -17,18 +19,15 @@ import { AUTO_AGENT } from '@shared/types'
 /** What the right-hand dock is showing. The centre column is always the chat. */
 export type DockTab = 'changes' | 'terminal' | 'browser' | 'files' | 'activity' | 'background'
 
-export type SessionGroupBy = 'none' | 'folder' | 'status' | 'date' | 'environment' | 'agent'
-export type SessionSortBy = 'recent' | 'oldest' | 'title' | 'folder' | 'status'
-
-export interface SessionQuery {
-  groupBy: SessionGroupBy
-  sortBy: SessionSortBy
-  search: string
-  environments: string[]
-  agents: string[]
-  statuses: Session['status'][]
-  showArchived: boolean
-}
+// Declared in @shared/types, beside ActivityQuery, so the headless tests can
+// reach the list logic without pulling the renderer's DOM types in.
+export type {
+  GitSummary,
+  SessionGroupBy,
+  SessionQuery,
+  SessionSortBy,
+  SessionStatusFilter
+} from '@shared/types'
 
 interface Toast {
   id: number
@@ -59,6 +58,8 @@ interface State {
   settingsOpen: boolean
   changes: RepoChanges | null
   changesLoading: boolean
+  /** Keyed by `environmentId:cwd`, so sessions sharing a folder share a lookup. */
+  gitSummaries: Record<string, GitSummary>
   sessionQuery: SessionQuery
   activityQuery: ActivityQuery
   browserUrl: string
@@ -95,6 +96,7 @@ interface State {
   refreshSecrets: () => Promise<void>
   refreshSkills: () => Promise<void>
   refreshBackgroundTasks: () => Promise<void>
+  refreshGitSummaries: () => Promise<void>
   pushToast: (level: Toast['level'], message: string) => void
   dismissToast: (id: number) => void
 }
@@ -126,14 +128,14 @@ export const useStore = create<State>((set, get) => ({
   settingsOpen: false,
   changes: null,
   changesLoading: false,
+  gitSummaries: {},
   sessionQuery: {
+    status: 'active',
+    environment: 'all',
     groupBy: 'date',
     sortBy: 'recent',
     search: '',
-    environments: [],
-    agents: [],
-    statuses: [],
-    showArchived: false
+    showGitStatus: true
   },
   activityQuery: {
     groupBy: 'none',
@@ -384,7 +386,10 @@ export const useStore = create<State>((set, get) => ({
     }
   },
 
-  setSessionQuery: (patch) => set({ sessionQuery: { ...get().sessionQuery, ...patch } }),
+  setSessionQuery: (patch) => {
+    set({ sessionQuery: { ...get().sessionQuery, ...patch } })
+    if (patch.showGitStatus) void get().refreshGitSummaries()
+  },
   setActivityQuery: (patch) => set({ activityQuery: { ...get().activityQuery, ...patch } }),
   setBrowserUrl: (browserUrl) => set({ browserUrl }),
   toggleBlock: (id) => set({ expanded: { ...get().expanded, [id]: !get().expanded[id] } }),
@@ -396,6 +401,32 @@ export const useStore = create<State>((set, get) => ({
     const blocks = { ...get().blocks }
     for (const block of activity) blocks[block.id] = block
     set({ activity, blocks })
+  },
+
+  /**
+   * One lookup per distinct folder, not per session: several chats usually sit
+   * in the same repository, and this runs whenever the list is shown.
+   */
+  async refreshGitSummaries() {
+    if (!get().sessionQuery.showGitStatus) return
+    const wanted = new Map<string, { environmentId: string; cwd: string }>()
+    for (const session of get().sessions) {
+      if (session.parentSessionId) continue
+      wanted.set(`${session.environmentId}:${session.cwd}`, {
+        environmentId: session.environmentId,
+        cwd: session.cwd
+      })
+    }
+    const entries = await Promise.all(
+      [...wanted.entries()].map(async ([key, where]) => {
+        try {
+          return [key, await api().git.summary(where.environmentId, where.cwd)] as const
+        } catch {
+          return [key, { isRepo: false, branch: '', dirty: 0 }] as const
+        }
+      })
+    )
+    set({ gitSummaries: Object.fromEntries(entries) })
   },
 
   async refreshBackgroundTasks() {

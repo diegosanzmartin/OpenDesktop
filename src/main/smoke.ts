@@ -35,6 +35,8 @@ import { getRuntime } from './runtime'
 import { diffLines, renderDiff } from './diff'
 import { decide, matchesAny, splitCommand } from './approvals'
 import { parseGcloudCommand } from '@shared/gcloud'
+import { filterSessions, groupSessions, sortSessions } from '@shared/sessions'
+import type { Session, SessionQuery } from '@shared/types'
 
 const failures: string[] = []
 let checks = 0
@@ -690,6 +692,118 @@ async function main(): Promise<void> {
   }
   store.deleteSession(parent.id)
   history.clearHistory(parent.id)
+
+  /* ---------- the session list's filter, sort and group ---------- */
+
+  section('session list query')
+  {
+    const base: SessionQuery = {
+      status: 'active',
+      environment: 'all',
+      groupBy: 'none',
+      sortBy: 'recent',
+      search: '',
+      showGitStatus: true
+    }
+    const row = (over: Partial<Session>): Session =>
+      ({
+        id: 'x',
+        title: 'Untitled',
+        cwd: '/tmp/a',
+        environmentId: 'local',
+        agentId: 'auto',
+        model: 'm',
+        status: 'idle',
+        createdAt: 0,
+        updatedAt: 0,
+        usage: { input: 0, output: 0, cost: 0 },
+        ...over
+      }) as Session
+
+    const rows = [
+      row({ id: 'a', title: 'Alpha', status: 'running', createdAt: 30, updatedAt: 10 }),
+      row({ id: 'b', title: 'Bravo', status: 'error', createdAt: 20, updatedAt: 30 }),
+      row({ id: 'c', title: 'Charlie', status: 'idle', createdAt: 10, updatedAt: 20 }),
+      row({ id: 'd', title: 'Delta', archived: true }),
+      row({ id: 'kid', title: 'Subtask', parentSessionId: 'a' }),
+      row({ id: 'e', title: 'Echo', environmentId: 'remote', cwd: '/tmp/z' })
+    ]
+
+    const ids = (list: Session[]): string[] => list.map((s) => s.id)
+
+    // "Active" is about not being put away, not about a particular state.
+    check(
+      'Active hides archived sessions and subagents',
+      ids(filterSessions(rows, base)).join(',') === 'a,b,c,e',
+      ids(filterSessions(rows, base))
+    )
+    check(
+      'All still hides subagents, since they are reached from their parent',
+      ids(filterSessions(rows, { ...base, status: 'all' })).join(',') === 'a,b,c,d,e'
+    )
+    check(
+      'Running keeps only the running one',
+      ids(filterSessions(rows, { ...base, status: 'running' })).join(',') === 'a'
+    )
+    check(
+      'Failed keeps only the failed one',
+      ids(filterSessions(rows, { ...base, status: 'error' })).join(',') === 'b'
+    )
+    check(
+      'the environment filter narrows to one environment',
+      ids(filterSessions(rows, { ...base, environment: 'remote' })).join(',') === 'e'
+    )
+    check(
+      'search matches the title and the folder',
+      ids(filterSessions(rows, { ...base, search: 'brav' })).join(',') === 'b' &&
+        ids(filterSessions(rows, { ...base, search: '/tmp/z' })).join(',') === 'e'
+    )
+
+    const three = rows.slice(0, 3)
+    check(
+      'Last activity sorts by when it last moved',
+      ids(sortSessions(three, 'recent')).join(',') === 'b,c,a'
+    )
+    check(
+      'Date created sorts by when it began, which is a different order',
+      ids(sortSessions(three, 'created')).join(',') === 'a,b,c'
+    )
+    check('Title sorts alphabetically', ids(sortSessions(three, 'title')).join(',') === 'a,b,c')
+    check(
+      'Status sorts running before failed before idle',
+      ids(sortSessions(three, 'status')).join(',') === 'a,b,c'
+    )
+    check(
+      'sorting leaves the caller\'s array alone',
+      (() => {
+        const before = ids(three).join(',')
+        sortSessions(three, 'title')
+        return ids(three).join(',') === before
+      })()
+    )
+
+    const labels = { environments: { local: 'Local', remote: 'Remote' }, agents: { auto: 'Auto' } }
+    check(
+      'grouping by nothing yields a single unlabelled group',
+      groupSessions(three, { ...base, groupBy: 'none' }, labels).length === 1
+    )
+    const byEnv = groupSessions(filterSessions(rows, base), { ...base, groupBy: 'environment' }, labels)
+    check(
+      'grouping by environment uses the readable name',
+      byEnv.length === 2 && byEnv.some((g) => g.label === 'Remote'),
+      byEnv.map((g) => g.label)
+    )
+    const byFolder = groupSessions(filterSessions(rows, base), { ...base, groupBy: 'folder' }, labels)
+    check(
+      'grouping by folder splits on the working directory',
+      byFolder.length === 2,
+      byFolder.map((g) => g.label)
+    )
+    check(
+      'every session lands in exactly one group',
+      byFolder.reduce((sum, g) => sum + g.items.length, 0) === 4
+    )
+  }
 
   // Leave no smoke sessions behind.
   store.deleteSession(session.id)

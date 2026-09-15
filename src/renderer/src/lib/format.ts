@@ -1,5 +1,9 @@
 import type { Block, BlockStatus } from '@shared/types'
 
+// Both are pure and are needed by the headless tests too, so they live in
+// @shared/sessions; re-exported here because the components import from format.
+export { dayBucket, folderName } from '@shared/sessions'
+
 export function timeAgo(ts: number): string {
   const seconds = Math.max(0, Math.floor((Date.now() - ts) / 1000))
   if (seconds < 45) return 'just now'
@@ -31,26 +35,11 @@ export function durationMs(block: Block): number {
   return Math.max(0, end - start)
 }
 
-export function folderName(path: string): string {
-  const parts = path.replace(/\/+$/, '').split('/')
-  return parts[parts.length - 1] || path
-}
-
 export function shortenPath(path: string, max = 38): string {
   if (path.length <= max) return path
   const parts = path.split('/')
   if (parts.length <= 2) return `…${path.slice(-max + 1)}`
   return `…/${parts.slice(-2).join('/')}`
-}
-
-export function dayBucket(ts: number): string {
-  const now = new Date()
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
-  if (ts >= startOfToday) return 'Today'
-  if (ts >= startOfToday - 86_400_000) return 'Yesterday'
-  if (ts >= startOfToday - 7 * 86_400_000) return 'Earlier this week'
-  if (ts >= startOfToday - 30 * 86_400_000) return 'Earlier this month'
-  return new Date(ts).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })
 }
 
 export const STATUS_LABEL: Record<BlockStatus, string> = {

@@ -1,12 +1,10 @@
-import type { ActivityQuery, Block, Session } from '@shared/types'
-import type { SessionQuery } from '../state/store'
+import type { ActivityQuery, Block, Group } from '@shared/types'
 import { dayBucket, durationMs, folderName } from './format'
 
-export interface Group<T> {
-  key: string
-  label: string
-  items: T[]
-}
+// The session-list half lives in @shared/sessions so the headless tests can
+// reach it; it is re-exported here so callers have one place to import from.
+export { filterSessions, groupSessions, sortSessions } from '@shared/sessions'
+export type { Group } from '@shared/types'
 
 export interface GroupLabels {
   environments: Record<string, string>
@@ -102,79 +100,6 @@ export function groupBlocks(blocks: Block[], query: ActivityQuery, labels: Group
     }
     const group = map.get(key) ?? { key, label, items: [] }
     group.items.push(block)
-    map.set(key, group)
-  }
-  return [...map.values()]
-}
-
-/* ---------------- sessions ---------------- */
-
-export function filterSessions(sessions: Session[], query: SessionQuery): Session[] {
-  const needle = query.search.trim().toLowerCase()
-  return sessions.filter((session) => {
-    if (!query.showArchived && session.archived) return false
-    // Subagent sessions are reachable from their parent's task block, not the list.
-    if (session.parentSessionId) return false
-    if (query.statuses.length && !query.statuses.includes(session.status)) return false
-    if (query.environments.length && !query.environments.includes(session.environmentId)) return false
-    if (query.agents.length && !query.agents.includes(session.agentId)) return false
-    if (needle && !`${session.title} ${session.cwd}`.toLowerCase().includes(needle)) return false
-    return true
-  })
-}
-
-export function sortSessions(sessions: Session[], sortBy: SessionQuery['sortBy']): Session[] {
-  const copy = sessions.slice()
-  switch (sortBy) {
-    case 'oldest':
-      return copy.sort((a, b) => a.updatedAt - b.updatedAt)
-    case 'title':
-      return copy.sort((a, b) => a.title.localeCompare(b.title))
-    case 'folder':
-      return copy.sort((a, b) => a.cwd.localeCompare(b.cwd) || b.updatedAt - a.updatedAt)
-    case 'status':
-      return copy.sort(
-        (a, b) => (STATUS_RANK[a.status] ?? 9) - (STATUS_RANK[b.status] ?? 9) || b.updatedAt - a.updatedAt
-      )
-    default:
-      return copy.sort((a, b) => b.updatedAt - a.updatedAt)
-  }
-}
-
-export function groupSessions(
-  sessions: Session[],
-  query: SessionQuery,
-  labels: Omit<GroupLabels, 'sessions'>
-): Group<Session>[] {
-  if (query.groupBy === 'none') return [{ key: 'all', label: '', items: sessions }]
-  const map = new Map<string, Group<Session>>()
-  for (const session of sessions) {
-    let key = 'other'
-    let label = 'Other'
-    switch (query.groupBy) {
-      case 'folder':
-        key = session.cwd
-        label = folderName(session.cwd)
-        break
-      case 'status':
-        key = session.status
-        label = session.status
-        break
-      case 'date':
-        key = dayBucket(session.updatedAt)
-        label = key
-        break
-      case 'environment':
-        key = session.environmentId
-        label = labels.environments[session.environmentId] ?? session.environmentId
-        break
-      case 'agent':
-        key = session.agentId
-        label = labels.agents[session.agentId] ?? session.agentId
-        break
-    }
-    const group = map.get(key) ?? { key, label, items: [] }
-    group.items.push(session)
     map.set(key, group)
   }
   return [...map.values()]

@@ -20,7 +20,7 @@ import { listPending, resolveApproval, type ApprovalAnswer } from './approvals'
 import { previewOrigin, previewUrl } from './preview'
 import { deleteSecret, secretHint, secretStatus, setSecret } from './secrets'
 import { createTerminal, killTerminal, resizeTerminal, terminalBuffer, writeTerminal } from './terminal'
-import { readChanges, readFileDiff } from './git'
+import { readBranchSummary, readChanges, readFileDiff } from './git'
 import {
   clearFinished,
   killBackgroundTask,
@@ -247,6 +247,9 @@ export function registerIpc(): void {
   /* ---------- git ---------- */
   ipcMain.handle('git:changes', (_e, environmentId: string, cwd: string) =>
     readChanges(environmentId, cwd)
+  )
+  ipcMain.handle('git:summary', (_e, environmentId: string, cwd: string) =>
+    readBranchSummary(environmentId, cwd)
   )
   ipcMain.handle('git:diff', (_e, environmentId: string, cwd: string, path: string, untracked: boolean) =>
     readFileDiff(environmentId, cwd, path, untracked)

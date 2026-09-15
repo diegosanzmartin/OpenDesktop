@@ -151,6 +151,11 @@ const api = {
   git: {
     changes: (environmentId: string, cwd: string): Promise<RepoChanges> =>
       ipcRenderer.invoke('git:changes', environmentId, cwd),
+    summary: (
+      environmentId: string,
+      cwd: string
+    ): Promise<{ isRepo: boolean; branch: string; dirty: number }> =>
+      ipcRenderer.invoke('git:summary', environmentId, cwd),
     diff: (environmentId: string, cwd: string, path: string, untracked: boolean): Promise<string> =>
       ipcRenderer.invoke('git:diff', environmentId, cwd, path, untracked)
   },

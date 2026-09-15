@@ -1,35 +1,34 @@
 import clsx from 'clsx'
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   Activity,
   PanelLeft,
   Plus,
   Search,
+  GitBranch,
   Settings as SettingsIcon,
-  SlidersHorizontal,
   Trash2
 } from 'lucide-react'
 import type { Session } from '@shared/types'
-import { useStore, type SessionGroupBy, type SessionSortBy } from '../state/store'
+import { useStore } from '../state/store'
 import { filterSessions, groupSessions, sortSessions } from '../lib/group'
-import { Select } from './ui'
+import { SessionFilters } from './SessionFilters'
 
-const GROUP_OPTIONS: { value: SessionGroupBy; label: string }[] = [
-  { value: 'date', label: 'Date' },
-  { value: 'none', label: 'No grouping' },
-  { value: 'folder', label: 'Folder' },
-  { value: 'status', label: 'Status' },
-  { value: 'environment', label: 'Environment' },
-  { value: 'agent', label: 'Agent' }
-]
-
-const SORT_OPTIONS: { value: SessionSortBy; label: string }[] = [
-  { value: 'recent', label: 'Newest' },
-  { value: 'oldest', label: 'Oldest' },
-  { value: 'title', label: 'Title' },
-  { value: 'folder', label: 'Folder' },
-  { value: 'status', label: 'Status' }
-]
+/** Branch and dirty count, only when the option is on. */
+function GitChip({ session }: { session: Session }): ReactNode {
+  const summary = useStore((s) => s.gitSummaries[`${session.environmentId}:${session.cwd}`])
+  if (!summary?.isRepo) return null
+  return (
+    <span
+      title={`${summary.branch}${summary.dirty > 0 ? ` · ${summary.dirty} changed` : ' · clean'}`}
+      className="text-ink-600 flex shrink-0 items-center gap-1 text-[10px] group-hover:hidden"
+    >
+      <GitBranch className="h-2.5 w-2.5" />
+      <span className="max-w-[64px] truncate">{summary.branch}</span>
+      {summary.dirty > 0 ? <span className="text-warn">{summary.dirty}</span> : null}
+    </span>
+  )
+}
 
 function SessionDot({ status }: { status: Session['status'] }): ReactNode {
   if (status === 'running') {
@@ -80,11 +79,12 @@ export function Sidebar(): ReactNode {
   const query = useStore((s) => s.sessionQuery)
   const setQuery = useStore((s) => s.setSessionQuery)
   const config = useStore((s) => s.config)
+  const showGit = useStore((s) => s.sessionQuery.showGitStatus)
+  const refreshGit = useStore((s) => s.refreshGitSummaries)
   const setSettingsOpen = useStore((s) => s.setSettingsOpen)
   const openDock = useStore((s) => s.openDock)
 
   const [searching, setSearching] = useState(false)
-  const [filtersOpen, setFiltersOpen] = useState(false)
 
   const labels = useMemo(
     () => ({
@@ -100,6 +100,10 @@ export function Sidebar(): ReactNode {
     () => groupSessions(sortSessions(filterSessions(sessions, query), query.sortBy), query, labels),
     [sessions, query, labels]
   )
+
+  useEffect(() => {
+    if (showGit) void refreshGit()
+  }, [showGit, sessions.length, refreshGit])
 
   if (collapsed) {
     return (
@@ -189,36 +193,11 @@ export function Sidebar(): ReactNode {
               <div className="flex items-center gap-1 px-1 pb-1 pt-3">
                 <span className="text-ink-500 text-[11.5px]">{group.label || 'Sessions'}</span>
                 {groupIndex === 0 ? (
-                  <button
-                    type="button"
-                    title="Grouping and sorting"
-                    onClick={() => setFiltersOpen(!filtersOpen)}
-                    className={clsx(
-                      'ml-auto rounded p-0.5',
-                      filtersOpen ? 'text-ink-200' : 'text-ink-600 hover:text-ink-300'
-                    )}
-                  >
-                    <SlidersHorizontal className="h-3 w-3" />
-                  </button>
+                  <div className="ml-auto">
+                    <SessionFilters />
+                  </div>
                 ) : null}
               </div>
-
-              {groupIndex === 0 && filtersOpen ? (
-                <div className="border-ink-700 bg-ink-850 mb-1.5 flex flex-col gap-1.5 rounded-md border px-2 py-1.5">
-                  <Select
-                    label="Group"
-                    value={query.groupBy}
-                    onChange={(event) => setQuery({ groupBy: event.target.value as SessionGroupBy })}
-                    options={GROUP_OPTIONS}
-                  />
-                  <Select
-                    label="Sort"
-                    value={query.sortBy}
-                    onChange={(event) => setQuery({ sortBy: event.target.value as SessionSortBy })}
-                    options={SORT_OPTIONS}
-                  />
-                </div>
-              ) : null}
 
               {group.items.map((session) => (
                 <div
@@ -233,6 +212,7 @@ export function Sidebar(): ReactNode {
                 >
                   <SessionDot status={session.status} />
                   <span className="min-w-0 flex-1 truncate text-[13px]">{session.title}</span>
+                  {showGit ? <GitChip session={session} /> : null}
                   <button
                     type="button"
                     title="Delete session"

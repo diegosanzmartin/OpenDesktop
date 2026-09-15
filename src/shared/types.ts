@@ -285,6 +285,37 @@ export interface ActivityQuery {
   since: number | null
 }
 
+/** A labelled bucket of rows, for the grouped lists. */
+export interface Group<T> {
+  key: string
+  label: string
+  items: T[]
+}
+
+/* ---------- Session list filtering ---------- */
+
+export type SessionGroupBy = 'none' | 'folder' | 'status' | 'date' | 'environment' | 'agent'
+export type SessionSortBy = 'recent' | 'created' | 'title' | 'folder' | 'status'
+/** `active` is everything not archived — the sensible default, not a state. */
+export type SessionStatusFilter = 'active' | 'all' | 'running' | 'approval' | 'error' | 'idle'
+
+export interface SessionQuery {
+  status: SessionStatusFilter
+  /** An environment id, or `all`. */
+  environment: string
+  groupBy: SessionGroupBy
+  sortBy: SessionSortBy
+  search: string
+  /** Whether each row carries its repository's branch and dirty count. */
+  showGitStatus: boolean
+}
+
+export interface GitSummary {
+  isRepo: boolean
+  branch: string
+  dirty: number
+}
+
 export interface ChangedFile {
   path: string
   /** Index + worktree status, e.g. "M", "A", "??". */
