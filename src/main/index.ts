@@ -8,6 +8,7 @@ import { startPreviewServer, stopPreviewServer } from './preview'
 import { disposeRuntimes } from './runtime'
 import { flush, loadStore } from './store'
 import { stopAll } from './agent/runner'
+import { killAllTerminals } from './terminal'
 
 const isDev = !app.isPackaged
 
@@ -96,6 +97,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   stopAll()
+  killAllTerminals()
   flush()
   stopPreviewServer()
   void disposeRuntimes()

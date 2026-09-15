@@ -109,6 +109,9 @@ export interface Block {
   /** Truncated stdout/stderr stream for live display. */
   error?: string
   exitCode?: number
+  /** Line counts for write/edit, so the transcript can summarise a group. */
+  added?: number
+  removed?: number
   cwd: string
   environmentId: string
   agentId: string
@@ -199,6 +202,25 @@ export interface ActivityQuery {
   since: number | null
 }
 
+export interface ChangedFile {
+  path: string
+  /** Index + worktree status, e.g. "M", "A", "??". */
+  status: string
+  added: number
+  removed: number
+  staged: boolean
+}
+
+export interface RepoChanges {
+  isRepo: boolean
+  root: string
+  branch: string
+  upstream?: string
+  files: ChangedFile[]
+  added: number
+  removed: number
+}
+
 /* ---------- IPC events ---------- */
 
 export type AppEvent =
@@ -215,4 +237,6 @@ export type AppEvent =
   | { type: 'approval.requested'; request: ApprovalRequest }
   | { type: 'approval.resolved'; approvalId: string }
   | { type: 'environment.status'; environmentId: string; connected: boolean; message?: string }
+  | { type: 'terminal.data'; terminalId: string; chunk: string }
+  | { type: 'terminal.exit'; terminalId: string; code: number }
   | { type: 'toast'; level: 'info' | 'warn' | 'error'; message: string }

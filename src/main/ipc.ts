@@ -18,6 +18,8 @@ import { isRunning, runTurn, stop } from './agent/runner'
 import { listPending, resolveApproval, type ApprovalAnswer } from './approvals'
 import { previewOrigin, previewUrl } from './preview'
 import { deleteSecret, secretHint, secretStatus, setSecret } from './secrets'
+import { createTerminal, killTerminal, resizeTerminal, terminalBuffer, writeTerminal } from './terminal'
+import { readChanges, readFileDiff } from './git'
 
 function broadcast(): void {
   bus.subscribe((event) => {
@@ -135,6 +137,25 @@ export function registerIpc(): void {
   /* ---------- activity ---------- */
   ipcMain.handle('blocks:all', (_e, limit?: number) => store.allBlocks(limit ?? 800))
   ipcMain.handle('blocks:folders', () => store.knownFolders())
+
+  /* ---------- terminal ---------- */
+  ipcMain.handle('terminal:create', (_e, input: { environmentId: string; cwd: string; cols: number; rows: number }) =>
+    createTerminal(input)
+  )
+  ipcMain.handle('terminal:write', (_e, id: string, data: string) => writeTerminal(id, data))
+  ipcMain.handle('terminal:resize', (_e, id: string, cols: number, rows: number) =>
+    resizeTerminal(id, cols, rows)
+  )
+  ipcMain.handle('terminal:kill', (_e, id: string) => killTerminal(id))
+  ipcMain.handle('terminal:buffer', (_e, id: string) => terminalBuffer(id))
+
+  /* ---------- git ---------- */
+  ipcMain.handle('git:changes', (_e, environmentId: string, cwd: string) =>
+    readChanges(environmentId, cwd)
+  )
+  ipcMain.handle('git:diff', (_e, environmentId: string, cwd: string, path: string, untracked: boolean) =>
+    readFileDiff(environmentId, cwd, path, untracked)
+  )
 
   /* ---------- files & preview ---------- */
   ipcMain.handle('fs:list', async (_e, environmentId: string, path: string) => {

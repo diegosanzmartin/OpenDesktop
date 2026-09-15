@@ -1,36 +1,61 @@
 import clsx from 'clsx'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Brain, ChevronDown, ChevronRight, TriangleAlert } from 'lucide-react'
-import type { Message, Session } from '@shared/types'
+import { ChevronRight, TriangleAlert } from 'lucide-react'
+import type { Block, Message, MessagePart, Session } from '@shared/types'
 import { useStore } from '../state/store'
-import { clockTime, tokens } from '../lib/format'
-import { BlockCard } from './BlockCard'
+import { tokens } from '../lib/format'
 import { ApprovalCard } from './ApprovalCard'
 import { Composer } from './Composer'
+import { EditedFiles, ToolGroup } from './ToolGroup'
 
 const EMPTY_MESSAGES: Message[] = []
 
+function renderInline(line: string): ReactNode {
+  const parts = line.split(/(`[^`]+`|\*\*[^*]+\*\*)/g)
+  return parts.map((part, index) => {
+    if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
+      return (
+        <code key={index} className="code-chip">
+          {part.slice(1, -1)}
+        </code>
+      )
+    }
+    if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
+      return <strong key={index}>{part.slice(2, -2)}</strong>
+    }
+    return <span key={index}>{part}</span>
+  })
+}
+
 function Markdownish({ text }: { text: string }): ReactNode {
-  // Deliberately minimal: fenced code, inline code, bold and bullets cover
-  // everything a coding agent actually emits, without pulling in a parser.
   const segments = useMemo(() => text.split(/```/), [text])
   return (
-    <div className="space-y-2">
+    <div className="prose-body space-y-3">
       {segments.map((segment, index) =>
         index % 2 === 1 ? (
           <pre
             key={index}
-            className="bg-ink-900 border-ink-700 text-ink-200 overflow-x-auto rounded-md border px-3 py-2 font-mono text-[11.5px] leading-[1.55]"
+            className="bg-ink-850 border-ink-800 text-ink-200 overflow-x-auto rounded-lg border px-3 py-2.5 font-mono text-[12px] leading-[1.6]"
           >
             {segment.replace(/^[a-zA-Z0-9+-]*\n/, '')}
           </pre>
         ) : (
-          <div key={index} className="whitespace-pre-wrap text-[13px] leading-[1.6]">
-            {segment.split('\n').map((line, lineIndex) => (
-              <div key={lineIndex} className={clsx(/^\s*[-*]\s/.test(line) && 'pl-3')}>
-                {renderInline(line)}
-              </div>
-            ))}
+          <div key={index}>
+            {segment
+              .split('\n')
+              .map((line, lineIndex) =>
+                line.trim() === '' ? (
+                  <div key={lineIndex} className="h-2" />
+                ) : /^#{1,4}\s/.test(line) ? (
+                  <div key={lineIndex} className="text-ink-100 mb-1 mt-3 text-[15px] font-semibold">
+                    {renderInline(line.replace(/^#{1,4}\s/, ''))}
+                  </div>
+                ) : (
+                  <div key={lineIndex} className={clsx(/^\s*[-*]\s/.test(line) && 'pl-4 -indent-2')}>
+                    {renderInline(line)}
+                  </div>
+                )
+              )}
           </div>
         )
       )}
@@ -38,52 +63,51 @@ function Markdownish({ text }: { text: string }): ReactNode {
   )
 }
 
-function renderInline(line: string): ReactNode {
-  const parts = line.split(/(`[^`]+`|\*\*[^*]+\*\*)/g)
-  return parts.map((part, index) => {
-    if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
-      return (
-        <code key={index} className="bg-ink-800 text-brand rounded px-1 py-[1px] font-mono text-[11.5px]">
-          {part.slice(1, -1)}
-        </code>
-      )
-    }
-    if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
-      return (
-        <strong key={index} className="text-ink-100 font-semibold">
-          {part.slice(2, -2)}
-        </strong>
-      )
-    }
-    return <span key={index}>{part}</span>
-  })
-}
-
 function Reasoning({ text }: { text: string }): ReactNode {
   const [open, setOpen] = useState(false)
   return (
-    <div className="border-ink-700 bg-ink-850/60 overflow-hidden rounded-md border">
+    <div className="my-1">
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="hover:bg-ink-800 flex w-full items-center gap-2 px-2.5 py-1.5 text-left"
+        className="group flex items-center gap-1.5 py-[3px] text-left"
       >
-        {open ? (
-          <ChevronDown className="text-ink-500 h-3 w-3" />
-        ) : (
-          <ChevronRight className="text-ink-500 h-3 w-3" />
-        )}
-        <Brain className="text-violet h-3.5 w-3.5" />
-        <span className="text-ink-400 text-[11px]">Thinking</span>
-        <span className="text-ink-600 ml-auto text-[10px]">{text.length} chars</span>
+        <span className="text-ink-500 group-hover:text-ink-300 text-[13.5px] italic">Thought for a moment</span>
+        <ChevronRight
+          className={clsx(
+            'text-ink-600 h-3.5 w-3.5 transition-transform',
+            open && 'rotate-90'
+          )}
+        />
       </button>
       {open ? (
-        <div className="border-ink-700 text-ink-400 border-t px-3 py-2 text-[11.5px] leading-[1.6] whitespace-pre-wrap italic">
+        <div className="border-ink-800 text-ink-400 mt-1 border-l pl-3 text-[13px] leading-[1.65] whitespace-pre-wrap italic">
           {text}
         </div>
       ) : null}
     </div>
   )
+}
+
+/** Consecutive tool calls collapse into one summary line. */
+type Chunk = { kind: 'parts'; parts: MessagePart[] } | { kind: 'tools'; blocks: Block[] }
+
+function chunkParts(parts: MessagePart[], blocks: Record<string, Block>): Chunk[] {
+  const out: Chunk[] = []
+  for (const part of parts) {
+    if (part.type === 'block') {
+      const block = part.blockId ? blocks[part.blockId] : undefined
+      if (!block) continue
+      const last = out[out.length - 1]
+      if (last && last.kind === 'tools') last.blocks.push(block)
+      else out.push({ kind: 'tools', blocks: [block] })
+    } else {
+      const last = out[out.length - 1]
+      if (last && last.kind === 'parts') last.parts.push(part)
+      else out.push({ kind: 'parts', parts: [part] })
+    }
+  }
+  return out
 }
 
 function MessageRow({ message }: { message: Message }): ReactNode {
@@ -95,65 +119,78 @@ function MessageRow({ message }: { message: Message }): ReactNode {
     const text = message.parts.map((p) => p.text ?? '').join('')
     return (
       <div className="flex justify-end">
-        <div className="bg-ink-800 border-ink-700 max-w-[78%] rounded-lg border px-3 py-2">
-          <div className="text-ink-100 text-[13px] leading-[1.6] whitespace-pre-wrap">{text}</div>
-          <div className="text-ink-600 mt-1 text-right text-[10px]">{clockTime(message.createdAt)}</div>
+        <div className="bg-ink-800 text-ink-100 max-w-[80%] rounded-2xl px-3.5 py-2 text-[14px] leading-[1.6] whitespace-pre-wrap">
+          {text}
         </div>
       </div>
     )
   }
 
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center gap-2">
-        <span
-          className="h-1.5 w-1.5 rounded-full"
-          style={{ background: agent?.color ?? 'var(--color-brand)' }}
-        />
-        <span className="text-ink-400 text-[11px] font-semibold">{agent?.name ?? 'Assistant'}</span>
-        <span className="text-ink-600 font-mono text-[10px]">{message.model}</span>
-        {message.usage ? (
-          <span className="text-ink-600 text-[10px]">
-            {tokens(message.usage.input)} in · {tokens(message.usage.output)} out
-          </span>
-        ) : null}
-        <span className="text-ink-600 ml-auto text-[10px]">{clockTime(message.createdAt)}</span>
-      </div>
+  const chunks = chunkParts(message.parts, blocks)
+  const allBlocks = message.parts
+    .filter((p) => p.type === 'block' && p.blockId)
+    .map((p) => blocks[p.blockId!])
+    .filter(Boolean)
 
-      <div className="space-y-2 pl-3.5">
-        {message.parts.map((part, index) => {
-          if (part.type === 'block') {
-            const block = part.blockId ? blocks[part.blockId] : undefined
-            return block ? <BlockCard key={`${part.blockId}-${index}`} block={block} /> : null
-          }
-          if (part.type === 'reasoning') {
-            return part.text?.trim() ? <Reasoning key={index} text={part.text} /> : null
-          }
-          if (part.type === 'error') {
-            return (
-              <div
-                key={index}
-                className="border-bad/40 bg-bad/10 text-bad flex items-start gap-2 rounded-md border px-3 py-2 text-[12px]"
-              >
-                <TriangleAlert className="mt-[2px] h-3.5 w-3.5 shrink-0" />
-                <span className="whitespace-pre-wrap">{part.text}</span>
-              </div>
-            )
-          }
-          return part.text?.trim() ? (
-            <div key={index} className="text-ink-100">
-              <Markdownish text={part.text} />
-            </div>
-          ) : null
-        })}
+  const elapsed = message.completedAt ? Math.round((message.completedAt - message.createdAt) / 1000) : null
+  const totalTokens = (message.usage?.input ?? 0) + (message.usage?.output ?? 0)
+
+  return (
+    <div>
+      {chunks.map((chunk, index) =>
+        chunk.kind === 'tools' ? (
+          <ToolGroup key={index} blocks={chunk.blocks} />
+        ) : (
+          <div key={index} className="space-y-2 py-1">
+            {chunk.parts.map((part, partIndex) => {
+              if (part.type === 'reasoning') {
+                return part.text?.trim() ? <Reasoning key={partIndex} text={part.text} /> : null
+              }
+              if (part.type === 'error') {
+                return (
+                  <div
+                    key={partIndex}
+                    className="border-bad/40 bg-bad/10 text-bad flex items-start gap-2 rounded-lg border px-3 py-2 text-[13px]"
+                  >
+                    <TriangleAlert className="mt-[3px] h-3.5 w-3.5 shrink-0" />
+                    <span className="whitespace-pre-wrap">{part.text}</span>
+                  </div>
+                )
+              }
+              return part.text?.trim() ? <Markdownish key={partIndex} text={part.text} /> : null
+            })}
+          </div>
+        )
+      )}
+
+      <EditedFiles blocks={allBlocks} />
+
+      <div className="text-ink-600 mt-2 flex items-center gap-2 text-[11.5px]">
+        <span
+          className={clsx('text-[13px]', !message.completedAt && 'animate-pulse')}
+          style={{ color: agent?.color ?? 'var(--color-brand)' }}
+        >
+          ✳
+        </span>
+        {message.completedAt ? (
+          <>
+            {elapsed !== null ? (
+              <span>
+                {elapsed >= 60 ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s` : `${elapsed}s`}
+              </span>
+            ) : null}
+            {totalTokens > 0 ? <span>· {tokens(totalTokens)} tokens</span> : null}
+            {agent ? <span>· {agent.name}</span> : null}
+          </>
+        ) : (
+          <span>Working…</span>
+        )}
       </div>
     </div>
   )
 }
 
 export function ChatView({ session }: { session: Session }): ReactNode {
-  // Selectors must return stable references: zustand compares by identity, so
-  // building an array inside the selector re-renders forever.
   const allMessages = useStore((s) => s.messages)
   const allApprovals = useStore((s) => s.approvals)
   const messages = allMessages[session.id] ?? EMPTY_MESSAGES
@@ -177,13 +214,13 @@ export function ChatView({ session }: { session: Session }): ReactNode {
           const el = event.currentTarget
           pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
         }}
-        className="min-h-0 flex-1 overflow-y-auto px-5 py-4"
+        className="min-h-0 flex-1 overflow-y-auto px-6 py-5"
       >
-        <div className="mx-auto max-w-3xl space-y-5">
+        <div className="mx-auto max-w-[760px] space-y-6">
           {messages.length === 0 ? (
-            <div className="text-ink-500 py-16 text-center">
-              <div className="text-ink-300 mb-1 text-[15px]">Ready when you are.</div>
-              <div className="text-[12px]">
+            <div className="text-ink-500 py-20 text-center">
+              <div className="text-ink-300 mb-1.5 text-[16px]">Ready when you are.</div>
+              <div className="text-[13px]">
                 Commands run in <span className="font-mono">{session.cwd}</span> on{' '}
                 <span className="font-mono">{session.environmentId}</span>.
               </div>

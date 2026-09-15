@@ -1,16 +1,17 @@
 @import 'tailwindcss';
 
 @theme {
-  --color-ink-950: #141312;
-  --color-ink-900: #191817;
-  --color-ink-850: #1f1e1c;
-  --color-ink-800: #252321;
-  --color-ink-700: #302e2b;
-  --color-ink-600: #423f3b;
-  --color-ink-500: #6e6b66;
-  --color-ink-400: #a3a09b;
-  --color-ink-200: #d6d3ce;
-  --color-ink-100: #e8e6e3;
+  --color-ink-950: #131211;
+  --color-ink-900: #1a1918;
+  --color-ink-850: #1f1e1d;
+  --color-ink-800: #262523;
+  --color-ink-700: #2f2d2b;
+  --color-ink-600: #3d3a37;
+  --color-ink-500: #6b6862;
+  --color-ink-400: #8d8a84;
+  --color-ink-300: #b4b1ab;
+  --color-ink-200: #cfccc6;
+  --color-ink-100: #ecebe8;
 
   --color-brand: #d97757;
   --color-brand-dim: #a85a40;
@@ -24,6 +25,8 @@
   --font-sans: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
 }
 
+@import '@xterm/xterm/css/xterm.css';
+
 html,
 body,
 #root {
@@ -33,9 +36,9 @@ body,
 
 body {
   background: var(--color-ink-900);
-  color: var(--color-ink-100);
+  color: var(--color-ink-200);
   font-family: var(--font-sans);
-  font-size: 13px;
+  font-size: 13.5px;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
 }
@@ -83,4 +86,37 @@ body {
 
 textarea {
   field-sizing: content;
+}
+
+
+/* The transcript reads as prose, so it gets a slightly looser rhythm than the
+   chrome around it. */
+.prose-body {
+  font-size: 14px;
+  line-height: 1.68;
+  color: var(--color-ink-200);
+}
+
+.prose-body strong {
+  color: var(--color-ink-100);
+  font-weight: 600;
+}
+
+/* Inline code in the transcript, matching the surrounding line height so a
+   paragraph with several chips does not grow taller. */
+.code-chip {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  color: #e08b6d;
+  background: rgba(217, 119, 87, 0.09);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+}
+
+.xterm .xterm-viewport {
+  background: transparent !important;
+}
+
+.xterm-screen {
+  padding: 8px 10px;
 }

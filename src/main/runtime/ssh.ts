@@ -226,6 +226,19 @@ export class SshRuntime implements Runtime {
     })
   }
 
+  /** A real PTY on the remote host, for the terminal pane. */
+  async openShell(size: { cols: number; rows: number }): Promise<ClientChannel> {
+    await this.connect()
+    const client = this.client
+    if (!client) throw new RuntimeError('ssh client not connected')
+    return new Promise((resolveShell, rejectShell) => {
+      client.shell({ term: 'xterm-256color', cols: size.cols, rows: size.rows }, (err, stream) => {
+        if (err) return rejectShell(err)
+        resolveShell(stream)
+      })
+    })
+  }
+
   async readFile(path: string): Promise<string> {
     return (await this.readFileBuffer(path)).toString('utf8')
   }

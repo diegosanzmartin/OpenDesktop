@@ -17,6 +17,7 @@ import type { Block } from '@shared/types'
 import { useStore } from '../state/store'
 import { STATUS_COLOR, STATUS_LABEL, TOOL_LABEL, duration, stripAnsi } from '../lib/format'
 import { StatusDot } from './ui'
+import { DiffBody } from './DiffBody'
 
 const ICONS: Record<string, typeof Terminal> = {
   bash: Terminal,
@@ -28,26 +29,6 @@ const ICONS: Record<string, typeof Terminal> = {
   list: FolderTree,
   fetch: Globe,
   task: Users
-}
-
-function DiffBody({ text }: { text: string }): ReactNode {
-  return (
-    <pre className="font-mono text-[11px] leading-[1.5]">
-      {text.split('\n').map((line, index) => (
-        <div
-          key={index}
-          className={clsx(
-            'px-3',
-            line.startsWith('+') && 'bg-ok/10 text-ok',
-            line.startsWith('-') && 'bg-bad/10 text-bad',
-            !line.startsWith('+') && !line.startsWith('-') && 'text-ink-400'
-          )}
-        >
-          {line || ' '}
-        </div>
-      ))}
-    </pre>
-  )
 }
 
 /**
@@ -203,13 +184,13 @@ export function BlockCard({ block, compact }: { block: Block; compact?: boolean 
   )
 }
 
-/** Opens a path in the integrated browser pane. */
+/** Opens a path in the integrated browser, revealing the dock if it is closed. */
 export function usePreviewOpener(): (environmentId: string, path: string) => Promise<void> {
   const setBrowserUrl = useStore((s) => s.setBrowserUrl)
-  const setPane = useStore((s) => s.setPane)
+  const openDock = useStore((s) => s.openDock)
   return async (environmentId, path) => {
     const url = await window.opendesktop.files.previewUrl(environmentId, path)
     setBrowserUrl(url)
-    setPane('browser')
+    openDock('browser')
   }
 }

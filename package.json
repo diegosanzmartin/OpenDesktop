@@ -1,7 +1,7 @@
 {
   "name": "opendesktop",
   "version": "0.1.0",
-  "description": "An open desktop agent workspace \u2014 bring your own model.",
+  "description": "An open desktop agent workspace — bring your own model.",
   "main": "./out/main/index.js",
   "private": true,
   "type": "module",
@@ -71,6 +71,9 @@
     "@ai-sdk/google": "^4.0.69",
     "@ai-sdk/openai": "^4.0.66",
     "@ai-sdk/openai-compatible": "^3.0.48",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-web-links": "^0.12.0",
+    "@xterm/xterm": "^6.0.0",
     "ai": "^7.0.99",
     "clsx": "^2.1.1",
     "lucide-react": "^1.46.0",

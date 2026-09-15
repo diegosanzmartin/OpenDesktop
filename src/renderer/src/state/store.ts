@@ -6,10 +6,12 @@ import type {
   ApprovalRequest,
   Block,
   Message,
+  RepoChanges,
   Session
 } from '@shared/types'
 
-export type Pane = 'chat' | 'browser' | 'files' | 'settings'
+/** What the right-hand dock is showing. The centre column is always the chat. */
+export type DockTab = 'changes' | 'terminal' | 'browser' | 'files' | 'activity'
 
 export type SessionGroupBy = 'none' | 'folder' | 'status' | 'date' | 'environment' | 'agent'
 export type SessionSortBy = 'recent' | 'oldest' | 'title' | 'folder' | 'status'
@@ -46,7 +48,11 @@ interface State {
   envStatus: Record<string, { connected: boolean; message?: string }>
   toasts: Toast[]
 
-  pane: Pane
+  dock: { open: boolean; tab: DockTab; width: number }
+  sidebarCollapsed: boolean
+  settingsOpen: boolean
+  changes: RepoChanges | null
+  changesLoading: boolean
   sessionQuery: SessionQuery
   activityQuery: ActivityQuery
   browserUrl: string
@@ -65,7 +71,13 @@ interface State {
   }) => Promise<void>
   send: (text: string) => Promise<void>
   stop: () => Promise<void>
-  setPane: (pane: Pane) => void
+  openDock: (tab: DockTab) => void
+  toggleDock: (tab: DockTab) => void
+  closeDock: () => void
+  setDockWidth: (width: number) => void
+  toggleSidebar: () => void
+  setSettingsOpen: (open: boolean) => void
+  refreshChanges: () => Promise<void>
   setSessionQuery: (patch: Partial<SessionQuery>) => void
   setActivityQuery: (patch: Partial<ActivityQuery>) => void
   setBrowserUrl: (url: string) => void
@@ -99,9 +111,13 @@ export const useStore = create<State>((set, get) => ({
   envStatus: {},
   toasts: [],
 
-  pane: 'chat',
+  dock: { open: false, tab: 'changes', width: 460 },
+  sidebarCollapsed: false,
+  settingsOpen: false,
+  changes: null,
+  changesLoading: false,
   sessionQuery: {
-    groupBy: 'none',
+    groupBy: 'date',
     sortBy: 'recent',
     search: '',
     environments: [],
@@ -261,7 +277,7 @@ export const useStore = create<State>((set, get) => ({
   },
 
   async selectSession(id) {
-    set({ activeSessionId: id })
+    set({ activeSessionId: id, changes: null })
     const [messages, blocks] = await Promise.all([api().sessions.messages(id), api().sessions.blocks(id)])
     const map = { ...get().blocks }
     for (const block of blocks) map[block.id] = block
@@ -276,7 +292,6 @@ export const useStore = create<State>((set, get) => ({
       agentId: input?.agentId ?? (config ? Object.keys(config.agent)[0] : undefined),
       model: input?.model ?? config?.model
     })
-    set({ pane: 'chat' })
     await get().selectSession(session.id)
   },
 
@@ -291,7 +306,30 @@ export const useStore = create<State>((set, get) => ({
     if (id) await api().turn.stop(id)
   },
 
-  setPane: (pane) => set({ pane }),
+  openDock: (tab) => set({ dock: { ...get().dock, open: true, tab } }),
+  toggleDock: (tab) => {
+    const dock = get().dock
+    set({ dock: { ...dock, open: !(dock.open && dock.tab === tab), tab } })
+    if (tab === 'changes') void get().refreshChanges()
+  },
+  closeDock: () => set({ dock: { ...get().dock, open: false } }),
+  setDockWidth: (width) => set({ dock: { ...get().dock, width: Math.min(900, Math.max(320, width)) } }),
+  toggleSidebar: () => set({ sidebarCollapsed: !get().sidebarCollapsed }),
+  setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
+
+  async refreshChanges() {
+    const session = get().sessions.find((s) => s.id === get().activeSessionId)
+    if (!session) return set({ changes: null })
+    set({ changesLoading: true })
+    try {
+      set({ changes: await api().git.changes(session.environmentId, session.cwd) })
+    } catch {
+      set({ changes: null })
+    } finally {
+      set({ changesLoading: false })
+    }
+  },
+
   setSessionQuery: (patch) => set({ sessionQuery: { ...get().sessionQuery, ...patch } }),
   setActivityQuery: (patch) => set({ activityQuery: { ...get().activityQuery, ...patch } }),
   setBrowserUrl: (browserUrl) => set({ browserUrl }),

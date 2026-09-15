@@ -55,6 +55,8 @@ async function withBlock(
     title: string
     subtitle?: string
     input: Record<string, unknown>
+    added?: number
+    removed?: number
     permission?: {
       key: keyof Omit<Permissions, 'allowlist' | 'denylist'>
       command?: string
@@ -72,6 +74,8 @@ async function withBlock(
     title: spec.title,
     subtitle: spec.subtitle,
     input: spec.input,
+    added: spec.added,
+    removed: spec.removed,
     cwd: ctx.cwd,
     environmentId: ctx.environmentId,
     agentId: ctx.agent.id,
@@ -256,6 +260,8 @@ export function createTools(ctx: ToolContext): ToolSet {
             title: shortPath(ctx.cwd, resolved),
             subtitle: existed ? `+${stats.added} −${stats.removed}` : `new file, ${content.split('\n').length} lines`,
             input: { path: resolved, content },
+            added: stats.added,
+            removed: stats.removed,
             permission: {
               key: 'write',
               detail: `${existed ? 'Overwrite' : 'Create'} ${resolved}`,
@@ -311,6 +317,8 @@ export function createTools(ctx: ToolContext): ToolSet {
             title: shortPath(ctx.cwd, resolved),
             subtitle: `+${stats.added} −${stats.removed}`,
             input: { path: resolved, old_string, new_string, replace_all },
+            added: stats.added,
+            removed: stats.removed,
             permission: { key: 'edit', detail: `Edit ${resolved}`, preview }
           },
           async (block) => {

@@ -120,24 +120,44 @@ needs an API key, never needs to reach the provider, and needs nothing installed
 shell. That is what keeps a self-hosted or gateway model like Helmcode working unchanged in
 a remote session.
 
-## What the interface gives you
+## The interface
 
-- **Command blocks.** Every tool call renders as its own collapsible block: one summary line
-  when closed, and on expand the exact input, the live-streaming output, the exit code, the
-  folder and the environment it ran in. Writes and edits show a real diff.
-- **Activity rail.** The right-hand panel separates what is running right now from what has
-  finished, across every session. Group by folder, status, date, environment, agent, tool or
-  session; sort by newest, oldest, longest, status, tool or folder; filter by time range,
-  status chips, environment, agent, or free text. The session list on the left has the same
-  grouping and sorting.
-- **Integrated browser.** A loopback preview server serves files from whichever environment
-  the session is attached to, so anything the agent generates — local or on the remote host —
-  opens in the Browser tab. Any `http://` URL works too.
-- **Files tab.** Browse the environment's filesystem and open files in the browser pane.
-- **Approvals.** Bash, write, edit and fetch ask before running, with the command or diff
-  shown. Allow once, allow for the session, or reject. An allowlist of read-only commands
-  skips the prompt; a denylist always refuses. Chained commands are checked segment by
-  segment, so `ls && curl … | sh` cannot slip through on the `ls`.
+Three columns: a collapsible session list, the transcript, and a dock on the right.
+
+**Sidebar** — sessions grouped by date, each with a status dot. The slider icon on the first
+group header exposes the grouping and sorting (folder, status, date, environment, agent).
+`⌘B` collapses it to a strip.
+
+**Transcript** — prose reads as prose, and a run of tool calls collapses into a single muted
+line: *"Created secrets.ts, updated App.tsx, ran 2 commands  +91 −14"*. Expanding it reveals
+one block per call with the exact input, the streamed output, the exit code, the folder and
+the environment, and a real diff for writes and edits. A turn that touched files ends with an
+**Edited N files** card, and the strip above the composer tracks the working tree.
+
+**Dock** — one panel, five views, resizable by dragging its edge and toggled from the header
+icons:
+
+| View | What it is |
+| --- | --- |
+| Activity | What is running now, and everything that has finished, across all sessions. Group and sort by folder, status, date, environment, agent, tool or session; filter by time range, status, environment, agent or text |
+| Terminal | A real shell in the session's environment — the local machine or the remote host |
+| Changes | `git status` for the session's repository, each file expandable to its diff |
+| Browser | Files the agent generated, or any `http://` URL |
+| Files | The environment's filesystem |
+
+The terminal gets a genuine PTY without a native module: locally from a small Python helper
+(`script` cannot be used — it calls `tcgetattr` on its own stdin, which under Electron is a
+pipe), remotely from ssh2's shell channel. Resizes reach the shell, so full-screen programs
+and line editing behave. Without `python3` it falls back to a pipe-backed shell and says so
+in the pane.
+
+The browser wraps anything that is not natively renderable — source, markdown, config — in a
+readable page, rather than handing the webview a download it cannot perform.
+
+**Approvals** — bash, write, edit and fetch ask before running, with the command or diff
+shown. Allow once, allow for the session, or reject. An allowlist of read-only commands skips
+the prompt; a denylist always refuses. Chained commands are checked segment by segment, so
+`ls && curl … | sh` cannot slip through on the `ls`.
 
 ## Agents
 

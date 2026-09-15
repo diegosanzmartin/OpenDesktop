@@ -19,6 +19,49 @@ function notFound(res: import('node:http').ServerResponse, message: string): voi
   res.end(message)
 }
 
+/** Types a browser shows without being asked to download them. */
+const RENDERS_INLINE = /^(text\/html|image\/|video\/|audio\/|application\/pdf|image\/svg)/
+
+function looksBinary(buffer: Buffer): boolean {
+  const sample = buffer.subarray(0, 4096)
+  for (const byte of sample) {
+    // A NUL byte is the reliable tell; control characters alone are not.
+    if (byte === 0) return true
+  }
+  return false
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
+
+const PAGE_STYLE = `
+  :root { color-scheme: dark }
+  body { margin:0; background:#1a1918; color:#cfccc6;
+         font:12.5px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace }
+  header { position:sticky; top:0; background:#1a1918; border-bottom:1px solid #2f2d2b;
+           padding:10px 16px; font-size:11.5px; color:#8d8a84 }
+  pre { margin:0; padding:14px 16px; white-space:pre-wrap; word-break:break-word }
+  .empty { padding:24px 16px; color:#6b6862 }
+`
+
+function sourcePage(path: string, body: string): string {
+  return `<!doctype html><meta charset="utf-8"><title>${escapeHtml(path)}</title>
+<style>${PAGE_STYLE}</style>
+<header>${escapeHtml(path)}</header>
+${body.trim() ? `<pre>${escapeHtml(body)}</pre>` : '<div class="empty">(empty file)</div>'}`
+}
+
+function binaryPage(path: string, size: number): string {
+  return `<!doctype html><meta charset="utf-8"><title>${escapeHtml(path)}</title>
+<style>${PAGE_STYLE}</style>
+<header>${escapeHtml(path)}</header>
+<div class="empty">Binary file, ${(size / 1024).toFixed(1)} KB — nothing to display.</div>`
+}
+
 function directoryPage(envId: string, dir: string, entries: { name: string; directory: boolean; size: number }[]): string {
   const rows = entries
     .map((e) => {
@@ -74,11 +117,21 @@ export function startPreviewServer(): Promise<number> {
 
         const buffer = await runtime.readFileBuffer(target)
         const type = mime.getType(target) ?? 'text/plain'
-        // Render code and config as text rather than prompting a download.
-        const isText = /^(text\/|application\/(json|javascript|xml|x-sh|toml|yaml))/.test(type)
-        res.setHeader('content-type', isText ? `${type}; charset=utf-8` : type)
         res.setHeader('cache-control', 'no-store')
-        return res.end(buffer)
+
+        // Chromium only renders a handful of types inline; everything else it
+        // tries to download, which inside a webview just shows a blank page.
+        // So anything that is really text gets wrapped in a readable page.
+        if (RENDERS_INLINE.test(type)) {
+          res.setHeader('content-type', type)
+          return res.end(buffer)
+        }
+        if (looksBinary(buffer)) {
+          res.setHeader('content-type', 'text/html; charset=utf-8')
+          return res.end(binaryPage(target, buffer.length))
+        }
+        res.setHeader('content-type', 'text/html; charset=utf-8')
+        return res.end(sourcePage(target, buffer.toString('utf8')))
       } catch (err) {
         res.statusCode = 500
         res.setHeader('content-type', 'text/plain; charset=utf-8')

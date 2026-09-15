@@ -6,6 +6,7 @@ import type {
   Block,
   FileEntry,
   Message,
+  RepoChanges,
   Session
 } from '@shared/types'
 
@@ -73,6 +74,25 @@ const api = {
       ipcRenderer.invoke('fs:read', environmentId, path),
     previewUrl: (environmentId: string, path: string): Promise<string> =>
       ipcRenderer.invoke('preview:url', environmentId, path)
+  },
+  terminal: {
+    create: (input: {
+      environmentId: string
+      cwd: string
+      cols: number
+      rows: number
+    }): Promise<{ id: string; buffer: string }> => ipcRenderer.invoke('terminal:create', input),
+    write: (id: string, data: string): Promise<void> => ipcRenderer.invoke('terminal:write', id, data),
+    resize: (id: string, cols: number, rows: number): Promise<void> =>
+      ipcRenderer.invoke('terminal:resize', id, cols, rows),
+    kill: (id: string): Promise<void> => ipcRenderer.invoke('terminal:kill', id),
+    buffer: (id: string): Promise<string> => ipcRenderer.invoke('terminal:buffer', id)
+  },
+  git: {
+    changes: (environmentId: string, cwd: string): Promise<RepoChanges> =>
+      ipcRenderer.invoke('git:changes', environmentId, cwd),
+    diff: (environmentId: string, cwd: string, path: string, untracked: boolean): Promise<string> =>
+      ipcRenderer.invoke('git:diff', environmentId, cwd, path, untracked)
   },
   host: {
     pickFolder: (): Promise<string | null> => ipcRenderer.invoke('host:pickFolder'),
