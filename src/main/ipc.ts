@@ -21,6 +21,23 @@ import { previewOrigin, previewUrl } from './preview'
 import { deleteSecret, secretHint, secretStatus, setSecret } from './secrets'
 import { createTerminal, killTerminal, resizeTerminal, terminalBuffer, writeTerminal } from './terminal'
 import { readChanges, readFileDiff } from './git'
+import {
+  AGENTS_DIR,
+  agentFilePath,
+  deleteAgent,
+  importAgents,
+  importableAgents,
+  listAgents,
+  saveAgent
+} from './agents'
+import {
+  SKILLS_DIR,
+  deleteSkill,
+  importSkills,
+  importableSkills,
+  listSkills
+} from './skills'
+import { AUTO_AGENT, type AgentConfig } from '@shared/types'
 
 function broadcast(): void {
   bus.subscribe((event) => {
@@ -54,6 +71,34 @@ export function registerIpc(): void {
     return config
   })
   ipcMain.handle('config:reveal', () => shell.showItemInFolder(CONFIG_PATH))
+
+  /* ---------- agents ---------- */
+  ipcMain.handle('agents:list', () => listAgents())
+  ipcMain.handle('agents:dir', () => AGENTS_DIR)
+  ipcMain.handle('agents:save', async (_e, agent: AgentConfig) => {
+    const saved = saveAgent(agent)
+    bus.emit({ type: 'config.updated', config: rawConfig() })
+    return saved
+  })
+  ipcMain.handle('agents:delete', (_e, id: string) => {
+    deleteAgent(id)
+    bus.emit({ type: 'config.updated', config: rawConfig() })
+  })
+  ipcMain.handle('agents:reveal', (_e, id: string) => shell.showItemInFolder(agentFilePath(id)))
+  ipcMain.handle('agents:importable', () => importableAgents())
+  ipcMain.handle('agents:import', (_e, ids: string[]) => {
+    const count = importAgents(ids)
+    bus.emit({ type: 'config.updated', config: rawConfig() })
+    return count
+  })
+
+  /* ---------- skills ---------- */
+  ipcMain.handle('skills:list', () => listSkills())
+  ipcMain.handle('skills:dir', () => SKILLS_DIR)
+  ipcMain.handle('skills:delete', (_e, id: string) => deleteSkill(id))
+  ipcMain.handle('skills:reveal', () => shell.openPath(SKILLS_DIR))
+  ipcMain.handle('skills:importable', () => importableSkills())
+  ipcMain.handle('skills:import', (_e, ids: string[]) => importSkills(ids))
 
   /* ---------- secrets ---------- */
   ipcMain.handle('secrets:status', () => {
@@ -103,7 +148,7 @@ export function registerIpc(): void {
         title: input.title,
         cwd,
         environmentId,
-        agentId: input.agentId ?? Object.keys(config.agent)[0],
+        agentId: input.agentId ?? AUTO_AGENT,
         model: input.model ?? config.model
       })
     }

@@ -1,6 +1,7 @@
 import { app, BrowserWindow, shell } from 'electron'
 import { join } from 'node:path'
-import { loadConfig } from './config'
+import { loadConfig, setAgentLoader } from './config'
+import { listAgents, migrateFromConfig, seedBuiltins } from './agents'
 import { loadSecrets } from './secrets'
 import { loadShellEnvironment } from './shell-env'
 import { registerIpc } from './ipc'
@@ -80,11 +81,30 @@ void app.whenReady().then(async () => {
     console.log(`[secrets] keychain=${secrets.available} stored=${secrets.names.length}${secrets.error ? ` (${secrets.error})` : ''}`)
   }
 
+  // Agents used to live in config.json; move any that still do before the
+  // config is read, then serve them from their own files from here on.
+  const { readFileSync, existsSync } = await import('node:fs')
+  const { CONFIG_PATH } = await import('./config')
+  if (existsSync(CONFIG_PATH)) {
+    try {
+      const raw = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) as { agent?: Record<string, never> }
+      const moved = migrateFromConfig(raw.agent)
+      if (moved > 0 && process.env.OPENDESKTOP_DEBUG) {
+        console.log(`[agents] migrated ${moved} from config.json`)
+      }
+    } catch {
+      /* a broken config is reported elsewhere */
+    }
+  }
+  seedBuiltins()
+  setAgentLoader(listAgents)
+
   loadConfig()
   loadStore()
   await startPreviewServer()
   registerIpc()
   createWindow()
+
 
 
   app.on('activate', () => {

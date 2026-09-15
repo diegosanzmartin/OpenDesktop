@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
+  AgentConfig,
   AppConfig,
   AppEvent,
   ApprovalRequest,
@@ -7,7 +8,8 @@ import type {
   FileEntry,
   Message,
   RepoChanges,
-  Session
+  Session,
+  Skill
 } from '@shared/types'
 
 const api = {
@@ -20,6 +22,25 @@ const api = {
     reveal: (): Promise<void> => ipcRenderer.invoke('config:reveal'),
     keyStatus: (): Promise<Record<string, { resolved: boolean; source: string }>> =>
       ipcRenderer.invoke('host:resolvedConfigCheck')
+  },
+  agents: {
+    list: (): Promise<Record<string, AgentConfig>> => ipcRenderer.invoke('agents:list'),
+    dir: (): Promise<string> => ipcRenderer.invoke('agents:dir'),
+    save: (agent: AgentConfig): Promise<AgentConfig> => ipcRenderer.invoke('agents:save', agent),
+    remove: (id: string): Promise<void> => ipcRenderer.invoke('agents:delete', id),
+    reveal: (id: string): Promise<void> => ipcRenderer.invoke('agents:reveal', id),
+    importable: (): Promise<{ id: string; name: string; description: string }[]> =>
+      ipcRenderer.invoke('agents:importable'),
+    importFrom: (ids: string[]): Promise<number> => ipcRenderer.invoke('agents:import', ids)
+  },
+  skills: {
+    list: (): Promise<Skill[]> => ipcRenderer.invoke('skills:list'),
+    dir: (): Promise<string> => ipcRenderer.invoke('skills:dir'),
+    remove: (id: string): Promise<void> => ipcRenderer.invoke('skills:delete', id),
+    reveal: (): Promise<void> => ipcRenderer.invoke('skills:reveal'),
+    importable: (): Promise<(Skill & { alreadyHere: boolean })[]> =>
+      ipcRenderer.invoke('skills:importable'),
+    importFrom: (ids: string[]): Promise<number> => ipcRenderer.invoke('skills:import', ids)
   },
   secrets: {
     status: (): Promise<{

@@ -7,8 +7,10 @@ import type {
   Block,
   Message,
   RepoChanges,
-  Session
+  Session,
+  Skill
 } from '@shared/types'
+import { AUTO_AGENT } from '@shared/types'
 
 /** What the right-hand dock is showing. The centre column is always the chat. */
 export type DockTab = 'changes' | 'terminal' | 'browser' | 'files' | 'activity'
@@ -36,6 +38,7 @@ interface State {
   ready: boolean
   config: AppConfig | null
   models: { ref: string; label: string; provider: string }[]
+  skills: Skill[]
   keyStatus: Record<string, { resolved: boolean; source: string }>
   secrets: { available: boolean; path: string; failed: string[]; hints: Record<string, string | null> }
 
@@ -87,6 +90,7 @@ interface State {
   refreshActivity: () => Promise<void>
   refreshConfig: () => Promise<void>
   refreshSecrets: () => Promise<void>
+  refreshSkills: () => Promise<void>
   pushToast: (level: Toast['level'], message: string) => void
   dismissToast: (id: number) => void
 }
@@ -99,6 +103,7 @@ export const useStore = create<State>((set, get) => ({
   ready: false,
   config: null,
   models: [],
+  skills: [],
   keyStatus: {},
   secrets: { available: false, path: '', failed: [], hints: {} },
 
@@ -141,19 +146,32 @@ export const useStore = create<State>((set, get) => ({
   activityCollapsed: false,
 
   async bootstrap() {
-    const [config, models, sessions, approvals, activity, keyStatus, secrets] = await Promise.all([
-      api().config.get(),
-      api().models.list(),
-      api().sessions.list(),
-      api().approvals.list(),
-      api().activity.all(),
-      api().config.keyStatus(),
-      api().secrets.status()
-    ])
+    const [config, models, sessions, approvals, activity, keyStatus, secrets, skills] =
+      await Promise.all([
+        api().config.get(),
+        api().models.list(),
+        api().sessions.list(),
+        api().approvals.list(),
+        api().activity.all(),
+        api().config.keyStatus(),
+        api().secrets.status(),
+        api().skills.list()
+      ])
     const blocks: Record<string, Block> = {}
     for (const block of activity) blocks[block.id] = block
 
-    set({ config, models, sessions, approvals, activity, blocks, keyStatus, secrets, ready: true })
+    set({
+      config,
+      models,
+      sessions,
+      approvals,
+      activity,
+      blocks,
+      keyStatus,
+      secrets,
+      skills,
+      ready: true
+    })
 
     if (sessions.length > 0) await get().selectSession(sessions[0].id)
     else await get().newSession()
@@ -168,7 +186,14 @@ export const useStore = create<State>((set, get) => ({
         break
 
       case 'session.created':
-        set({ sessions: [event.session, ...state.sessions.filter((s) => s.id !== event.session.id)] })
+        set({
+          sessions: [event.session, ...state.sessions.filter((s) => s.id !== event.session.id)],
+          // A subagent's transcript is rendered inline in its parent, so start
+          // collecting its messages as they stream rather than fetching later.
+          messages: event.session.parentSessionId
+            ? { ...state.messages, [event.session.id]: [] }
+            : state.messages
+        })
         break
 
       case 'session.updated':
@@ -289,7 +314,8 @@ export const useStore = create<State>((set, get) => ({
     const session = await api().sessions.create({
       environmentId: input?.environmentId ?? 'local',
       cwd: input?.cwd,
-      agentId: input?.agentId ?? (config ? Object.keys(config.agent)[0] : undefined),
+      // No agent pinned by default: the orchestrator decides per request.
+      agentId: input?.agentId ?? AUTO_AGENT,
       model: input?.model ?? config?.model
     })
     await get().selectSession(session.id)
@@ -342,6 +368,10 @@ export const useStore = create<State>((set, get) => ({
     const blocks = { ...get().blocks }
     for (const block of activity) blocks[block.id] = block
     set({ activity, blocks })
+  },
+
+  async refreshSkills() {
+    set({ skills: await api().skills.list() })
   },
 
   async refreshSecrets() {

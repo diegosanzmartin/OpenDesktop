@@ -1,67 +1,20 @@
 import clsx from 'clsx'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { ChevronRight, TriangleAlert } from 'lucide-react'
-import type { Block, Message, MessagePart, Session } from '@shared/types'
+import type { Message, Session } from '@shared/types'
+import { AUTO_AGENT } from '@shared/types'
 import { useStore } from '../state/store'
 import { tokens } from '../lib/format'
 import { ApprovalCard } from './ApprovalCard'
 import { Composer } from './Composer'
-import { EditedFiles, ToolGroup } from './ToolGroup'
-import { Markdown } from './Markdown'
+import { EditedFiles, MessageParts } from './Transcript'
 
 const EMPTY_MESSAGES: Message[] = []
-
-function Reasoning({ text }: { text: string }): ReactNode {
-  const [open, setOpen] = useState(false)
-  return (
-    <div className="my-1">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        className="group flex items-center gap-1.5 py-[3px] text-left"
-      >
-        <span className="text-ink-500 group-hover:text-ink-300 text-[13.5px] italic">Thought for a moment</span>
-        <ChevronRight
-          className={clsx(
-            'text-ink-600 h-3.5 w-3.5 transition-transform',
-            open && 'rotate-90'
-          )}
-        />
-      </button>
-      {open ? (
-        <div className="border-ink-800 text-ink-400 mt-1 border-l pl-3 text-[13px] leading-[1.65] whitespace-pre-wrap italic">
-          {text}
-        </div>
-      ) : null}
-    </div>
-  )
-}
-
-/** Consecutive tool calls collapse into one summary line. */
-type Chunk = { kind: 'parts'; parts: MessagePart[] } | { kind: 'tools'; blocks: Block[] }
-
-function chunkParts(parts: MessagePart[], blocks: Record<string, Block>): Chunk[] {
-  const out: Chunk[] = []
-  for (const part of parts) {
-    if (part.type === 'block') {
-      const block = part.blockId ? blocks[part.blockId] : undefined
-      if (!block) continue
-      const last = out[out.length - 1]
-      if (last && last.kind === 'tools') last.blocks.push(block)
-      else out.push({ kind: 'tools', blocks: [block] })
-    } else {
-      const last = out[out.length - 1]
-      if (last && last.kind === 'parts') last.parts.push(part)
-      else out.push({ kind: 'parts', parts: [part] })
-    }
-  }
-  return out
-}
 
 function MessageRow({ message }: { message: Message }): ReactNode {
   const blocks = useStore((s) => s.blocks)
   const config = useStore((s) => s.config)
-  const agent = message.agentId ? config?.agent[message.agentId] : undefined
+  const agent =
+    message.agentId && message.agentId !== AUTO_AGENT ? config?.agent[message.agentId] : undefined
 
   if (message.role === 'user') {
     const text = message.parts.map((p) => p.text ?? '').join('')
@@ -74,7 +27,6 @@ function MessageRow({ message }: { message: Message }): ReactNode {
     )
   }
 
-  const chunks = chunkParts(message.parts, blocks)
   const allBlocks = message.parts
     .filter((p) => p.type === 'block' && p.blockId)
     .map((p) => blocks[p.blockId!])
@@ -85,38 +37,7 @@ function MessageRow({ message }: { message: Message }): ReactNode {
 
   return (
     <div>
-      {chunks.map((chunk, index) =>
-        chunk.kind === 'tools' ? (
-          <ToolGroup key={index} blocks={chunk.blocks} />
-        ) : (
-          <div key={index} className="space-y-2 py-1">
-            {chunk.parts.map((part, partIndex) => {
-              if (part.type === 'reasoning') {
-                return part.text?.trim() ? <Reasoning key={partIndex} text={part.text} /> : null
-              }
-              if (part.type === 'error') {
-                return (
-                  <div
-                    key={partIndex}
-                    className="border-bad/40 bg-bad/10 text-bad flex items-start gap-2 rounded-lg border px-3 py-2 text-[13px]"
-                  >
-                    <TriangleAlert className="mt-[3px] h-3.5 w-3.5 shrink-0" />
-                    <span className="whitespace-pre-wrap">{part.text}</span>
-                  </div>
-                )
-              }
-              // The caret belongs on the last part of a turn still in flight.
-              const streaming =
-                !message.completedAt &&
-                index === chunks.length - 1 &&
-                partIndex === chunk.parts.length - 1
-              return part.text?.trim() ? (
-                <Markdown key={partIndex} text={part.text} streaming={streaming} />
-              ) : null
-            })}
-          </div>
-        )
-      )}
+      <MessageParts message={message} />
 
       <EditedFiles blocks={allBlocks} />
 
@@ -135,7 +56,7 @@ function MessageRow({ message }: { message: Message }): ReactNode {
               </span>
             ) : null}
             {totalTokens > 0 ? <span>· {tokens(totalTokens)} tokens</span> : null}
-            {agent ? <span>· {agent.name}</span> : null}
+            <span>· {agent?.name ?? 'Auto'}</span>
           </>
         ) : (
           <span>Working…</span>

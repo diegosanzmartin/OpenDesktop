@@ -7,7 +7,9 @@
  */
 import { MockLanguageModelV4 } from 'ai/test'
 import type { LanguageModel } from 'ai'
-import { defaultConfig, loadConfig, normalizeConfig, saveConfig } from './config'
+import { defaultConfig, loadConfig, normalizeConfig, saveConfig, setAgentLoader } from './config'
+import { listAgents, parseAgentFile, saveAgent, seedBuiltins, serializeAgent } from './agents'
+import { expandSkills, listSkills } from './skills'
 import * as store from './store'
 import * as history from './history'
 import { bus } from './bus'
@@ -156,18 +158,55 @@ function replyingModel(text: string): LanguageModel {
 
 async function main(): Promise<void> {
   section('config')
-  const config = loadConfig()
+  // Agents are files now; seed the built-ins and serve them the way the app does.
+  seedBuiltins()
+  setAgentLoader(listAgents)
+  const config = loadConfig(true)
   check('config loads', Boolean(config.model), config.model)
   check('helmcode provider present', config.provider.helmcode?.npm === '@ai-sdk/openai-compatible')
   check('helmcode model present', Boolean(config.provider.helmcode?.models['glm5.3-flash']))
   check('default model ref', config.model === 'helmcode/glm5.3-flash', config.model)
   check('local environment present', config.environment.local?.kind === 'local')
   check(
-    'four default agents',
-    ['build', 'plan', 'review', 'explore'].every((id) => Boolean(config.agent[id])),
+    'the built-in agents are on disk',
+    ['build', 'plan', 'review', 'explore', 'infra', 'docs'].every((id) => Boolean(config.agent[id])),
     Object.keys(config.agent)
   )
   check('plan agent cannot write', config.agent.plan.permissions?.write === 'deny')
+  check('agents are not written into the config document', !('agent' in JSON.parse(
+    require('node:fs').readFileSync(require('./config').CONFIG_PATH, 'utf8') as string
+  )))
+
+  section('agent files')
+  const roundTrip = parseAgentFile(
+    'demo',
+    serializeAgent({
+      id: 'demo',
+      name: 'Demo',
+      description: 'A demo agent.',
+      mode: 'subagent',
+      color: '#123456',
+      temperature: 0.2,
+      tools: { write: false, edit: false, bash: true, read: true, grep: true, glob: true, list: true, fetch: true, task: true },
+      prompt: 'Body of the prompt.'
+    })
+  )
+  check('name survives a round trip', roundTrip.name === 'Demo')
+  check('mode survives a round trip', roundTrip.mode === 'subagent', roundTrip.mode)
+  check('temperature survives a round trip', roundTrip.temperature === 0.2)
+  check('the body becomes the prompt', roundTrip.prompt === 'Body of the prompt.', roundTrip.prompt)
+  check('a disallowed tool stays disallowed', roundTrip.tools?.write === false, roundTrip.tools)
+  check('an allowed tool stays allowed', roundTrip.tools?.bash === true)
+
+  // Some tools write the allow-list as a comma-separated string.
+  const claudeStyle = parseAgentFile(
+    'imported',
+    ['---', 'name: Imported', 'description: From elsewhere.', 'tools: read, grep, glob', '---', '', 'Prompt.'].join('\n')
+  )
+  check('a comma-separated tool list is understood', claudeStyle.tools?.read === true)
+  check('tools outside that list are off', claudeStyle.tools?.write === false, claudeStyle.tools)
+  check('a file with no mode defaults to usable everywhere', claudeStyle.mode === 'all')
+  check('a file with no frontmatter still yields a prompt', parseAgentFile('x', 'Just a prompt.').prompt === 'Just a prompt.')
   check('streaming is smoothed by default', config.smoothStreamMs > 0, config.smoothStreamMs)
   check(
     'a config without the key keeps the default',
@@ -224,6 +263,25 @@ async function main(): Promise<void> {
   check('the trailing port is not the name', tunnel?.workstation !== '22')
   check('quoted values are unquoted', parseGcloudCommand('gcloud workstations ssh --project="a b" w')?.project === 'a b')
   check('unrelated text is rejected', parseGcloudCommand('ls -la') === null)
+
+  section('skills')
+  const installed = listSkills()
+  console.log(`  (${installed.length} installed)`)
+  check('listing skills does not throw', Array.isArray(installed))
+  const untouched = expandSkills('no slash commands here')
+  check('a message without a mention is untouched', untouched.prompt === 'no slash commands here')
+  check('and reports no skills used', untouched.used.length === 0)
+  if (installed.length > 0) {
+    const first = installed[0]
+    const expanded = expandSkills(`/${first.id} do the thing`)
+    check('a mention is recognised', expanded.used.includes(first.id), expanded.used)
+    check('the instructions are put in front of the model', expanded.prompt.includes('<skill'))
+    check('the user text is kept', expanded.prompt.endsWith('do the thing'))
+    check(
+      'a mention inside a word is not a skill',
+      expandSkills(`path/${first.id}`).used.length === 0
+    )
+  }
 
   section('diff')
   const d = diffLines('a\nb\nc', 'a\nB\nc')
@@ -330,10 +388,11 @@ async function main(): Promise<void> {
   check('the rejection is recorded on the block', Boolean(rejected?.error))
 
   section('multi-agent (task tool spawns a subagent session)')
-  // Pin the explore agent to its own model, which also covers per-agent models.
-  const withSubModel = defaultConfig()
-  withSubModel.agent.explore = { ...withSubModel.agent.explore, model: 'mock/subagent' }
-  saveConfig(withSubModel)
+  // Pin the explore agent to its own model in its file, which also covers both
+  // per-agent models and the fact that agents are no longer part of the config.
+  const exploreAgent = listAgents().explore
+  saveAgent({ ...exploreAgent, model: 'mock/subagent' })
+  loadConfig(true)
 
   const parent = store.createSession({
     title: 'smoke-delegate',
@@ -379,6 +438,9 @@ async function main(): Promise<void> {
       ?.parts.some((p) => p.type === 'text' && (p.text ?? '').includes('reported back')) === true
   )
   check('the parent session is idle again', store.getSession(parent.id)?.status === 'idle')
+
+  saveAgent(exploreAgent)
+  loadConfig(true)
 
   if (child) {
     store.deleteSession(child.id)

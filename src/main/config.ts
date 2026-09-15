@@ -38,67 +38,6 @@ const DEFAULT_PERMISSIONS: Permissions = {
   denylist: ['rm -rf /*', ':(){*', 'mkfs*', 'dd if=*of=/dev/*', 'shutdown*', 'reboot*']
 }
 
-const BUILD_PROMPT = `You are a senior software engineer working inside OpenDesktop.
-Work directly in the user's project: read files before editing them, make the smallest
-correct change, and verify with the project's own tooling when it exists.
-Prefer the grep/glob tools over shelling out to find. Keep bash commands short and
-single-purpose so each one reads clearly as its own step.
-Answer in English.`
-
-const PLAN_PROMPT = `You are a software architect working inside OpenDesktop.
-Investigate the codebase read-only and produce a concrete implementation plan:
-the files to touch, the order of the work, and the trade-offs you rejected.
-You must not modify, create or delete files. Answer in English.`
-
-const REVIEW_PROMPT = `You are a meticulous code reviewer working inside OpenDesktop.
-Review the pending changes for correctness bugs first, then for reuse and simplification.
-Report each finding with the file, the line and a concrete failure scenario.
-You must not modify files. Answer in English.`
-
-const EXPLORE_PROMPT = `You are a read-only research agent. Locate the relevant code and
-report a tight summary with file:line references. Do not modify anything. Answer in English.`
-
-const DEFAULT_AGENTS: Record<string, AgentConfig> = {
-  build: {
-    id: 'build',
-    name: 'Build',
-    description: 'Full-access agent that reads, writes and runs commands.',
-    mode: 'primary',
-    prompt: BUILD_PROMPT,
-    color: '#d97757'
-  },
-  plan: {
-    id: 'plan',
-    name: 'Plan',
-    description: 'Read-only architect that designs the change before any code is written.',
-    mode: 'primary',
-    prompt: PLAN_PROMPT,
-    tools: { write: false, edit: false, bash: true },
-    permissions: { write: 'deny', edit: 'deny' },
-    color: '#6a9bcc'
-  },
-  review: {
-    id: 'review',
-    name: 'Review',
-    description: 'Read-only reviewer that hunts correctness bugs in the current diff.',
-    mode: 'all',
-    prompt: REVIEW_PROMPT,
-    tools: { write: false, edit: false },
-    permissions: { write: 'deny', edit: 'deny' },
-    color: '#b08cc4'
-  },
-  explore: {
-    id: 'explore',
-    name: 'Explore',
-    description: 'Fast read-only search agent for locating code across many files.',
-    mode: 'subagent',
-    prompt: EXPLORE_PROMPT,
-    tools: { write: false, edit: false, task: false },
-    permissions: { write: 'deny', edit: 'deny' },
-    color: '#7fa88b'
-  }
-}
-
 const DEFAULT_PROVIDERS: Record<string, ProviderConfig> = {
   helmcode: {
     id: 'helmcode',
@@ -124,7 +63,7 @@ export function defaultConfig(): AppConfig {
     model: 'helmcode/glm5.3-flash',
     provider: DEFAULT_PROVIDERS,
     environment: DEFAULT_ENVIRONMENTS,
-    agent: DEFAULT_AGENTS,
+    agent: {},
     permissions: DEFAULT_PERMISSIONS,
     maxSteps: 60,
     smoothStreamMs: 10,
@@ -211,13 +150,16 @@ export function normalizeConfig(raw: Record<string, unknown>): AppConfig {
   }
   if (!merged.environment.local) merged.environment.local = DEFAULT_ENVIRONMENTS.local
 
-  const rawAgents = (raw.agent as Record<string, Partial<AgentConfig>>) ?? base.agent
+  // Agents are files on disk now, not part of this document. The loader fills
+  // them in; normalizeConfig is also used by tests with no agent directory, so
+  // a caller-supplied set is still honoured.
+  const rawAgents = (raw.agent as Record<string, Partial<AgentConfig>> | undefined) ?? {}
   for (const [id, a] of Object.entries(rawAgents)) {
     merged.agent[id] = {
       id,
       name: a.name ?? id,
       description: a.description ?? '',
-      mode: a.mode ?? 'primary',
+      mode: a.mode ?? 'all',
       model: a.model,
       prompt: a.prompt,
       temperature: a.temperature,
@@ -226,9 +168,15 @@ export function normalizeConfig(raw: Record<string, unknown>): AppConfig {
       color: a.color
     }
   }
-  if (Object.keys(merged.agent).length === 0) merged.agent = DEFAULT_AGENTS
 
   return merged
+}
+
+/** Injected by the agent store so config loading keeps no import cycle. */
+let agentLoader: (() => Record<string, AgentConfig>) | null = null
+
+export function setAgentLoader(fn: () => Record<string, AgentConfig>): void {
+  agentLoader = fn
 }
 
 let cached: AppConfig | null = null
@@ -248,6 +196,7 @@ export function loadConfig(force = false): AppConfig {
     cached = defaultConfig()
     cached.$schema = `invalid config at ${CONFIG_PATH}: ${(err as Error).message}`
   }
+  if (agentLoader) cached.agent = agentLoader()
   return cached
 }
 
@@ -263,8 +212,11 @@ export function rawConfig(): AppConfig {
 
 export function saveConfig(next: AppConfig): AppConfig {
   mkdirSync(dirname(CONFIG_PATH), { recursive: true })
-  writeFileSync(CONFIG_PATH, JSON.stringify(next, null, 2), 'utf8')
-  cached = normalizeConfig(next as unknown as Record<string, unknown>)
+  // Agents are not written here; they have their own files.
+  const { agent: _agent, ...document } = next
+  writeFileSync(CONFIG_PATH, JSON.stringify(document, null, 2), 'utf8')
+  cached = normalizeConfig(document as unknown as Record<string, unknown>)
+  if (agentLoader) cached.agent = agentLoader()
   return cached
 }
 
@@ -279,7 +231,8 @@ export function writeConfigText(text: string): AppConfig {
   mkdirSync(dirname(CONFIG_PATH), { recursive: true })
   writeFileSync(CONFIG_PATH, text, 'utf8')
   cached = normalized
-  return normalized
+  if (agentLoader) cached.agent = agentLoader()
+  return cached
 }
 
 export function effectivePermissions(config: AppConfig, agentId: string): Permissions {

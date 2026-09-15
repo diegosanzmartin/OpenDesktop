@@ -1,7 +1,8 @@
 import clsx from 'clsx'
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ArrowUp, ChevronDown, FolderOpen, Square } from 'lucide-react'
-import type { Session } from '@shared/types'
+import type { Session, Skill } from '@shared/types'
+import { AUTO_AGENT } from '@shared/types'
 import { useStore } from '../state/store'
 import { folderName, shortenPath } from '../lib/format'
 
@@ -69,6 +70,56 @@ function ChangesBar({ session }: { session: Session }): ReactNode {
   )
 }
 
+/** The `/` menu. Filters as you type and inserts the skill's id. */
+function SkillMenu({
+  skills,
+  query,
+  active,
+  onPick
+}: {
+  skills: Skill[]
+  query: string
+  active: number
+  onPick: (skill: Skill) => void
+}): ReactNode {
+  if (skills.length === 0) {
+    return (
+      <div className="border-ink-700 bg-ink-850 absolute bottom-full left-0 mb-2 w-full rounded-lg border px-3 py-2 shadow-2xl">
+        <span className="text-ink-500 text-[12px]">
+          {query
+            ? `No skill matches “${query}”.`
+            : 'No skills yet — import them from Settings → Skills.'}
+        </span>
+      </div>
+    )
+  }
+
+  return (
+    <div className="border-ink-700 bg-ink-850 absolute bottom-full left-0 mb-2 max-h-72 w-full overflow-y-auto rounded-lg border p-1 shadow-2xl">
+      {skills.map((skill, index) => (
+        <button
+          key={skill.id}
+          type="button"
+          onMouseDown={(event) => {
+            // mousedown, not click: the textarea must not lose focus first.
+            event.preventDefault()
+            onPick(skill)
+          }}
+          className={clsx(
+            'flex w-full flex-col items-start gap-0.5 rounded-md px-2.5 py-1.5 text-left',
+            index === active ? 'bg-ink-800' : 'hover:bg-ink-800/60'
+          )}
+        >
+          <span className="text-ink-100 font-mono text-[12.5px]">/{skill.id}</span>
+          {skill.description ? (
+            <span className="text-ink-500 line-clamp-2 text-[11.5px]">{skill.description}</span>
+          ) : null}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 export function Composer({ session }: { session: Session }): ReactNode {
   const [text, setText] = useState('')
   const config = useStore((s) => s.config)
@@ -76,18 +127,60 @@ export function Composer({ session }: { session: Session }): ReactNode {
   const send = useStore((s) => s.send)
   const stop = useStore((s) => s.stop)
 
+  const skills = useStore((s) => s.skills)
+  const area = useRef<HTMLTextAreaElement>(null)
+  const [menuAt, setMenuAt] = useState<number | null>(null)
+  const [active, setActive] = useState(0)
+
+  // The menu is open while the caret sits in a `/word` at the start of a line.
+  const query = menuAt === null ? '' : text.slice(menuAt + 1).split(/\s/)[0] ?? ''
+  const matches = useMemo(() => {
+    if (menuAt === null) return []
+    const needle = query.toLowerCase()
+    return skills
+      .filter(
+        (skill) =>
+          !needle ||
+          skill.id.toLowerCase().includes(needle) ||
+          skill.name.toLowerCase().includes(needle)
+      )
+      .slice(0, 8)
+  }, [skills, query, menuAt])
+
+  const syncMenu = (value: string, caret: number): void => {
+    const before = value.slice(0, caret)
+    const match = /(^|\n)\/([\w-]*)$/.exec(before)
+    setMenuAt(match ? caret - match[2].length - 1 : null)
+    setActive(0)
+  }
+
+  const insertSkill = (skill: Skill): void => {
+    if (menuAt === null) return
+    const caret = area.current?.selectionStart ?? text.length
+    const next = `${text.slice(0, menuAt)}/${skill.id} ${text.slice(caret)}`
+    setText(next)
+    setMenuAt(null)
+    queueMicrotask(() => {
+      const position = menuAt + skill.id.length + 2
+      area.current?.focus()
+      area.current?.setSelectionRange(position, position)
+    })
+  }
+
   const busy = session.status === 'running' || session.status === 'awaiting-approval'
   const primaryAgents = Object.values(config?.agent ?? {}).filter(
     (a) => a.mode === 'primary' || a.mode === 'all'
   )
   const environments = Object.values(config?.environment ?? {})
   const agent = config?.agent[session.agentId]
+  const isAuto = session.agentId === AUTO_AGENT
   const model = models.find((m) => m.ref === session.model)
 
   const submit = (): void => {
     const value = text.trim()
     if (!value || busy) return
     setText('')
+    setMenuAt(null)
     void send(value)
   }
 
@@ -100,13 +193,40 @@ export function Composer({ session }: { session: Session }): ReactNode {
       <div className="mx-auto max-w-[760px]">
         <ChangesBar session={session} />
 
-        <div className="border-ink-700 bg-ink-850 focus-within:border-ink-600 flex items-end gap-2 rounded-2xl border px-3.5 py-2.5">
+        <div className="border-ink-700 bg-ink-850 focus-within:border-ink-600 relative flex items-end gap-2 rounded-2xl border px-3.5 py-2.5">
+          {menuAt !== null ? (
+            <SkillMenu skills={matches} query={query} active={active} onPick={insertSkill} />
+          ) : null}
           <textarea
+            ref={area}
             value={text}
             rows={1}
-            placeholder="Type your message…"
-            onChange={(event) => setText(event.target.value)}
+            placeholder="Type your message, or / for a skill…"
+            onChange={(event) => {
+              setText(event.target.value)
+              syncMenu(event.target.value, event.target.selectionStart ?? 0)
+            }}
+            onClick={(event) => syncMenu(text, event.currentTarget.selectionStart ?? 0)}
+            onBlur={() => setMenuAt(null)}
             onKeyDown={(event) => {
+              if (menuAt !== null && matches.length > 0) {
+                if (event.key === 'ArrowDown') {
+                  event.preventDefault()
+                  return setActive((index) => (index + 1) % matches.length)
+                }
+                if (event.key === 'ArrowUp') {
+                  event.preventDefault()
+                  return setActive((index) => (index - 1 + matches.length) % matches.length)
+                }
+                if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey)) {
+                  event.preventDefault()
+                  return insertSkill(matches[active])
+                }
+              }
+              if (event.key === 'Escape' && menuAt !== null) {
+                event.preventDefault()
+                return setMenuAt(null)
+              }
               if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault()
                 submit()
@@ -151,8 +271,18 @@ export function Composer({ session }: { session: Session }): ReactNode {
             title="Agent"
             value={session.agentId}
             onChange={(agentId) => patch({ agentId })}
-            options={primaryAgents.map((a) => ({ value: a.id, label: a.name }))}
+            options={[
+              { value: AUTO_AGENT, label: 'Auto' },
+              ...primaryAgents.map((a) => ({ value: a.id, label: a.name }))
+            ]}
           />
+          {isAuto ? (
+            <span className="text-ink-600 text-[11.5px]">splits the work across specialists</span>
+          ) : agent?.description ? (
+            <span className="text-ink-600 max-w-[280px] truncate text-[11.5px]">
+              {agent.description}
+            </span>
+          ) : null}
 
           <Picker
             title="Environment"

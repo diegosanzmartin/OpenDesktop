@@ -95,6 +95,22 @@ export interface AgentConfig {
   color?: string
 }
 
+export interface Skill {
+  id: string
+  name: string
+  description: string
+  /** Directory on disk, so instructions can point the agent at its own files. */
+  path: string
+  files: string[]
+  instructions: string
+}
+
+/**
+ * The session is not pinned to one agent: an orchestrator splits the request
+ * into tasks and picks an agent for each.
+ */
+export const AUTO_AGENT = 'auto'
+
 export interface AppConfig {
   $schema?: string
   model: string
@@ -178,6 +194,8 @@ export interface Session {
   usage: { input: number; output: number; cost: number }
   /** Parent session when this was spawned by a `task` tool call. */
   parentSessionId?: string
+  /** Short label for a subagent session, shown on its subchat. */
+  taskLabel?: string
   archived?: boolean
 }
 

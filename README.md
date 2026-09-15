@@ -222,23 +222,49 @@ the prompt; a denylist always refuses. Chained commands are checked segment by s
 
 ## Agents
 
-Agents are config entries. Each can carry its own model, system prompt, temperature, tool
-set and permissions. Four ship by default:
+Agents live one per file in `~/.config/opendesktop/agents`, as markdown with a YAML header —
+the same shape other agent tools use, so a file written for either works in
+both and importing is a copy rather than a conversion:
 
-| Agent | Mode | Notes |
-| --- | --- | --- |
-| Build | primary | Full access |
-| Plan | primary | Read-only architect; write and edit denied |
-| Review | all | Read-only reviewer; usable as a subagent |
-| Explore | subagent | Fast read-only search |
+```markdown
+---
+name: Infrastructure
+description: Terraform and cloud infrastructure — the orchestrator picks by this line.
+mode: all
+tools: bash, read, grep, glob, list
+model: helmcode/glm5.3-flash
+color: "#d3a84c"
+---
+
+You are an infrastructure engineer working with Terraform…
+```
 
 `mode` decides where an agent appears: `primary` in the composer picker, `subagent` to the
-`task` tool, `all` in both. A primary agent can delegate with `task` — the subagent gets its
-own session, its own transcript and its own model, and its blocks show up in the activity
-rail tagged with its name. Independent subagents launched in one step run in parallel.
-Nesting is capped at two levels.
+`task` tool, `all` in both. `tools` is an allow-list; anything omitted is switched off.
+Six ship by default — Build, Plan, Review, Explore, Infrastructure and Docs — and each can be
+edited from **Settings → Agents**, which also imports from `~/.claude/agents`. An install that
+still had agents inside `config.json` has them moved into files on first run.
 
-The agent and model can be switched mid-session from the composer.
+### Auto
+
+A session starts with no agent pinned. The lead sizes the request: one coherent job it does
+itself, because delegating a small change costs a round trip and the subagent cannot see the
+conversation; genuinely separable pieces it splits, calling `task` once per piece in the same
+step so they run in parallel; work with a dependency it runs in order.
+
+Each delegation renders in the transcript as its own subchat — the brief it was given, the
+tools it ran and what it reported — so a subagent's work is inspectable rather than a summary
+you have to take on faith. Its blocks also appear in the Activity dock tagged with its name.
+Nesting is capped at two levels. Picking a specific agent from the composer turns all of this
+off and talks to that agent directly.
+
+## Skills
+
+Skills are folders holding a `SKILL.md`, the layout these folders share. Type `/` in the
+composer to search them; the instructions are put in front of the model for that request
+while the transcript keeps what you typed. **Settings → Skills** imports from
+`~/.claude/skills` — the whole folder travels, so a skill's references and scripts come with
+it.
 
 ## Layout
 

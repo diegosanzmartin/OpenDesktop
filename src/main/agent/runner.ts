@@ -1,5 +1,5 @@
 import { smoothStream, stepCountIs, streamText, type ModelMessage } from 'ai'
-import type { AgentConfig, AppConfig, Message } from '@shared/types'
+import { AUTO_AGENT, type AgentConfig, type AppConfig, type Message } from '@shared/types'
 import { effectivePermissions, resolvedConfig } from '../config'
 import { bus } from '../bus'
 import { cancelSessionApprovals } from '../approvals'
@@ -8,6 +8,7 @@ import { getRuntime } from '../runtime'
 import * as store from '../store'
 import * as history from '../history'
 import { createTools, type ToolContext } from './tools'
+import { expandSkills } from '../skills'
 
 const controllers = new Map<string, AbortController>()
 
@@ -20,6 +21,54 @@ export function stop(sessionId: string): void {
   controllers.get(sessionId)?.abort()
   controllers.delete(sessionId)
   store.setSessionStatus(sessionId, 'idle')
+}
+
+/**
+ * The default when no agent is pinned. It does the work itself when the request
+ * is one job, and splits it across specialists when it genuinely is several —
+ * the distinction matters, because delegating a one-line change costs a round
+ * trip and loses the conversation's context.
+ */
+function orchestrator(config: AppConfig): AgentConfig {
+  const roster = Object.values(config.agent)
+    .filter((a) => a.mode === 'subagent' || a.mode === 'all')
+    .map((a) => `- ${a.id}: ${a.description || a.name}`)
+    .join('\n')
+
+  return {
+    id: AUTO_AGENT,
+    name: 'Auto',
+    description: 'Splits the request across specialist agents when that helps.',
+    mode: 'primary',
+    color: '#d97757',
+    prompt: `You are the lead engineer on this session. You decide how the work gets done.
+
+# Specialists you can delegate to
+${roster || '(none configured)'}
+
+# How to decide
+Start by sizing the request.
+
+- One coherent job, or anything that needs the thread of this conversation: do it
+  yourself with your own tools. Delegating a small change costs a round trip and
+  the subagent cannot see what was said here.
+- Genuinely separable pieces — different parts of the system, different skills,
+  or work that would otherwise be done one after another for no reason: split it.
+  Say in one short line how you are splitting it and why, then call \`task\` once per
+  piece **in the same step** so they run in parallel.
+- Work that must happen in order: run the first stage, read what came back, then
+  start the next. Do not launch a task that depends on another task's output.
+
+Pick the agent whose description actually matches the piece. A subagent starts
+with no memory of this conversation, so its prompt must stand alone: say what to
+do, where, and what to report back.
+
+When the subagents return, you own the result. Read their reports, reconcile
+anything that conflicts, verify what matters, and give the user one answer —
+not a list of what each agent said.
+
+Answer in English.`
+  }
 }
 
 function systemPrompt(agent: AgentConfig, input: {
@@ -77,11 +126,20 @@ export async function runTurn(input: TurnInput): Promise<string> {
   if (controllers.has(session.id)) throw new Error('This session is already running.')
 
   const config = resolvedConfig()
-  const agent = config.agent[session.agentId] ?? Object.values(config.agent)[0]
+  const agent =
+    session.agentId === AUTO_AGENT || !config.agent[session.agentId]
+      ? orchestrator(config)
+      : config.agent[session.agentId]
   const controller = new AbortController()
   controllers.set(session.id, controller)
 
-  store.addMessage({ sessionId: session.id, role: 'user', parts: [{ type: 'text', text: input.userText }] })
+  // The transcript keeps what the user typed; the model gets the skills it named.
+  const expanded = expandSkills(input.userText)
+  store.addMessage({
+    sessionId: session.id,
+    role: 'user',
+    parts: [{ type: 'text', text: input.userText }]
+  })
   if (session.title === 'New session') {
     store.updateSession(session.id, {
       title: input.userText.replace(/\s+/g, ' ').slice(0, 70) || 'New session'
@@ -126,6 +184,7 @@ export async function runTurn(input: TurnInput): Promise<string> {
           model: config.agent[agentId]?.model ?? session.model,
           parentSessionId: session.id
         })
+        store.updateSession(child.id, { taskLabel: description })
         const report = await runTurn({
           sessionId: child.id,
           userText: prompt,
@@ -141,9 +200,9 @@ export async function runTurn(input: TurnInput): Promise<string> {
 
     const messages: ModelMessage[] = [
       ...history.getHistory(session.id),
-      { role: 'user', content: input.userText }
+      { role: 'user', content: expanded.prompt }
     ]
-    history.appendHistory(session.id, [{ role: 'user', content: input.userText }])
+    history.appendHistory(session.id, [{ role: 'user', content: expanded.prompt }])
 
     const result = streamText({
       model: resolved.model,
