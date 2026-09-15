@@ -292,6 +292,12 @@ export async function runTurn(input: TurnInput): Promise<string> {
 
     let textPartIndex = -1
     let reasoningPartIndex = -1
+    // Accumulated as each step reports it, so the transcript can show a real
+    // count while the turn is still going rather than an estimate from
+    // characters. Input is summed across steps because every step resends the
+    // conversation, which is what the turn actually costs.
+    let usedInput = 0
+    let usedOutput = 0
 
     for await (const part of result.fullStream) {
       if (controller.signal.aborted) break
@@ -309,6 +315,14 @@ export async function runTurn(input: TurnInput): Promise<string> {
             reasoningPartIndex = store.pushPart(session.id, assistant.id, { type: 'reasoning', text: '' })
           }
           store.appendPartText(session.id, assistant.id, reasoningPartIndex, part.text)
+          break
+        }
+        case 'finish-step': {
+          usedInput += part.usage.inputTokens ?? 0
+          usedOutput += part.usage.outputTokens ?? 0
+          store.updateMessage(session.id, assistant.id, {
+            usage: { input: usedInput, output: usedOutput }
+          })
           break
         }
         case 'tool-call':

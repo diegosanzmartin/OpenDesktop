@@ -1,10 +1,11 @@
 import clsx from 'clsx'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { FileText } from 'lucide-react'
-import type { Attachment, Message, Session } from '@shared/types'
+import type { Attachment, Block, Message, Session } from '@shared/types'
 import { AUTO_AGENT } from '@shared/types'
 import { useStore } from '../state/store'
 import { tokens } from '../lib/format'
+import { activityOf, duration, tokenRate } from '@shared/progress'
 import { ApprovalCard } from './ApprovalCard'
 import { Composer } from './Composer'
 import { EditedFiles, MessageParts } from './Transcript'
@@ -80,36 +81,63 @@ function MessageRow({ message }: { message: Message }): ReactNode {
     .map((p) => blocks[p.blockId!])
     .filter(Boolean)
 
-  const elapsed = message.completedAt ? Math.round((message.completedAt - message.createdAt) / 1000) : null
-  const totalTokens = (message.usage?.input ?? 0) + (message.usage?.output ?? 0)
-
   return (
     <div>
       <MessageParts message={message} />
 
       <EditedFiles blocks={allBlocks} />
 
-      <div className="text-ink-600 mt-2 flex items-center gap-2 text-[11.5px]">
-        <span
-          className={clsx('text-[13px]', !message.completedAt && 'animate-pulse')}
-          style={{ color: agent?.color ?? 'var(--color-brand)' }}
-        >
-          ✳
-        </span>
-        {message.completedAt ? (
-          <>
-            {elapsed !== null ? (
-              <span>
-                {elapsed >= 60 ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s` : `${elapsed}s`}
-              </span>
-            ) : null}
-            {totalTokens > 0 ? <span>· {tokens(totalTokens)} tokens</span> : null}
-            <span>· {agent?.name ?? 'Auto'}</span>
-          </>
-        ) : (
-          <span>Working…</span>
-        )}
-      </div>
+      <StatusLine message={message} blocks={allBlocks} agentColor={agent?.color} agentName={agent?.name} />
+    </div>
+  )
+}
+
+/**
+ * The line under an assistant turn. While it runs it ticks: elapsed, the tokens
+ * reported so far, the rate, and what it is doing. When it ends it settles into
+ * the totals.
+ */
+function StatusLine({
+  message,
+  blocks,
+  agentColor,
+  agentName
+}: {
+  message: Message
+  blocks: Block[]
+  agentColor?: string
+  agentName?: string
+}): ReactNode {
+  const done = Boolean(message.completedAt)
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (done) return
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [done])
+
+  const seconds = Math.max(
+    0,
+    Math.round(((message.completedAt ?? now) - message.createdAt) / 1000)
+  )
+  const output = message.usage?.output ?? 0
+  const total = (message.usage?.input ?? 0) + output
+  // Only once there is enough of both for the number to mean anything.
+  const rate = done ? null : tokenRate(output, seconds)
+
+  return (
+    <div className="text-ink-600 mt-2 flex flex-wrap items-center gap-x-2 text-[11.5px]">
+      <span
+        className={clsx('text-[13px]', !done && 'animate-pulse')}
+        style={{ color: agentColor ?? 'var(--color-brand)' }}
+      >
+        ✳
+      </span>
+      <span>{duration(seconds)}</span>
+      {total > 0 ? <span>· {tokens(total)} tokens</span> : null}
+      {rate !== null ? <span>· {rate} tok/s</span> : null}
+      <span>· {done ? (agentName ?? 'Auto') : activityOf(message, blocks)}</span>
     </div>
   )
 }

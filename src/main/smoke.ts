@@ -36,7 +36,8 @@ import { diffLines, renderDiff } from './diff'
 import { decide, matchesAny, splitCommand } from './approvals'
 import { parseGcloudCommand } from '@shared/gcloud'
 import { filterSessions, groupSessions, nestSubtasks, sortSessions, splitPinned } from '@shared/sessions'
-import type { Board, Session, SessionQuery } from '@shared/types'
+import { activityOf, duration, tokenRate } from '@shared/progress'
+import type { Block, Board, Message, Session, SessionQuery } from '@shared/types'
 import {
   columnForStatus,
   columnOfKind,
@@ -824,6 +825,65 @@ async function main(): Promise<void> {
       'every session lands in exactly one group',
       byFolder.reduce((sum, g) => sum + g.items.length, 0) === 5
     )
+  }
+
+  section('live turn status')
+  {
+    const msg = (parts: { type: string; text?: string; blockId?: string }[]): Message =>
+      ({ id: 'm', sessionId: 's', role: 'assistant', parts, createdAt: 0 }) as Message
+    const blk = (tool: string, status: string): Block =>
+      ({ id: tool + status, tool, status }) as Block
+
+    check(
+      'a running tool is named, not called "working"',
+      activityOf(msg([]), [blk('bash', 'running')]) === 'Running a command…',
+      activityOf(msg([]), [blk('bash', 'running')])
+    )
+    check(
+      'each tool gets its own phrasing',
+      activityOf(msg([]), [blk('read', 'running')]) === 'Reading a file…' &&
+        activityOf(msg([]), [blk('grep', 'running')]) === 'Searching…' &&
+        activityOf(msg([]), [blk('task', 'running')]) === 'Waiting on a subagent…'
+    )
+    check(
+      'an unknown tool still says something true',
+      activityOf(msg([]), [blk('mystery', 'running')]) === 'Running a tool…'
+    )
+    check(
+      'several at once are reported together',
+      activityOf(msg([]), [blk('bash', 'running'), blk('read', 'running')]) === 'Running tools…'
+    )
+    check(
+      'a pending tool counts as running, since it is about to',
+      activityOf(msg([]), [blk('bash', 'pending')]) === 'Running a command…'
+    )
+    check(
+      'anything waiting on a person outranks the rest',
+      activityOf(msg([{ type: 'text', text: 'hi' }]), [
+        blk('bash', 'running'),
+        blk('write', 'awaiting-approval')
+      ]) === 'Waiting for approval'
+    )
+    check(
+      'streaming prose reads as writing',
+      activityOf(msg([{ type: 'text', text: 'hello' }]), []) === 'Writing…'
+    )
+    check(
+      'streaming reasoning reads as thinking',
+      activityOf(msg([{ type: 'reasoning', text: 'hmm' }]), []) === 'Thinking…'
+    )
+    check(
+      'between steps it falls back, rather than guessing',
+      activityOf(msg([{ type: 'block', blockId: 'b' }]), [blk('bash', 'success')]) === 'Working…'
+    )
+
+    check('seconds read as seconds', duration(45) === '45s')
+    check('and minutes as minutes', duration(187) === '3m 7s')
+    check('a round minute keeps its zero seconds', duration(120) === '2m 0s')
+
+    check('a rate needs enough seconds to mean anything', tokenRate(400, 1) === null)
+    check('and needs tokens behind it', tokenRate(0, 60) === null)
+    check('otherwise it is output over elapsed', tokenRate(760, 200) === 4)
   }
 
   /* ---------- the board ---------- */
