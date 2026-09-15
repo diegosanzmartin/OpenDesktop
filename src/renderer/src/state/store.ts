@@ -71,6 +71,8 @@ interface State {
   boards: Board[]
   /** The card open as a chat beside the board. */
   boardTaskId: string | null
+  /** The row whose title is being edited in place, from the session menu. */
+  renamingSessionId: string | null
   /** Null means the overview: every card from every board. */
   activeBoardId: string | null
   /** Block ids expanded in the transcript. */
@@ -99,6 +101,7 @@ interface State {
   setView: (view: AppView) => void
   selectBoard: (id: string | null) => void
   closeTask: () => void
+  startRename: (id: string | null) => void
   refreshBoards: () => Promise<void>
   openTask: (sessionId: string) => Promise<void>
   setActivityQuery: (patch: Partial<ActivityQuery>) => void
@@ -169,6 +172,7 @@ export const useStore = create<State>((set, get) => ({
   view: 'chat',
   boards: [],
   boardTaskId: null,
+  renamingSessionId: null,
   activeBoardId: null,
 
   async bootstrap() {
@@ -461,6 +465,7 @@ export const useStore = create<State>((set, get) => ({
   },
 
   closeTask: () => set({ boardTaskId: null }),
+  startRename: (renamingSessionId) => set({ renamingSessionId }),
 
   setActivityQuery: (patch) => set({ activityQuery: { ...get().activityQuery, ...patch } }),
   setBrowserUrl: (browserUrl) => set({ browserUrl }),

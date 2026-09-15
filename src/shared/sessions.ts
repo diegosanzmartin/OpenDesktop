@@ -169,3 +169,20 @@ export function nestSubtasks(rows: Session[]): ListRow[] {
   for (const root of roots) walk(root, 0)
   return out
 }
+
+/**
+ * Pinned sessions, and the rest.
+ *
+ * Pinning outranks the grouping rather than sorting within it: the point of
+ * pinning something is that you stop having to look for it, which a "Today"
+ * heading three groups down would undo.
+ */
+export function splitPinned(sessions: Session[]): { pinned: Session[]; rest: Session[] } {
+  const pinned: Session[] = []
+  const rest: Session[] = []
+  for (const session of sessions) {
+    if (session.pinned) pinned.push(session)
+    else rest.push(session)
+  }
+  return { pinned, rest }
+}

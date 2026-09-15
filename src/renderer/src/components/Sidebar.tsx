@@ -6,13 +6,15 @@ import {
   Plus,
   Search,
   GitBranch,
-  Settings as SettingsIcon,
-  Trash2
+  Pin,
+  Settings as SettingsIcon
 } from 'lucide-react'
 import type { Session } from '@shared/types'
 import { useStore } from '../state/store'
 import { filterSessions, groupSessions, sortSessions } from '../lib/group'
-import { nestSubtasks } from '@shared/sessions'
+import { nestSubtasks, splitPinned } from '@shared/sessions'
+import { SessionMenu } from './SessionMenu'
+import { EditableTitle } from './EditableTitle'
 import { SessionFilters } from './SessionFilters'
 import { ViewSwitcher } from './ViewSwitcher'
 import { BoardList } from './BoardList'
@@ -50,6 +52,48 @@ function SessionDot({ status }: { status: Session['status'] }): ReactNode {
     return <span className="bg-bad h-[7px] w-[7px] shrink-0 rounded-full" />
   }
   return <span className="border-ink-600 h-[7px] w-[7px] shrink-0 rounded-full border" />
+}
+
+/** One session in the list: its state, its title, and everything you can do to it. */
+function SessionRow({ session, depth }: { session: Session; depth: number }): ReactNode {
+  const activeId = useStore((s) => s.activeSessionId)
+  const select = useStore((s) => s.selectSession)
+  const showGit = useStore((s) => s.sessionQuery.showGitStatus)
+  const renaming = useStore((s) => s.renamingSessionId === session.id)
+  const startRename = useStore((s) => s.startRename)
+
+  return (
+    <div
+      onClick={() => void select(session.id)}
+      style={depth > 0 ? { paddingLeft: 8 + depth * 12 } : undefined}
+      className={clsx(
+        'group flex cursor-pointer items-center gap-2 rounded-md px-2 py-[5px]',
+        session.id === activeId ? 'bg-ink-800 text-ink-100' : 'text-ink-300 hover:bg-ink-850'
+      )}
+    >
+      {/* A subtask is marked as one so the indent is not the only clue. */}
+      {depth > 0 ? <span className="bg-ink-700 -ml-1 h-3 w-px shrink-0" aria-hidden /> : null}
+      <SessionDot status={session.status} />
+
+      {renaming ? (
+        <EditableTitle
+          autoEdit
+          value={session.title}
+          onDone={() => startRename(null)}
+          onCommit={(title) => void window.opendesktop.sessions.update(session.id, { title })}
+          inputClassName="min-w-0 flex-1 text-[13px]"
+        />
+      ) : (
+        <span className="min-w-0 flex-1 truncate text-[13px]">
+          {session.taskLabel ?? session.title}
+        </span>
+      )}
+
+      {session.pinned ? <Pin className="text-ink-600 h-2.5 w-2.5 shrink-0" /> : null}
+      {showGit ? <GitChip session={session} /> : null}
+      <SessionMenu session={session} />
+    </div>
+  )
 }
 
 function NavItem({
@@ -106,10 +150,13 @@ export function Sidebar(): ReactNode {
     [config]
   )
 
-  const groups = useMemo(
-    () => groupSessions(sortSessions(filterSessions(sessions, query), query.sortBy), query, labels),
-    [sessions, query, labels]
-  )
+  // Pinned rows are hoisted out before grouping: pinning is for not having to
+  // look, which a heading three groups down would undo.
+  const { pinned, groups } = useMemo(() => {
+    const ordered = sortSessions(filterSessions(sessions, query), query.sortBy)
+    const split = splitPinned(ordered)
+    return { pinned: split.pinned, groups: groupSessions(split.rest, query, labels) }
+  }, [sessions, query, labels])
 
   useEffect(() => {
     if (showGit) void refreshGit()
@@ -217,56 +264,41 @@ export function Sidebar(): ReactNode {
       <div className="min-h-0 flex-1 overflow-y-auto px-2.5 pb-3">
         {view === 'board' ? (
           <BoardList />
-        ) : groups.length === 0 ? (
+        ) : groups.length === 0 && pinned.length === 0 ? (
           <div className="text-ink-600 px-1 py-4 text-[12px]">No sessions match this filter.</div>
         ) : (
-          groups.map((group, groupIndex) => (
+          <>
+            {pinned.length > 0 ? (
+              <div className="mb-1">
+                <div className="flex items-center gap-1 px-1 pb-1 pt-3">
+                  <span className="text-ink-500 text-[11.5px]">Pinned</span>
+                  <div className="ml-auto">
+                    <SessionFilters />
+                  </div>
+                </div>
+                {nestSubtasks(pinned).map(({ session, depth }) => (
+                  <SessionRow key={session.id} session={session} depth={depth} />
+                ))}
+              </div>
+            ) : null}
+            {groups.map((group, groupIndex) => (
             <div key={group.key} className="mb-1">
               <div className="flex items-center gap-1 px-1 pb-1 pt-3">
                 <span className="text-ink-500 text-[11.5px]">{group.label || 'Sessions'}</span>
-                {groupIndex === 0 ? (
+                {/* The filter sits in the first heading shown, whichever it is. */}
+                {groupIndex === 0 && pinned.length === 0 ? (
                   <div className="ml-auto">
                     <SessionFilters />
                   </div>
                 ) : null}
               </div>
 
-              {nestSubtasks(group.items).map(({ session, depth }) => (
-                <div
-                  key={session.id}
-                  onClick={() => void select(session.id)}
-                  style={depth > 0 ? { paddingLeft: 8 + depth * 12 } : undefined}
-                  className={clsx(
-                    'group flex cursor-pointer items-center gap-2 rounded-md px-2 py-[5px]',
-                    session.id === activeId
-                      ? 'bg-ink-800 text-ink-100'
-                      : 'text-ink-300 hover:bg-ink-850'
-                  )}
-                >
-                  {/* A subtask is marked as one so the indent is not the only clue. */}
-                  {depth > 0 ? (
-                    <span className="bg-ink-700 -ml-1 h-3 w-px shrink-0" aria-hidden />
-                  ) : null}
-                  <SessionDot status={session.status} />
-                  <span className="min-w-0 flex-1 truncate text-[13px]">
-                    {session.taskLabel ?? session.title}
-                  </span>
-                  {showGit ? <GitChip session={session} /> : null}
-                  <button
-                    type="button"
-                    title="Delete session"
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      void window.opendesktop.sessions.remove(session.id)
-                    }}
-                    className="text-ink-600 hover:text-bad shrink-0 opacity-0 group-hover:opacity-100"
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          ))
+                {nestSubtasks(group.items).map(({ session, depth }) => (
+                  <SessionRow key={session.id} session={session} depth={depth} />
+                ))}
+              </div>
+            ))}
+          </>
         )}
       </div>
 

@@ -227,6 +227,8 @@ export interface Session {
   /** Short label for a subagent session, shown on its subchat. */
   taskLabel?: string
   archived?: boolean
+  /** Kept at the top of the list, above the grouping. */
+  pinned?: boolean
 
   /* ---- board placement. Absent on a session that is just a chat. ---- */
   boardId?: string

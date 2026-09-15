@@ -14,15 +14,20 @@ export function EditableTitle({
   onCommit,
   className,
   inputClassName,
-  title
+  title,
+  autoEdit,
+  onDone
 }: {
   value: string
   onCommit: (next: string) => void
   className?: string
   inputClassName?: string
   title?: string
+  /** Start in edit mode — for "Rename" chosen from a menu elsewhere. */
+  autoEdit?: boolean
+  onDone?: () => void
 }): ReactNode {
-  const [editing, setEditing] = useState(false)
+  const [editing, setEditing] = useState(Boolean(autoEdit))
   const [draft, setDraft] = useState(value)
   const input = useRef<HTMLInputElement>(null)
 
@@ -34,8 +39,13 @@ export function EditableTitle({
     if (editing) input.current?.select()
   }, [editing])
 
+  useEffect(() => {
+    if (autoEdit) setEditing(true)
+  }, [autoEdit])
+
   const commit = (): void => {
     setEditing(false)
+    onDone?.()
     const next = draft.trim()
     if (next && next !== value) onCommit(next)
     else setDraft(value)
@@ -58,6 +68,7 @@ export function EditableTitle({
             event.preventDefault()
             setDraft(value)
             setEditing(false)
+            onDone?.()
           }
           event.stopPropagation()
         }}

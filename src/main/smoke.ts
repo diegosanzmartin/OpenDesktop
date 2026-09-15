@@ -35,7 +35,7 @@ import { getRuntime } from './runtime'
 import { diffLines, renderDiff } from './diff'
 import { decide, matchesAny, splitCommand } from './approvals'
 import { parseGcloudCommand } from '@shared/gcloud'
-import { filterSessions, groupSessions, nestSubtasks, sortSessions } from '@shared/sessions'
+import { filterSessions, groupSessions, nestSubtasks, sortSessions, splitPinned } from '@shared/sessions'
 import type { Board, Session, SessionQuery } from '@shared/types'
 import {
   columnForStatus,
@@ -970,6 +970,95 @@ async function main(): Promise<void> {
         showGitStatus: false
       }).length === rows.length
     )
+  }
+
+  section('fork and pin')
+  {
+    const origin = store.createSession({
+      title: 'Original',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: 'auto',
+      model: 'test/mock'
+    })
+    const block = store.createBlock({
+      sessionId: origin.id,
+      messageId: 'm',
+      tool: 'bash',
+      title: 'echo hi',
+      input: { command: 'echo hi' },
+      agentId: 'auto',
+      environmentId: 'local',
+      cwd: process.cwd()
+    })
+    store.addMessage({ sessionId: origin.id, role: 'user', parts: [{ type: 'text', text: 'hello' }] })
+    store.addMessage({
+      sessionId: origin.id,
+      role: 'assistant',
+      parts: [{ type: 'text', text: 'hi' }, { type: 'block', blockId: block.id }]
+    })
+    history.appendHistory(origin.id, [{ role: 'user', content: 'hello' }])
+    store.updateSession(origin.id, { pinned: true, status: 'done' })
+
+    const forked = store.forkSession(origin.id)!
+    history.copyHistory(origin.id, forked.id)
+
+    check('a fork is a new session', forked.id !== origin.id)
+    check('it carries the conversation', store.listMessages(forked.id).length === 2)
+    check('it carries the tool blocks', store.listBlocks(forked.id).length === 1)
+    check(
+      'the copied blocks are new objects, not the originals',
+      store.listBlocks(forked.id)[0].id !== block.id
+    )
+    check(
+      'and the transcript points at the copies, not at the original blocks',
+      store.listMessages(forked.id)[1].parts[1].blockId === store.listBlocks(forked.id)[0].id
+    )
+    check(
+      'deleting the original leaves the fork intact',
+      (() => {
+        store.deleteSession(origin.id)
+        return store.listBlocks(forked.id).length === 1 && store.listMessages(forked.id).length === 2
+      })()
+    )
+    check('the model transcript comes along', history.getHistory(forked.id).length === 1)
+    check('a fork starts idle, however the original ended', forked.status === 'idle')
+    check('and unpinned, since pinning is about this list not that one', !forked.pinned)
+
+    const board = createBoard({ name: 'Fork target', cwd: process.cwd(), environmentId: 'local' })
+    const child = store.createSession({
+      title: 'Subtask',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: 'auto',
+      model: 'test/mock',
+      parentSessionId: forked.id
+    })
+    const moved = store.forkSession(child.id, {
+      boardId: board.id,
+      columnId: columnOfKind(board, 'backlog')!.id,
+      standalone: true
+    })!
+    check('forking onto a board places the copy there', moved.boardId === board.id)
+    check(
+      'and it stops being a subtask of the session it was forked from',
+      moved.parentSessionId === undefined
+    )
+
+    const rows = [
+      { id: 'a', pinned: false },
+      { id: 'b', pinned: true },
+      { id: 'c', pinned: false }
+    ] as Session[]
+    const split = splitPinned(rows)
+    check('pinned rows are lifted out of the grouping', split.pinned.map((r) => r.id).join(',') === 'b')
+    check('and the rest keep their order', split.rest.map((r) => r.id).join(',') === 'a,c')
+
+    for (const id of [forked.id, child.id, moved.id]) {
+      store.deleteSession(id)
+      history.clearHistory(id)
+    }
+    deleteBoard(board.id)
   }
 
   /* ---------- the queue ---------- */

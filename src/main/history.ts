@@ -64,3 +64,11 @@ export function trimHistory(sessionId: string, maxChars = 600_000): void {
   }
   persist(sessionId)
 }
+
+/** Copies one session's model transcript onto another, for a fork. */
+export function copyHistory(fromId: string, toId: string): void {
+  const source = getHistory(fromId)
+  if (source.length === 0) return
+  memory.set(toId, structuredClone(source))
+  persist(toId)
+}

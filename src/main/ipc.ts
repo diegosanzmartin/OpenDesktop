@@ -191,6 +191,22 @@ export function registerIpc(): void {
     history.clearHistory(id)
     return store.updateSession(id, {})
   })
+  ipcMain.handle(
+    'session:fork',
+    (_e, id: string, target?: { boardId?: string; columnId?: string }) => {
+      const board = target?.boardId ? getBoard(target.boardId) : undefined
+      const column = board
+        ? (findColumn(board, target?.columnId) ?? columnOfKind(board, 'backlog') ?? board.columns[0])
+        : undefined
+      const forked = store.forkSession(id, {
+        boardId: board?.id,
+        columnId: column?.id,
+        standalone: Boolean(board)
+      })
+      if (forked) history.copyHistory(id, forked.id)
+      return forked
+    }
+  )
   ipcMain.handle('session:messages', (_e, id: string) => store.listMessages(id))
   ipcMain.handle('session:blocks', (_e, id: string) => store.listBlocks(id))
   ipcMain.handle('session:running', (_e, id: string) => isRunning(id))

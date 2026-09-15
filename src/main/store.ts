@@ -121,6 +121,74 @@ export function setSessionStatus(id: string, status: SessionStatus): void {
   updateSession(id, { status })
 }
 
+/**
+ * A copy of a conversation, to take it somewhere else without losing where it
+ * has been.
+ *
+ * Blocks are copied with fresh ids and the message parts are remapped onto
+ * them, because a part points at a block by id: reusing the originals would
+ * give two sessions the same tool runs, and one deleting them would blank the
+ * other's transcript. The model-facing history is copied separately by the
+ * caller — this half is what a person reads, that half is what the model does.
+ *
+ * A task block's `childSessionId` is left pointing at the original subagent
+ * run. Those sessions are not duplicated: the fork's transcript is a record of
+ * what happened, and what happened was that run.
+ */
+export function forkSession(
+  id: string,
+  overrides?: { title?: string; boardId?: string; columnId?: string; standalone?: boolean }
+): Session | undefined {
+  const source = sessions.get(id)
+  if (!source) return undefined
+
+  const now = Date.now()
+  const session: Session = {
+    ...source.session,
+    id: nanoid(12),
+    title: overrides?.title ?? `${source.session.title} (fork)`,
+    status: 'idle',
+    createdAt: now,
+    updatedAt: now,
+    pinned: false,
+    archived: false,
+    blockedReason: undefined,
+    queuedPrompt: undefined,
+    relatedSessionIds: undefined,
+    boardId: overrides?.boardId ?? source.session.boardId,
+    columnId: overrides?.columnId ?? source.session.columnId,
+    order: now,
+    // Moved to a board of its own, a fork is its own task rather than someone
+    // else's subtask.
+    parentSessionId: overrides?.standalone ? undefined : source.session.parentSessionId,
+    taskLabel: overrides?.standalone ? undefined : source.session.taskLabel
+  }
+
+  const blockIds = new Map<string, string>()
+  const blocks: Block[] = source.blocks.map((block) => {
+    const fresh = nanoid(12)
+    blockIds.set(block.id, fresh)
+    return { ...block, id: fresh, sessionId: session.id }
+  })
+  for (const block of blocks) {
+    if (block.parentBlockId) block.parentBlockId = blockIds.get(block.parentBlockId) ?? block.parentBlockId
+  }
+
+  const messages: Message[] = source.messages.map((message) => ({
+    ...message,
+    id: nanoid(12),
+    sessionId: session.id,
+    parts: message.parts.map((part) =>
+      part.blockId ? { ...part, blockId: blockIds.get(part.blockId) ?? part.blockId } : { ...part }
+    )
+  }))
+
+  sessions.set(session.id, { session, messages, blocks })
+  markDirty(session.id)
+  bus.emit({ type: 'session.created', session })
+  return session
+}
+
 export function deleteSession(id: string): void {
   sessions.delete(id)
   dirty.delete(id)

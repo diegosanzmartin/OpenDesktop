@@ -81,6 +81,10 @@ const api = {
       ipcRenderer.invoke('session:update', id, patch),
     remove: (id: string): Promise<void> => ipcRenderer.invoke('session:delete', id),
     clear: (id: string): Promise<Session | undefined> => ipcRenderer.invoke('session:clear', id),
+    fork: (
+      id: string,
+      target?: { boardId?: string; columnId?: string }
+    ): Promise<Session | undefined> => ipcRenderer.invoke('session:fork', id, target),
     messages: (id: string): Promise<Message[]> => ipcRenderer.invoke('session:messages', id),
     blocks: (id: string): Promise<Block[]> => ipcRenderer.invoke('session:blocks', id),
     running: (id: string): Promise<boolean> => ipcRenderer.invoke('session:running', id)
