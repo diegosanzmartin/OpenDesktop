@@ -14,11 +14,35 @@ pnpm dev
 | `pnpm dev` | Dev build with renderer hot reload |
 | `pnpm build` | Production build into `out/` |
 | `pnpm start` | Run the production build |
-| `pnpm dist` | Package a macOS `.dmg` |
+| `pnpm dist` | Package the macOS app (`.dmg` + `.app` in `release/`) |
+| `pnpm icon` | Regenerate `build/icon.icns` |
 | `pnpm typecheck` | Typecheck main, preload and renderer |
 | `pnpm smoke` | Headless engine test — 50 checks, no provider or window needed |
 
 `OPENDESKTOP_DEBUG=1 pnpm start` mirrors renderer console errors to the terminal.
+
+## The macOS app
+
+```bash
+pnpm dist
+open release/OpenDesktop-0.1.0-arm64.dmg     # or: open release/mac-arm64/OpenDesktop.app
+```
+
+Builds an unsigned arm64 bundle. Because it is produced locally it carries no quarantine
+attribute, so it opens on a double click — no Gatekeeper prompt and no right-click-Open
+dance. That changes the moment the `.dmg` is downloaded from anywhere: a downloaded copy is
+quarantined and, being unsigned, will be refused until someone runs
+`xattr -dr com.apple.quarantine /Applications/OpenDesktop.app`. Shipping it properly means a
+Developer ID certificate and notarization.
+
+**The environment an app gets from Finder is not your shell's.** An app launched from Finder
+or the Dock inherits launchd's environment, which has none of your exports — so
+`{env:HELMCODE_API_KEY}` would resolve to nothing. On startup the app asks your login shell
+(`$SHELL -ilc env`) and merges in whatever it is missing, never overwriting what it already
+has. The consequence is that the key has to be exported from a file the login shell reads
+(`~/.zshrc`, `~/.zprofile`), not just typed into a terminal session. If you would rather not
+put it in a dotfile, use `"apiKey": "{file:~/.helmcode-key}"` instead, which does not depend
+on the environment at all. The **Providers** tab tells you which way it went.
 
 ## Configuration
 

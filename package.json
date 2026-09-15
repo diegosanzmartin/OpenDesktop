@@ -12,23 +12,43 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "package": "electron-vite build && electron-builder --dir",
     "dist": "electron-vite build && electron-builder",
-    "smoke": "vite build -c vite.smoke.config.ts && node out/smoke/smoke.mjs"
+    "smoke": "vite build -c vite.smoke.config.ts && node out/smoke/smoke.mjs",
+    "icon": "electron scripts/make-icon.cjs"
   },
   "build": {
     "appId": "com.opendesktop.app",
     "productName": "OpenDesktop",
     "directories": {
-      "output": "release"
+      "output": "release",
+      "buildResources": "build"
     },
     "files": [
       "out/**/*",
-      "resources/**/*"
+      "package.json"
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
       "target": [
-        "dmg"
-      ]
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "dir",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "build/icon.icns",
+      "identity": null,
+      "darkModeSupport": true
+    },
+    "npmRebuild": false,
+    "dmg": {
+      "title": "OpenDesktop"
     }
   },
   "devDependencies": {

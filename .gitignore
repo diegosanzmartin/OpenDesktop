@@ -5,3 +5,5 @@ release/
 .DS_Store
 *.tsbuildinfo
 .claude/settings.local.json
+build/icon.png
+build/icon.html
