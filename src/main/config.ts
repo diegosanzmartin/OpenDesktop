@@ -48,7 +48,13 @@ const DEFAULT_PROVIDERS: Record<string, ProviderConfig> = {
       apiKey: '{env:HELMCODE_API_KEY}'
     },
     models: {
-      'glm5.3-flash': { id: 'glm5.3-flash', name: 'GLM 5.3 Flash', contextWindow: 200000, toolCall: true }
+      'glm5.3-flash': {
+        id: 'glm5.3-flash',
+        name: 'GLM 5.3 Flash',
+        contextWindow: 200000,
+        toolCall: true,
+        vision: true
+      }
     }
   }
 }

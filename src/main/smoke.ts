@@ -344,6 +344,11 @@ async function main(): Promise<void> {
       }
     }
   })
+  check(
+    'the configured default model accepts images',
+    modelAcceptsImages(config, config.model),
+    config.model
+  )
   check('a model marked vision accepts images', modelAcceptsImages(withVision, 'p/seeing'))
   check('a model without the flag does not', !modelAcceptsImages(withVision, 'p/blind'))
   check('an unknown model does not', !modelAcceptsImages(withVision, 'p/missing'))
