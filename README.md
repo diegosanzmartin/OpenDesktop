@@ -201,6 +201,7 @@ icons:
 | View | What it is |
 | --- | --- |
 | Activity | What is running now, and everything that has finished, across all sessions. Group and sort by folder, status, date, environment, agent, tool or session; filter by time range, status, environment, agent or text |
+| Background tasks | Whatever the agent decided not to wait for, scoped to this chat — including what its subagents started |
 | Terminal | A real shell in the session's environment — the local machine or the remote host |
 | Changes | `git status` for the session's repository, each file expandable to its diff |
 | Browser | Files the agent generated, or any `http://` URL |
@@ -214,6 +215,18 @@ in the pane.
 
 The browser wraps anything that is not natively renderable — source, markdown, config — in a
 readable page, rather than handing the webview a download it cannot perform.
+
+**Background tasks** — the agent can start a command with `run_in_background` and carry on: a
+log follow or a dev server, where running in the foreground is simply wrong, but equally a
+query or an export that takes a while and does not need to hold up the turn. The decision is
+the agent's, not a property of the command. It reads back with `bash_output`, which returns
+only what is new so polling is cheap, and ends it with `bash_kill`.
+
+The panel shows this chat's tasks and no others, with live output, elapsed time, exit code and
+a stop button. A subagent runs in its own session, but its background work is the parent
+conversation's, so it is listed there and labelled with the agent that started it — the
+attribution is resolved when the task starts, so it survives the subagent's session being
+deleted. Tasks are bound to the process: a restart does not carry them over.
 
 **Attachments** — the paperclip, a drag onto the composer, or a pasted screenshot. Text files
 are inlined into the prompt, which every model can read and which keeps the transcript

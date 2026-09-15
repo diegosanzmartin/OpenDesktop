@@ -5,6 +5,7 @@ import type {
   Attachment,
   AppEvent,
   ApprovalRequest,
+  BackgroundTask,
   Block,
   Message,
   RepoChanges,
@@ -14,7 +15,7 @@ import type {
 import { AUTO_AGENT } from '@shared/types'
 
 /** What the right-hand dock is showing. The centre column is always the chat. */
-export type DockTab = 'changes' | 'terminal' | 'browser' | 'files' | 'activity'
+export type DockTab = 'changes' | 'terminal' | 'browser' | 'files' | 'activity' | 'background'
 
 export type SessionGroupBy = 'none' | 'folder' | 'status' | 'date' | 'environment' | 'agent'
 export type SessionSortBy = 'recent' | 'oldest' | 'title' | 'folder' | 'status'
@@ -49,6 +50,7 @@ interface State {
   blocks: Record<string, Block>
   activity: Block[]
   approvals: ApprovalRequest[]
+  backgroundTasks: BackgroundTask[]
   envStatus: Record<string, { connected: boolean; message?: string }>
   toasts: Toast[]
 
@@ -92,6 +94,7 @@ interface State {
   refreshConfig: () => Promise<void>
   refreshSecrets: () => Promise<void>
   refreshSkills: () => Promise<void>
+  refreshBackgroundTasks: () => Promise<void>
   pushToast: (level: Toast['level'], message: string) => void
   dismissToast: (id: number) => void
 }
@@ -114,6 +117,7 @@ export const useStore = create<State>((set, get) => ({
   blocks: {},
   activity: [],
   approvals: [],
+  backgroundTasks: [],
   envStatus: {},
   toasts: [],
 
@@ -147,7 +151,7 @@ export const useStore = create<State>((set, get) => ({
   activityCollapsed: false,
 
   async bootstrap() {
-    const [config, models, sessions, approvals, activity, keyStatus, secrets, skills] =
+    const [config, models, sessions, approvals, activity, keyStatus, secrets, skills, backgroundTasks] =
       await Promise.all([
         api().config.get(),
         api().models.list(),
@@ -156,7 +160,8 @@ export const useStore = create<State>((set, get) => ({
         api().activity.all(),
         api().config.keyStatus(),
         api().secrets.status(),
-        api().skills.list()
+        api().skills.list(),
+        api().background.list()
       ])
     const blocks: Record<string, Block> = {}
     for (const block of activity) blocks[block.id] = block
@@ -171,6 +176,7 @@ export const useStore = create<State>((set, get) => ({
       keyStatus,
       secrets,
       skills,
+      backgroundTasks,
       ready: true
     })
 
@@ -296,6 +302,27 @@ export const useStore = create<State>((set, get) => ({
         })
         break
 
+      case 'background.updated': {
+        const others = state.backgroundTasks.filter((task) => task.id !== event.task.id)
+        // Output arrives on its own event, so keep what has accumulated.
+        const previous = state.backgroundTasks.find((task) => task.id === event.task.id)
+        const merged = previous ? { ...event.task, output: previous.output } : event.task
+        set({ backgroundTasks: [merged, ...others].sort((a, b) => b.startedAt - a.startedAt) })
+        break
+      }
+
+      case 'background.output':
+        set({
+          backgroundTasks: state.backgroundTasks.map((task) =>
+            task.id === event.taskId ? { ...task, output: task.output + event.chunk } : task
+          )
+        })
+        break
+
+      case 'background.cleared':
+        void get().refreshBackgroundTasks()
+        break
+
       case 'toast':
         get().pushToast(event.level, event.message)
         break
@@ -369,6 +396,10 @@ export const useStore = create<State>((set, get) => ({
     const blocks = { ...get().blocks }
     for (const block of activity) blocks[block.id] = block
     set({ activity, blocks })
+  },
+
+  async refreshBackgroundTasks() {
+    set({ backgroundTasks: await api().background.list() })
   },
 
   async refreshSkills() {

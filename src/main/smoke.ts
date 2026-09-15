@@ -12,6 +12,15 @@ import { listAgents, parseAgentFile, saveAgent, seedBuiltins, serializeAgent } f
 import { expandSkills, listSkills } from './skills'
 import { parseDocument } from './frontmatter'
 import { addFromPaths, dropSessionAttachments, modelAcceptsImages } from './attachments'
+import {
+  clearFinished,
+  describeForModel,
+  killBackgroundTask,
+  killSessionTasks,
+  listBackgroundTasks,
+  readBackgroundOutput,
+  startBackgroundTask
+} from './background'
 import { buildUserMessage } from './agent/runner'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -301,6 +310,143 @@ async function main(): Promise<void> {
       expandSkills(`path/${first.id}`).used.length === 0
     )
   }
+
+  section('background tasks')
+  const bgSession = store.createSession({
+    title: 'background',
+    cwd: process.cwd(),
+    environmentId: 'local',
+    agentId: 'build',
+    model: 'mock/mock'
+  })
+  const otherSession = store.createSession({
+    title: 'other',
+    cwd: process.cwd(),
+    environmentId: 'local',
+    agentId: 'build',
+    model: 'mock/mock'
+  })
+
+  const ticker = startBackgroundTask({
+    sessionId: bgSession.id,
+    command: 'for i in 1 2 3; do echo line$i; sleep 0.25; done',
+    description: 'emit three lines',
+    cwd: process.cwd(),
+    environmentId: 'local',
+    agentId: 'build'
+  })
+  check('it starts as running', ticker.status === 'running', ticker.status)
+  check('it reports no output yet', ticker.output === '')
+
+  // A follow that never ends on its own is the case this exists for.
+  const follower = startBackgroundTask({
+    sessionId: bgSession.id,
+    command: 'tail -f /dev/null',
+    description: 'follow a file',
+    cwd: process.cwd(),
+    environmentId: 'local',
+    agentId: 'build'
+  })
+
+  const elsewhere = startBackgroundTask({
+    sessionId: otherSession.id,
+    command: 'sleep 5',
+    description: 'sleep in another session',
+    cwd: process.cwd(),
+    environmentId: 'local',
+    agentId: 'build'
+  })
+
+  // A subagent works in a child session, but its background work is the
+  // parent conversation's and has to be listed there.
+  const childSession = store.createSession({
+    title: 'delegated',
+    cwd: process.cwd(),
+    environmentId: 'local',
+    agentId: 'explore',
+    model: 'mock/mock',
+    parentSessionId: bgSession.id
+  })
+  const delegated = startBackgroundTask({
+    sessionId: childSession.id,
+    command: 'sleep 4',
+    description: 'a subagent query',
+    cwd: process.cwd(),
+    environmentId: 'local',
+    agentId: 'explore'
+  })
+  check('a subagent task is rooted in the parent chat', delegated.rootSessionId === bgSession.id, delegated.rootSessionId)
+  check('while keeping its own session', delegated.sessionId === childSession.id)
+  check(
+    "the parent chat lists the subagent's task",
+    listBackgroundTasks(bgSession.id).some((task) => task.id === delegated.id)
+  )
+  check(
+    'the subagent session lists it too',
+    listBackgroundTasks(childSession.id).some((task) => task.id === delegated.id)
+  )
+  check(
+    'and it does not leak into an unrelated chat',
+    !listBackgroundTasks(otherSession.id).some((task) => task.id === delegated.id)
+  )
+  killBackgroundTask(delegated.id)
+  store.deleteSession(childSession.id)
+  check(
+    "deleting the subagent's session does not lose the attribution",
+    listBackgroundTasks(bgSession.id).some((task) => task.id === delegated.id)
+  )
+  clearFinished(bgSession.id)
+
+  check('the session sees only its own', listBackgroundTasks(bgSession.id).length === 2, listBackgroundTasks(bgSession.id).length)
+  check('another session sees only its own', listBackgroundTasks(otherSession.id).length === 1)
+  check('all of them are listed without a filter', listBackgroundTasks().length >= 3)
+
+  await new Promise((resolve) => setTimeout(resolve, 450))
+  const firstRead = readBackgroundOutput(ticker.id)
+  check('output arrives while it runs', (firstRead?.chunk ?? '').includes('line1'), firstRead?.chunk)
+  check('it is still running', firstRead?.task.status === 'running')
+
+  const immediateSecondRead = readBackgroundOutput(ticker.id)
+  check(
+    'a second read returns only what is new',
+    !(immediateSecondRead?.chunk ?? '').includes('line1'),
+    immediateSecondRead?.chunk
+  )
+
+  await new Promise((resolve) => setTimeout(resolve, 700))
+  const afterExit = readBackgroundOutput(ticker.id)
+  check('it finishes on its own', afterExit?.task.status === 'exited', afterExit?.task.status)
+  check('with a zero exit code', afterExit?.task.exitCode === 0)
+  check('and the later lines were captured', (afterExit?.chunk ?? '').includes('line3'), afterExit?.chunk)
+
+  const peeked = readBackgroundOutput(ticker.id, true)
+  check('peeking does not consume', peeked?.chunk === '')
+
+  const killed = killBackgroundTask(follower.id)
+  check('a follow can be stopped', killed?.status === 'killed', killed?.status)
+  check('stopping is recorded as an end', typeof killed?.endedAt === 'number')
+  check('killing an unknown id is reported', killBackgroundTask('nope') === null)
+  check('reading an unknown id is reported', readBackgroundOutput('nope') === null)
+
+  const cleared = clearFinished(bgSession.id)
+  check('finished tasks are forgotten on request', cleared === 2, cleared)
+  check('and only from the session asked for', listBackgroundTasks(otherSession.id).length === 1)
+  check('the model gets a readable summary', describeForModel(killed!).includes('killed'))
+  check(
+    'a non-zero exit is described as a failure, not a finish',
+    describeForModel({ ...killed!, status: 'exited', exitCode: 3 }).includes('failed with exit code 3')
+  )
+  check(
+    'a clean exit is described as success',
+    describeForModel({ ...killed!, status: 'exited', exitCode: 0 }).includes('finished successfully')
+  )
+
+  killSessionTasks(otherSession.id)
+  clearFinished()
+  store.deleteSession(bgSession.id)
+  store.deleteSession(otherSession.id)
+  history.clearHistory(bgSession.id)
+  history.clearHistory(otherSession.id)
 
   section('attachments')
   const attachDir = join(tmpdir(), `opendesktop-attach-${Date.now()}`)

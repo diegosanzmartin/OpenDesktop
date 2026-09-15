@@ -22,6 +22,13 @@ import { deleteSecret, secretHint, secretStatus, setSecret } from './secrets'
 import { createTerminal, killTerminal, resizeTerminal, terminalBuffer, writeTerminal } from './terminal'
 import { readChanges, readFileDiff } from './git'
 import {
+  clearFinished,
+  killBackgroundTask,
+  killSessionTasks,
+  listBackgroundTasks,
+  readBackgroundOutput
+} from './background'
+import {
   AGENTS_DIR,
   agentFilePath,
   deleteAgent,
@@ -166,6 +173,7 @@ export function registerIpc(): void {
   ipcMain.handle('session:delete', (_e, id: string) => {
     if (isRunning(id)) stop(id)
     history.clearHistory(id)
+    killSessionTasks(id)
     dropSessionAttachments(id)
     store.deleteSession(id)
   })
@@ -229,6 +237,12 @@ export function registerIpc(): void {
   )
   ipcMain.handle('terminal:kill', (_e, id: string) => killTerminal(id))
   ipcMain.handle('terminal:buffer', (_e, id: string) => terminalBuffer(id))
+
+  /* ---------- background tasks ---------- */
+  ipcMain.handle('background:list', (_e, sessionId?: string) => listBackgroundTasks(sessionId))
+  ipcMain.handle('background:kill', (_e, id: string) => killBackgroundTask(id))
+  ipcMain.handle('background:clear', (_e, sessionId?: string) => clearFinished(sessionId))
+  ipcMain.handle('background:peek', (_e, id: string) => readBackgroundOutput(id, true))
 
   /* ---------- git ---------- */
   ipcMain.handle('git:changes', (_e, environmentId: string, cwd: string) =>

@@ -229,6 +229,36 @@ export interface ApprovalRequest {
   createdAt: number
 }
 
+/**
+ * Anything the agent chose not to wait for: a log follow or a dev server, but
+ * equally a query or an export that takes a while and does not need to block
+ * the turn. Bound to the process, so a restart does not carry them over.
+ */
+export interface BackgroundTask {
+  id: string
+  /** The session that started it — a subagent's own session, when delegated. */
+  sessionId: string
+  /**
+   * The chat this belongs to. A subagent runs in a child session, but its
+   * background work is the parent conversation's work, so that is where it is
+   * listed.
+   */
+  rootSessionId: string
+  command: string
+  description: string
+  cwd: string
+  environmentId: string
+  agentId: string
+  status: 'running' | 'exited' | 'killed' | 'failed'
+  exitCode?: number
+  error?: string
+  startedAt: number
+  endedAt?: number
+  /** How much of the output the agent has already read. */
+  readOffset: number
+  output: string
+}
+
 export interface FileEntry {
   name: string
   path: string
@@ -290,6 +320,9 @@ export type AppEvent =
   | { type: 'approval.requested'; request: ApprovalRequest }
   | { type: 'approval.resolved'; approvalId: string }
   | { type: 'environment.status'; environmentId: string; connected: boolean; message?: string }
+  | { type: 'background.updated'; task: BackgroundTask }
+  | { type: 'background.output'; taskId: string; sessionId: string; chunk: string }
+  | { type: 'background.cleared'; sessionId: string | null }
   | { type: 'terminal.data'; terminalId: string; chunk: string }
   | { type: 'terminal.exit'; terminalId: string; code: number }
   | { type: 'toast'; level: 'info' | 'warn' | 'error'; message: string }

@@ -7,13 +7,15 @@ import { TerminalPane } from './TerminalPane'
 import { ChangesPane } from './ChangesPane'
 import { FilesPane } from './FilesPane'
 import { ActivityPane } from './ActivityPane'
+import { BackgroundTasksPane } from './BackgroundTasksPane'
 
 const TITLES: Record<DockTab, string> = {
   changes: 'Changes',
   terminal: 'Terminal',
   browser: 'Browser',
   files: 'Files',
-  activity: 'Activity'
+  activity: 'Activity',
+  background: 'Background tasks'
 }
 
 export function RightDock(): ReactNode {
@@ -108,6 +110,7 @@ export function RightDock(): ReactNode {
           {dock.open && dock.tab === 'changes' ? <ChangesPane /> : null}
           {dock.open && dock.tab === 'files' ? <FilesPane /> : null}
           {dock.open && dock.tab === 'activity' ? <ActivityPane /> : null}
+          {dock.open && dock.tab === 'background' ? <BackgroundTasksPane /> : null}
         </div>
       </div>
     </div>

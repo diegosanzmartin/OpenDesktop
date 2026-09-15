@@ -10,6 +10,7 @@ import { disposeRuntimes } from './runtime'
 import { flush, loadStore } from './store'
 import { stopAll } from './agent/runner'
 import { killAllTerminals } from './terminal'
+import { killAllBackgroundTasks } from './background'
 
 const isDev = !app.isPackaged
 
@@ -108,6 +109,8 @@ void app.whenReady().then(async () => {
 
 
 
+
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
@@ -120,6 +123,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   stopAll()
   killAllTerminals()
+  killAllBackgroundTasks()
   flush()
   stopPreviewServer()
   void disposeRuntimes()

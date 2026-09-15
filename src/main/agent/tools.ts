@@ -5,6 +5,13 @@ import type { AgentConfig, AppConfig, Block, Permissions } from '@shared/types'
 import { PermissionDenied, decide, hasSessionGrant, requestApproval } from '../approvals'
 import { diffStats, renderDiff } from '../diff'
 import { shellQuote, type Runtime } from '../runtime'
+import {
+  describeForModel,
+  killBackgroundTask,
+  listBackgroundTasks,
+  readBackgroundOutput,
+  startBackgroundTask
+} from '../background'
 import * as store from '../store'
 
 export interface ToolContext {
@@ -162,16 +169,63 @@ export function createTools(ctx: ToolContext): ToolSet {
     tools.bash = tool({
       description:
         'Run a shell command in the session working directory. Keep each call to a single ' +
-        'purpose so it reads as one step. Use read/write/edit/grep/glob for file work instead.',
+        'purpose so it reads as one step. Use read/write/edit/grep/glob for file work instead.\n' +
+        'Set run_in_background for anything you do not need the answer to right now. That covers ' +
+        'commands that never return on their own — a log follow, a dev server, a watcher, where ' +
+        'running in the foreground is simply wrong — but also a query, an export or a build that ' +
+        'takes a while: start it, get on with something else, and read it later with ' +
+        'bash_output. It hands back an id immediately; end it with bash_kill. Never use a ' +
+        'timeout to escape a command that was always going to block.',
       inputSchema: z.object({
         command: z.string().describe('The shell command to run.'),
         description: z
           .string()
           .describe('A 3-8 word description of what this command does, shown in the UI.'),
-        timeout: z.number().int().min(1000).max(900_000).optional().describe('Timeout in ms.')
+        timeout: z.number().int().min(1000).max(900_000).optional().describe('Timeout in ms.'),
+        run_in_background: z
+          .boolean()
+          .optional()
+          .describe('Start it and return immediately, leaving it running.')
       }),
-      execute: async ({ command, description, timeout }) =>
-        withBlock(
+      execute: async ({ command, description, timeout, run_in_background }) => {
+        if (run_in_background) {
+          return withBlock(
+            ctx,
+            {
+              tool: 'bash',
+              title: command,
+              subtitle: `${description} · background`,
+              input: { command, description, run_in_background: true },
+              permission: { key: 'bash', command, detail: command, preview: command }
+            },
+            async (block) => {
+              const task = startBackgroundTask({
+                sessionId: ctx.sessionId,
+                command,
+                description,
+                cwd: ctx.cwd,
+                environmentId: ctx.environmentId,
+                agentId: ctx.agent.id
+              })
+              // Recorded on the block so the transcript can link to the task.
+              store.updateBlock(ctx.sessionId, block.id, {
+                input: { ...block.input, backgroundTaskId: task.id }
+              })
+              store.appendBlockOutput(
+                ctx.sessionId,
+                block.id,
+                `started in the background as ${task.id}`
+              )
+              return {
+                output:
+                  `Started in the background with id ${task.id}. It is still running, and the ` +
+                  `user can see it under Background tasks. Read what it produces with ` +
+                  `bash_output("${task.id}") and end it with bash_kill("${task.id}").`
+              }
+            }
+          )
+        }
+        return withBlock(
           ctx,
           {
             tool: 'bash',
@@ -194,6 +248,65 @@ export function createTools(ctx: ToolContext): ToolSet {
             }
           }
         )
+      }
+    })
+
+    tools.bash_output = tool({
+      description:
+        'Read whatever a background task has produced since the last time you read it. ' +
+        'Returns only the new output, so it is safe to poll.',
+      inputSchema: z.object({
+        id: z.string().describe('The id bash returned when it started in the background.')
+      }),
+      execute: async ({ id }) => {
+        const result = readBackgroundOutput(id)
+        if (!result) {
+          const known = listBackgroundTasks(ctx.sessionId)
+          throw new Error(
+            known.length === 0
+              ? `No background task ${id}; none are running in this session.`
+              : `No background task ${id}. Running or finished here: ${known
+                  .map((task) => `${task.id} (${task.description})`)
+                  .join(', ')}`
+          )
+        }
+        return withBlock(
+          ctx,
+          {
+            tool: 'bash_output',
+            title: result.task.description,
+            subtitle: result.task.status,
+            input: { id, command: result.task.command }
+          },
+          async (block) => {
+            store.appendBlockOutput(ctx.sessionId, block.id, result.chunk || '(nothing new)')
+            return {
+              output: `${describeForModel(result.task)}\n\nNew output:\n${
+                result.chunk || '(nothing new since the last read)'
+              }`
+            }
+          }
+        )
+      }
+    })
+
+    tools.bash_kill = tool({
+      description: 'End a background task you started.',
+      inputSchema: z.object({ id: z.string() }),
+      execute: async ({ id }) => {
+        const task = killBackgroundTask(id)
+        if (!task) throw new Error(`No background task ${id}.`)
+        return withBlock(
+          ctx,
+          {
+            tool: 'bash_kill',
+            title: task.description,
+            subtitle: 'stopped',
+            input: { id, command: task.command }
+          },
+          async () => ({ output: `Background task ${id} stopped.` })
+        )
+      }
     })
   }
 
@@ -498,7 +611,19 @@ export function createTools(ctx: ToolContext): ToolSet {
 }
 
 export function toolNames(): string[] {
-  return ['bash', 'read', 'write', 'edit', 'grep', 'glob', 'list', 'fetch', 'task']
+  return [
+    'bash',
+    'bash_output',
+    'bash_kill',
+    'read',
+    'write',
+    'edit',
+    'grep',
+    'glob',
+    'list',
+    'fetch',
+    'task'
+  ]
 }
 
 export { basename }

@@ -3,6 +3,7 @@ import type {
   AgentConfig,
   AppConfig,
   Attachment,
+  BackgroundTask,
   AppEvent,
   ApprovalRequest,
   Block,
@@ -138,6 +139,14 @@ const api = {
       ipcRenderer.invoke('terminal:resize', id, cols, rows),
     kill: (id: string): Promise<void> => ipcRenderer.invoke('terminal:kill', id),
     buffer: (id: string): Promise<string> => ipcRenderer.invoke('terminal:buffer', id)
+  },
+  background: {
+    list: (sessionId?: string): Promise<BackgroundTask[]> =>
+      ipcRenderer.invoke('background:list', sessionId),
+    kill: (id: string): Promise<BackgroundTask | null> => ipcRenderer.invoke('background:kill', id),
+    clear: (sessionId?: string): Promise<number> => ipcRenderer.invoke('background:clear', sessionId),
+    peek: (id: string): Promise<{ task: BackgroundTask; chunk: string } | null> =>
+      ipcRenderer.invoke('background:peek', id)
   },
   git: {
     changes: (environmentId: string, cwd: string): Promise<RepoChanges> =>

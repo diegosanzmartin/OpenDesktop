@@ -7,6 +7,7 @@ import {
   FolderTree,
   Globe,
   MessageSquare,
+  ListTree,
   MoreVertical,
   PanelRight,
   Pencil,
@@ -79,6 +80,14 @@ export function TopBar(): ReactNode {
   const openDock = useStore((s) => s.openDock)
   const setSettingsOpen = useStore((s) => s.setSettingsOpen)
   const approvals = useStore((s) => s.approvals.length)
+  const backgroundRunning = useStore(
+    (s) =>
+      s.backgroundTasks.filter(
+        (task) =>
+          (task.rootSessionId === s.activeSessionId || task.sessionId === s.activeSessionId) &&
+          task.status === 'running'
+      ).length
+  )
   const newSession = useStore((s) => s.newSession)
 
   const [menuOpen, setMenuOpen] = useState(false)
@@ -138,6 +147,14 @@ export function TopBar(): ReactNode {
             <Activity className="h-4 w-4" />
             {approvals > 0 ? (
               <span className="bg-warn absolute -right-1 -top-1 h-1.5 w-1.5 rounded-full" />
+            ) : null}
+          </span>
+        </DockButton>
+        <DockButton tab="background" title="Background tasks">
+          <span className="relative block">
+            <ListTree className="h-4 w-4" />
+            {backgroundRunning > 0 ? (
+              <span className="bg-info absolute -right-1 -top-1 h-1.5 w-1.5 rounded-full" />
             ) : null}
           </span>
         </DockButton>
