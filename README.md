@@ -182,8 +182,11 @@ Three columns: a collapsible session list, the transcript, and a dock on the rig
 group header exposes the grouping and sorting (folder, status, date, environment, agent).
 `⌘B` collapses it to a strip.
 
-**Transcript** — prose reads as prose, and a run of tool calls collapses into a single muted
-line: *"Created secrets.ts, updated App.tsx, ran 2 commands  +91 −14"*. Expanding it reveals
+**Transcript** — prose reads as prose. Markdown is lexed with `marked` and the tokens are
+turned into React elements rather than into an HTML string, so tables, nested and ordered
+lists, task lists, blockquotes, links, rules and fenced code all render in the app's own
+styling, and nothing the model emits can inject markup. A run of tool calls collapses into a
+single muted line: *"Created secrets.ts, updated App.tsx, ran 2 commands  +91 −14"*. Expanding it reveals
 one block per call with the exact input, the streamed output, the exit code, the folder and
 the environment, and a real diff for writes and edits. A turn that touched files ends with an
 **Edited N files** card, and the strip above the composer tracks the working tree.

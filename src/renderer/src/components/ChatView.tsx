@@ -7,61 +7,9 @@ import { tokens } from '../lib/format'
 import { ApprovalCard } from './ApprovalCard'
 import { Composer } from './Composer'
 import { EditedFiles, ToolGroup } from './ToolGroup'
+import { Markdown } from './Markdown'
 
 const EMPTY_MESSAGES: Message[] = []
-
-function renderInline(line: string): ReactNode {
-  const parts = line.split(/(`[^`]+`|\*\*[^*]+\*\*)/g)
-  return parts.map((part, index) => {
-    if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
-      return (
-        <code key={index} className="code-chip">
-          {part.slice(1, -1)}
-        </code>
-      )
-    }
-    if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
-      return <strong key={index}>{part.slice(2, -2)}</strong>
-    }
-    return <span key={index}>{part}</span>
-  })
-}
-
-function Markdownish({ text }: { text: string }): ReactNode {
-  const segments = useMemo(() => text.split(/```/), [text])
-  return (
-    <div className="prose-body space-y-3">
-      {segments.map((segment, index) =>
-        index % 2 === 1 ? (
-          <pre
-            key={index}
-            className="bg-ink-850 border-ink-800 text-ink-200 overflow-x-auto rounded-lg border px-3 py-2.5 font-mono text-[12px] leading-[1.6]"
-          >
-            {segment.replace(/^[a-zA-Z0-9+-]*\n/, '')}
-          </pre>
-        ) : (
-          <div key={index}>
-            {segment
-              .split('\n')
-              .map((line, lineIndex) =>
-                line.trim() === '' ? (
-                  <div key={lineIndex} className="h-2" />
-                ) : /^#{1,4}\s/.test(line) ? (
-                  <div key={lineIndex} className="text-ink-100 mb-1 mt-3 text-[15px] font-semibold">
-                    {renderInline(line.replace(/^#{1,4}\s/, ''))}
-                  </div>
-                ) : (
-                  <div key={lineIndex} className={clsx(/^\s*[-*]\s/.test(line) && 'pl-4 -indent-2')}>
-                    {renderInline(line)}
-                  </div>
-                )
-              )}
-          </div>
-        )
-      )}
-    </div>
-  )
-}
 
 function Reasoning({ text }: { text: string }): ReactNode {
   const [open, setOpen] = useState(false)
@@ -157,7 +105,7 @@ function MessageRow({ message }: { message: Message }): ReactNode {
                   </div>
                 )
               }
-              return part.text?.trim() ? <Markdownish key={partIndex} text={part.text} /> : null
+              return part.text?.trim() ? <Markdown key={partIndex} text={part.text} /> : null
             })}
           </div>
         )
