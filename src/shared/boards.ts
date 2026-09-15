@@ -45,6 +45,24 @@ export function columnOfKind(board: Board, kind: ColumnKind): BoardColumn | unde
 }
 
 /**
+ * Whether a person may drop a card into this column.
+ *
+ * In progress and Blocked are not opinions, they are readings: a card is in
+ * progress because a turn is running, and blocked because something asked for a
+ * human. Letting either be set by hand would let the board claim something the
+ * chat contradicts. The columns a person does own are the ones that express an
+ * intention — park it, queue it, review it, call it finished.
+ */
+export function isManualColumn(kind: ColumnKind): boolean {
+  return kind !== 'in-progress' && kind !== 'blocked'
+}
+
+/** Whether this card may be dragged at all: not while a turn is in flight. */
+export function isDraggable(session: Session): boolean {
+  return session.status !== 'running' && session.status !== 'awaiting-approval'
+}
+
+/**
  * The status a card takes when it lands in a column. Dropping into To do queues
  * it, into In progress starts it, into Done finishes it. A card that is already
  * running keeps running: the drag records where the human wants it, and the

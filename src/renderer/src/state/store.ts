@@ -69,6 +69,8 @@ interface State {
   browserUrl: string
   view: AppView
   boards: Board[]
+  /** The card open as a chat beside the board. */
+  boardTaskId: string | null
   /** Null means the overview: every card from every board. */
   activeBoardId: string | null
   /** Block ids expanded in the transcript. */
@@ -96,6 +98,7 @@ interface State {
   setSessionQuery: (patch: Partial<SessionQuery>) => void
   setView: (view: AppView) => void
   selectBoard: (id: string | null) => void
+  closeTask: () => void
   refreshBoards: () => Promise<void>
   openTask: (sessionId: string) => Promise<void>
   setActivityQuery: (patch: Partial<ActivityQuery>) => void
@@ -165,6 +168,7 @@ export const useStore = create<State>((set, get) => ({
   activityCollapsed: false,
   view: 'chat',
   boards: [],
+  boardTaskId: null,
   activeBoardId: null,
 
   async bootstrap() {
@@ -259,6 +263,8 @@ export const useStore = create<State>((set, get) => ({
       case 'session.deleted': {
         const sessions = state.sessions.filter((s) => s.id !== event.sessionId)
         set({ sessions })
+        // Otherwise the board's panel keeps showing a card that is gone.
+        if (state.boardTaskId === event.sessionId) set({ boardTaskId: null })
         if (state.activeSessionId === event.sessionId && sessions.length > 0) {
           void get().selectSession(sessions[0].id)
         }
@@ -441,14 +447,20 @@ export const useStore = create<State>((set, get) => ({
   },
 
   /**
-   * Opening a card is opening its chat, with everything that led to it — which
-   * is the whole point of the board being made of real sessions rather than of
-   * task records that merely reference them.
+   * Opening a card opens its chat, with everything that led to it — the point
+   * of the board being made of real sessions rather than of task records that
+   * merely reference them.
+   *
+   * It also becomes the active session, because the composer, the dock and the
+   * changes pane all follow that. Beside the board rather than instead of it:
+   * the board is the thing you came to look at.
    */
   async openTask(sessionId) {
+    set({ boardTaskId: sessionId })
     await get().selectSession(sessionId)
-    set({ view: 'chat' })
   },
+
+  closeTask: () => set({ boardTaskId: null }),
 
   setActivityQuery: (patch) => set({ activityQuery: { ...get().activityQuery, ...patch } }),
   setBrowserUrl: (browserUrl) => set({ browserUrl }),

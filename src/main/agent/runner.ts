@@ -192,7 +192,7 @@ export async function runTurn(input: TurnInput): Promise<string> {
     parts: [{ type: 'text', text: input.userText }],
     attachments: input.attachments
   })
-  if (session.title === 'New session') {
+  if (session.title === 'New session' || session.title === 'New task') {
     store.updateSession(session.id, {
       title: input.userText.replace(/\s+/g, ' ').slice(0, 70) || 'New session'
     })

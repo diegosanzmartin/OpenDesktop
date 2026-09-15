@@ -12,6 +12,7 @@ import {
 import type { Session } from '@shared/types'
 import { useStore } from '../state/store'
 import { filterSessions, groupSessions, sortSessions } from '../lib/group'
+import { nestSubtasks } from '@shared/sessions'
 import { SessionFilters } from './SessionFilters'
 import { ViewSwitcher } from './ViewSwitcher'
 import { BoardList } from './BoardList'
@@ -230,10 +231,11 @@ export function Sidebar(): ReactNode {
                 ) : null}
               </div>
 
-              {group.items.map((session) => (
+              {nestSubtasks(group.items).map(({ session, depth }) => (
                 <div
                   key={session.id}
                   onClick={() => void select(session.id)}
+                  style={depth > 0 ? { paddingLeft: 8 + depth * 12 } : undefined}
                   className={clsx(
                     'group flex cursor-pointer items-center gap-2 rounded-md px-2 py-[5px]',
                     session.id === activeId
@@ -241,8 +243,14 @@ export function Sidebar(): ReactNode {
                       : 'text-ink-300 hover:bg-ink-850'
                   )}
                 >
+                  {/* A subtask is marked as one so the indent is not the only clue. */}
+                  {depth > 0 ? (
+                    <span className="bg-ink-700 -ml-1 h-3 w-px shrink-0" aria-hidden />
+                  ) : null}
                   <SessionDot status={session.status} />
-                  <span className="min-w-0 flex-1 truncate text-[13px]">{session.title}</span>
+                  <span className="min-w-0 flex-1 truncate text-[13px]">
+                    {session.taskLabel ?? session.title}
+                  </span>
                   {showGit ? <GitChip session={session} /> : null}
                   <button
                     type="button"

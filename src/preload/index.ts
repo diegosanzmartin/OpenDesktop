@@ -95,8 +95,8 @@ const api = {
     createTask: (input: {
       boardId?: string
       columnId?: string
-      title: string
-      prompt: string
+      title?: string
+      prompt?: string
       agentId?: string
       model?: string
       parentSessionId?: string

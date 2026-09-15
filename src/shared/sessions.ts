@@ -63,8 +63,6 @@ function matchesStatus(session: Session, filter: SessionQuery['status']): boolea
 export function filterSessions(sessions: Session[], query: SessionQuery): Session[] {
   const needle = query.search.trim().toLowerCase()
   return sessions.filter((session) => {
-    // Subagent sessions are reachable from their parent's task block, not the list.
-    if (session.parentSessionId) return false
     if (!matchesStatus(session, query.status)) return false
     if (query.environment !== 'all' && session.environmentId !== query.environment) return false
     if (needle && !`${session.title} ${session.cwd}`.toLowerCase().includes(needle)) return false
@@ -129,4 +127,45 @@ export function groupSessions(
     map.set(key, group)
   }
   return [...map.values()]
+}
+
+/** A row of the session list: a session, and how deep it sits under a parent. */
+export interface ListRow {
+  session: Session
+  depth: number
+}
+
+/**
+ * Subtasks listed under the task that spawned them.
+ *
+ * They used to be hidden here, reachable only from their parent's task block,
+ * which made sense when the only way to get one was a subagent call. Now that a
+ * story can be split on a board, a subtask is a first-class piece of work and
+ * hiding it loses it. It is indented rather than promoted, so the list still
+ * says which work belongs to which.
+ */
+export function nestSubtasks(rows: Session[]): ListRow[] {
+  const present = new Set(rows.map((row) => row.id))
+  const children = new Map<string, Session[]>()
+  const roots: Session[] = []
+
+  for (const row of rows) {
+    const parent = row.parentSessionId
+    // A subtask whose parent is filtered out stands on its own, rather than
+    // vanishing with it.
+    if (parent && present.has(parent)) {
+      children.set(parent, [...(children.get(parent) ?? []), row])
+    } else {
+      roots.push(row)
+    }
+  }
+
+  const out: ListRow[] = []
+  const walk = (session: Session, depth: number): void => {
+    out.push({ session, depth })
+    // Capped: a subagent can spawn a subagent, and the sidebar is 248px wide.
+    for (const child of children.get(session.id) ?? []) walk(child, Math.min(depth + 1, 2))
+  }
+  for (const root of roots) walk(root, 0)
+  return out
 }

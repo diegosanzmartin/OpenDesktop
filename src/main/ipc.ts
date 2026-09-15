@@ -22,7 +22,14 @@ import { deleteSecret, secretHint, secretStatus, setSecret } from './secrets'
 import { createTerminal, killTerminal, resizeTerminal, terminalBuffer, writeTerminal } from './terminal'
 import { readBranchSummary, readChanges, readFileDiff } from './git'
 import { createBoard, deleteBoard, getBoard, listBoards, updateBoard, defaultBoardFor } from './boards'
-import { columnOfKind, defaultColumns, findColumn, statusForColumn } from '@shared/boards'
+import {
+  columnOfKind,
+  defaultColumns,
+  findColumn,
+  isDraggable,
+  isManualColumn,
+  statusForColumn
+} from '@shared/boards'
 import { tick } from './scheduler'
 import {
   clearFinished,
@@ -228,8 +235,8 @@ export function registerIpc(): void {
       input: {
         boardId?: string
         columnId?: string
-        title: string
-        prompt: string
+        title?: string
+        prompt?: string
         agentId?: string
         model?: string
         parentSessionId?: string
@@ -242,7 +249,7 @@ export function registerIpc(): void {
         findColumn(target, input.columnId) ?? columnOfKind(target, 'todo') ?? target.columns[0]
 
       const session = store.createSession({
-        title: input.title.trim() || 'New task',
+        title: input.title?.trim() || 'New task',
         cwd: target.cwd,
         environmentId: target.environmentId,
         agentId: input.agentId ?? AUTO_AGENT,
@@ -250,12 +257,14 @@ export function registerIpc(): void {
         parentSessionId: input.parentSessionId
       })
 
-      const queueing = column.kind === 'todo' || column.kind === 'in-progress'
+      // A task created without instructions is an empty chat waiting for them;
+      // it is only queued once there is something to send.
+      const queueing = Boolean(input.prompt) && (column.kind === 'todo' || column.kind === 'in-progress')
       store.updateSession(session.id, {
         boardId: target.id,
         columnId: column.id,
         order: Date.now(),
-        queuedPrompt: input.prompt,
+        queuedPrompt: input.prompt || undefined,
         status: queueing ? 'queued' : 'idle'
       })
       void tick()
@@ -272,6 +281,11 @@ export function registerIpc(): void {
       if (!session || !board) return undefined
       const column = findColumn(board, input.columnId)
       if (!column) return undefined
+
+      // Checked here and not only in the UI: In progress and Blocked are
+      // readings of what the chat is doing, so accepting a hand-placed card
+      // there would let the board assert something untrue.
+      if (!isManualColumn(column.kind) || !isDraggable(session)) return undefined
 
       const status = statusForColumn(column.kind, session.status)
       const updated = store.updateSession(session.id, {
@@ -331,6 +345,27 @@ export function registerIpc(): void {
   ipcMain.handle(
     'turn:send',
     async (_e, sessionId: string, text: string, attachments?: Attachment[]) => {
+      // On a board, the column the card sits in decides whether this runs now
+      // or joins the queue. That is what the column is for: a task in To do
+      // means "do this when there is room", and honouring it here is what lets
+      // a person line up ten tasks through the ordinary composer.
+      const session = store.getSession(sessionId)
+      const board = session?.boardId ? getBoard(session.boardId) : undefined
+      const column = board && findColumn(board, session!.columnId)
+
+      if (session && column && (column.kind === 'todo' || column.kind === 'backlog')) {
+        store.updateSession(session.id, {
+          queuedPrompt: text,
+          status: column.kind === 'todo' ? 'queued' : 'idle',
+          title:
+            session.title === 'New task' || session.title === 'New session'
+              ? text.replace(/\s+/g, ' ').slice(0, 70) || session.title
+              : session.title
+        })
+        void tick()
+        return true
+      }
+
       void runTurn({ sessionId, userText: text, attachments }).catch(() => undefined)
       return true
     }

@@ -8,6 +8,7 @@ import {
   Link2,
   Loader2,
   Plus,
+  SquareKanban,
   Trash2,
   UserRound
 } from 'lucide-react'
@@ -16,6 +17,8 @@ import {
   ALL_BOARDS,
   cardsOnBoard,
   columnsFor,
+  isDraggable,
+  isManualColumn,
   overviewColumnId,
   storiesInColumn,
   type Story
@@ -23,7 +26,8 @@ import {
 import { useStore } from '../state/store'
 import { folderName } from '../lib/format'
 import { Button } from './ui'
-import { NewTaskDialog } from './NewTaskDialog'
+import { TaskPanel } from './TaskPanel'
+import { EditableTitle } from './EditableTitle'
 
 /* ---------------- cards ---------------- */
 
@@ -93,6 +97,7 @@ function Card({ session, onDragStart }: { session: Session; onDragStart: () => v
   const openTask = useStore((s) => s.openTask)
   const config = useStore((s) => s.config)
   const sessions = useStore((s) => s.sessions)
+  const openId = useStore((s) => s.boardTaskId)
   const agent = config?.agent[session.agentId]
   const related = (session.relatedSessionIds ?? [])
     .map((id) => sessions.find((other) => other.id === id))
@@ -100,14 +105,21 @@ function Card({ session, onDragStart }: { session: Session; onDragStart: () => v
 
   return (
     <div
-      draggable
+      // A running card is not draggable: its column is a reading of the turn,
+      // and the turn is not finished. Stop it from the chat to move it.
+      draggable={isDraggable(session)}
       onDragStart={(event) => {
         event.dataTransfer.setData('text/plain', session.id)
         event.dataTransfer.effectAllowed = 'move'
         onDragStart()
       }}
       onClick={() => void openTask(session.id)}
-      className="border-ink-800 bg-ink-850 hover:border-ink-700 group flex cursor-pointer overflow-hidden rounded-md border transition-colors"
+      className={clsx(
+        'group flex cursor-pointer overflow-hidden rounded-md border transition-colors',
+        session.id === openId
+          ? 'border-brand/60 bg-ink-800'
+          : 'border-ink-800 bg-ink-850 hover:border-ink-700'
+      )}
     >
       <span className={clsx('w-[3px] shrink-0', accentFor(session))} />
       <div className="min-w-0 flex-1 px-2.5 py-2">
@@ -206,23 +218,34 @@ function Column({
   const stories = useMemo(() => storiesInColumn(cards, column.id, all), [cards, column.id, all])
   const count = cards.filter((card) => card.columnId === column.id).length
   const overLimit = column.wipLimit !== undefined && count > column.wipLimit
+  // In progress and Blocked are set by what the chat is doing, never by hand.
+  const manual = isManualColumn(column.kind)
 
   return (
     <div
       onDragOver={(event: DragEvent) => {
+        if (!manual) {
+          event.dataTransfer.dropEffect = 'none'
+          return
+        }
         event.preventDefault()
         event.dataTransfer.dropEffect = 'move'
         if (!over) setOver(true)
       }}
       onDragLeave={() => setOver(false)}
       onDrop={(event) => {
+        if (!manual) return
         event.preventDefault()
         setOver(false)
         onDrop(column.id)
       }}
       className={clsx(
         'flex w-[228px] shrink-0 flex-col rounded-lg border transition-colors',
-        over && dragging ? 'border-brand/60 bg-ink-850/60' : 'border-ink-800 bg-ink-900/40'
+        over && dragging && manual
+          ? 'border-brand/60 bg-ink-850/60'
+          : dragging && !manual
+            ? 'border-ink-800 bg-ink-900/40 opacity-50'
+            : 'border-ink-800 bg-ink-900/40'
       )}
     >
       <div className="border-ink-800 flex items-center gap-2 border-b px-3 py-2">
@@ -240,20 +263,35 @@ function Column({
             {count}
           </span>
         ) : null}
-        <button
-          type="button"
-          onClick={() => onAdd(column.id)}
-          title={`New task in ${column.name}`}
-          className="text-ink-600 hover:text-ink-200 ml-auto rounded p-0.5"
-        >
-          <Plus className="h-3.5 w-3.5" />
-        </button>
+        {manual ? (
+          <button
+            type="button"
+            onClick={() => onAdd(column.id)}
+            title={`New task in ${column.name}`}
+            className="text-ink-600 hover:text-ink-200 ml-auto rounded p-0.5"
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </button>
+        ) : (
+          <span
+            title="Cards arrive here on their own, from what the chat is doing"
+            className="text-ink-700 ml-auto text-[10px]"
+          >
+            auto
+          </span>
+        )}
       </div>
 
       <div className="min-h-[120px] flex-1 space-y-1.5 overflow-y-auto p-1.5">
         {stories.length === 0 ? (
-          <div className="text-ink-700 px-2 py-6 text-center text-[11px]">
-            {column.kind === 'todo' ? 'Nothing queued' : 'Empty'}
+          <div className="text-ink-700 px-2 py-6 text-center text-[11px] leading-[1.5]">
+            {column.kind === 'todo'
+              ? 'Nothing queued'
+              : column.kind === 'in-progress'
+                ? 'Nothing running'
+                : column.kind === 'blocked'
+                  ? 'Nothing waiting on you'
+                  : 'Empty'}
           </div>
         ) : (
           stories.map((story) => (
@@ -288,9 +326,12 @@ function BoardPicker({ boards, active }: { boards: Board[]; active: Board | unde
       <button
         type="button"
         onClick={() => setOpen(!open)}
+        title={active ? 'Switch board' : undefined}
         className="text-ink-100 hover:bg-ink-800 flex items-center gap-1.5 rounded-md px-2 py-1 text-[13px]"
       >
-        {active ? active.name : 'All boards'}
+        {/* When a board is open its name is the editable title beside this, so
+            the switcher is just the switcher and the name appears once. */}
+        {active ? <SquareKanban className="text-ink-400 h-3.5 w-3.5" /> : 'All boards'}
         <ChevronDown className="text-ink-500 h-3.5 w-3.5" />
       </button>
 
@@ -363,7 +404,18 @@ export function BoardView(): ReactNode {
   const config = useStore((s) => s.config)
 
   const [dragging, setDragging] = useState<string | null>(null)
-  const [adding, setAdding] = useState<{ boardId: string; columnId: string } | null>(null)
+  const openTask = useStore((s) => s.openTask)
+
+  /**
+   * A new task is an empty chat on the board, opened in the panel. There is no
+   * form in between: everything a form would have asked — which agent, which
+   * host, which model — the composer already asks better, and the title names
+   * itself from the first message.
+   */
+  const addTask = async (boardId: string, columnId: string): Promise<void> => {
+    const created = await window.opendesktop.boards.createTask({ boardId, columnId })
+    if (created) await openTask(created.id)
+  }
 
   const board = boards.find((candidate) => candidate.id === activeBoardId)
   const columns = useMemo(() => columnsFor(board, boards), [board, boards])
@@ -425,6 +477,15 @@ export function BoardView(): ReactNode {
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="border-ink-800 flex shrink-0 items-center gap-2 border-b px-3 py-2">
         <BoardPicker boards={boards} active={board} />
+        {board ? (
+          <EditableTitle
+            value={board.name}
+            title="Click to rename this board"
+            onCommit={(name) => void window.opendesktop.boards.update(board.id, { name })}
+            className="text-ink-100 text-[13px] font-medium"
+            inputClassName="text-[13px] font-medium w-44"
+          />
+        ) : null}
         <span className="text-ink-600 text-[11.5px]">
           {cards.length} task{cards.length === 1 ? '' : 's'}
           {board ? ` · ${folderName(board.cwd)}` : ' · every board'}
@@ -433,12 +494,11 @@ export function BoardView(): ReactNode {
         <div className="ml-auto flex items-center gap-1">
           <Button
             size="sm"
-            onClick={() =>
-              setAdding({
-                boardId: (board ?? boards[0]).id,
-                columnId: (board ?? boards[0]).columns.find((c) => c.kind === 'todo')?.id ?? ''
-              })
-            }
+            onClick={() => {
+              const target = board ?? boards[0]
+              const column = target.columns.find((c) => c.kind === 'todo') ?? target.columns[0]
+              void addTask(target.id, column.id)
+            }}
           >
             <Plus className="h-3.5 w-3.5" />
             New task
@@ -459,8 +519,9 @@ export function BoardView(): ReactNode {
         </div>
       </div>
 
-      <div className="flex min-h-0 flex-1 gap-2 overflow-x-auto p-2">
-        {columns.map((column) => (
+      <div className="flex min-h-0 flex-1">
+        <div className="flex min-h-0 flex-1 gap-2 overflow-x-auto p-2">
+          {columns.map((column) => (
           <Column
             key={column.id}
             column={column}
@@ -469,20 +530,20 @@ export function BoardView(): ReactNode {
             dragging={dragging !== null}
             onDragStart={setDragging}
             onDrop={(columnId) => void move(columnId)}
-            onAdd={(columnId) =>
-              setAdding({ boardId: (board ?? boards[0]).id, columnId: board ? columnId : '' })
-            }
+            onAdd={(columnId) => {
+              // On the overview the columns are kinds, so the card goes to the
+              // matching column of whichever board is in view underneath.
+              const target = board ?? boards[0]
+              const real = board
+                ? columnId
+                : (target.columns.find((c) => c.kind === columnId) ?? target.columns[0]).id
+              void addTask(target.id, real)
+            }}
           />
-        ))}
+          ))}
+        </div>
+        <TaskPanel />
       </div>
-
-      {adding ? (
-        <NewTaskDialog
-          boardId={adding.boardId}
-          columnId={adding.columnId}
-          onClose={() => setAdding(null)}
-        />
-      ) : null}
     </div>
   )
 }

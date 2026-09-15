@@ -262,7 +262,10 @@ export function Composer({ session }: { session: Session }): ReactNode {
   }
 
   return (
-    <div className="px-6 pb-4 pt-1">
+    // A container, not a media query: this composer is used both full width in
+    // the chat and in the board's 460px side panel, and what has room is a
+    // property of the pane, not of the window.
+    <div className="@container px-6 pb-4 pt-1">
       <div className="mx-auto max-w-[760px]">
         <ChangesBar session={session} />
 
@@ -397,7 +400,7 @@ export function Composer({ session }: { session: Session }): ReactNode {
           </div>
         </div>
 
-        <div className="mt-2 flex items-center gap-3 px-1">
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 px-1">
           <button
             type="button"
             title={session.cwd}
@@ -406,10 +409,10 @@ export function Composer({ session }: { session: Session }): ReactNode {
               const picked = await window.opendesktop.host.pickFolder()
               if (picked) patch({ cwd: picked })
             }}
-            className="text-ink-500 hover:text-ink-200 flex items-center gap-1.5 text-[12px]"
+            className="text-ink-500 hover:text-ink-200 flex min-w-0 shrink items-center gap-1.5 text-[12px]"
           >
-            <FolderOpen className="h-3.5 w-3.5" />
-            {shortenPath(session.cwd, 26)}
+            <FolderOpen className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">{shortenPath(session.cwd, 26)}</span>
           </button>
 
           <Picker
@@ -426,9 +429,13 @@ export function Composer({ session }: { session: Session }): ReactNode {
               this model is not set as vision-capable — images will not be sent
             </span>
           ) : isAuto ? (
-            <span className="text-ink-600 text-[11.5px]">splits the work across specialists</span>
+            // Hidden below ~900px: in the board's side panel the pickers matter
+            // and the description does not.
+            <span className="text-ink-600 hidden text-[11.5px] @[620px]:inline">
+              splits the work across specialists
+            </span>
           ) : agent?.description ? (
-            <span className="text-ink-600 max-w-[280px] truncate text-[11.5px]">
+            <span className="text-ink-600 hidden max-w-[280px] truncate text-[11.5px] @[620px]:inline">
               {agent.description}
             </span>
           ) : null}
@@ -443,7 +450,7 @@ export function Composer({ session }: { session: Session }): ReactNode {
             options={environments.map((e) => ({ value: e.id, label: e.name }))}
           />
 
-          <div className="ml-auto flex items-center gap-3">
+          <div className="ml-auto flex min-w-0 items-center gap-3">
             <Picker
               title="Model"
               value={session.model}

@@ -10,13 +10,13 @@ import {
   ListTree,
   MoreVertical,
   PanelRight,
-  Pencil,
   Settings as SettingsIcon,
   SquareTerminal,
   Trash2
 } from 'lucide-react'
 import { activeSession, useStore, type DockTab } from '../state/store'
 import { folderName } from '../lib/format'
+import { EditableTitle } from './EditableTitle'
 
 function DockButton({
   tab,
@@ -91,8 +91,6 @@ export function TopBar(): ReactNode {
   const newSession = useStore((s) => s.newSession)
 
   const [menuOpen, setMenuOpen] = useState(false)
-  const [renaming, setRenaming] = useState(false)
-  const [draft, setDraft] = useState('')
   const menu = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -113,33 +111,21 @@ export function TopBar(): ReactNode {
     >
       <MessageSquare className="text-ink-500 h-4 w-4 shrink-0" />
 
-      {renaming && session ? (
-        <input
-          autoFocus
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          onBlur={() => {
-            if (draft.trim()) void window.opendesktop.sessions.update(session.id, { title: draft.trim() })
-            setRenaming(false)
-          }}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') event.currentTarget.blur()
-            if (event.key === 'Escape') setRenaming(false)
-          }}
-          className="no-drag border-ink-700 bg-ink-850 text-ink-100 min-w-0 flex-1 rounded border px-2 py-0.5 text-[13.5px] outline-none"
+      {session ? (
+        <EditableTitle
+          value={session.title}
+          onCommit={(title) => void window.opendesktop.sessions.update(session.id, { title })}
+          className="no-drag text-ink-100 text-[13.5px] font-medium"
+          inputClassName="no-drag min-w-0 flex-1 text-[13.5px] font-medium"
         />
       ) : (
-        <>
-          <span className="text-ink-100 min-w-0 truncate text-[13.5px] font-medium">
-            {session?.title ?? 'OpenDesktop'}
-          </span>
-          {session ? (
-            <span className="bg-ink-800 text-ink-400 shrink-0 rounded-md px-1.5 py-[2px] text-[11.5px]">
-              {folderName(session.cwd)}
-            </span>
-          ) : null}
-        </>
+        <span className="text-ink-100 min-w-0 truncate text-[13.5px] font-medium">OpenDesktop</span>
       )}
+      {session ? (
+        <span className="bg-ink-800 text-ink-400 shrink-0 rounded-md px-1.5 py-[2px] text-[11.5px]">
+          {folderName(session.cwd)}
+        </span>
+      ) : null}
 
       <div className="no-drag ml-auto flex items-center gap-0.5">
         <DockButton tab="activity" title="Activity">
@@ -200,15 +186,6 @@ export function TopBar(): ReactNode {
                 }}
               />
               <div className="bg-ink-800 my-1 h-px" />
-              <MenuItem
-                icon={<Pencil className="h-4 w-4" />}
-                label="Rename"
-                onClick={() => {
-                  setDraft(session?.title ?? '')
-                  setRenaming(true)
-                  setMenuOpen(false)
-                }}
-              />
               <MenuItem
                 icon={<Copy className="h-4 w-4" />}
                 label="Duplicate"

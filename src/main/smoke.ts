@@ -35,12 +35,14 @@ import { getRuntime } from './runtime'
 import { diffLines, renderDiff } from './diff'
 import { decide, matchesAny, splitCommand } from './approvals'
 import { parseGcloudCommand } from '@shared/gcloud'
-import { filterSessions, groupSessions, sortSessions } from '@shared/sessions'
+import { filterSessions, groupSessions, nestSubtasks, sortSessions } from '@shared/sessions'
 import type { Board, Session, SessionQuery } from '@shared/types'
 import {
   columnForStatus,
   columnOfKind,
   defaultColumns,
+  isDraggable,
+  isManualColumn,
   statusForColumn,
   storiesInColumn
 } from '@shared/boards'
@@ -752,13 +754,13 @@ async function main(): Promise<void> {
 
     // "Active" is about not being put away, not about a particular state.
     check(
-      'Active hides archived sessions and subagents',
-      ids(filterSessions(rows, base)).join(',') === 'a,b,c,e',
+      'Active hides archived sessions',
+      ids(filterSessions(rows, base)).join(',') === 'a,b,c,kid,e',
       ids(filterSessions(rows, base))
     )
     check(
-      'All still hides subagents, since they are reached from their parent',
-      ids(filterSessions(rows, { ...base, status: 'all' })).join(',') === 'a,b,c,d,e'
+      'a subtask is listed too, rather than being reachable only from its parent',
+      ids(filterSessions(rows, { ...base, status: 'all' })).join(',') === 'a,b,c,d,kid,e'
     )
     check(
       'Running keeps only the running one',
@@ -820,7 +822,7 @@ async function main(): Promise<void> {
     )
     check(
       'every session lands in exactly one group',
-      byFolder.reduce((sum, g) => sum + g.items.length, 0) === 4
+      byFolder.reduce((sum, g) => sum + g.items.length, 0) === 5
     )
   }
 
@@ -861,6 +863,26 @@ async function main(): Promise<void> {
     check('done lands in Done', columnForStatus(board, 'done')?.kind === 'done')
     check('idle asks for no move at all', columnForStatus(board, 'idle') === undefined)
 
+    check(
+      'a person may place a card in the columns that express an intention',
+      isManualColumn('backlog') && isManualColumn('todo') && isManualColumn('review') && isManualColumn('done')
+    )
+    check(
+      'but not in the two that only report what the chat is doing',
+      !isManualColumn('in-progress') && !isManualColumn('blocked')
+    )
+
+    const draggable = (status: Session['status']): boolean =>
+      isDraggable({ status } as Session)
+    check(
+      'a card with a turn in flight cannot be dragged',
+      !draggable('running') && !draggable('awaiting-approval')
+    )
+    check(
+      'anything settled can be',
+      draggable('idle') && draggable('queued') && draggable('blocked') && draggable('done')
+    )
+
     const card = (over: Partial<Session>): Session =>
       ({
         id: 'c',
@@ -896,6 +918,57 @@ async function main(): Promise<void> {
     check(
       'a subtask whose story is elsewhere still shows, on its own',
       stories.some((s) => !s.parent && s.items[0].id === 'orphan')
+    )
+  }
+
+  section('subtasks in the list')
+  {
+    const row = (id: string, parent?: string): Session =>
+      ({
+        id,
+        title: id,
+        cwd: '/tmp',
+        environmentId: 'local',
+        agentId: 'auto',
+        model: 'm',
+        status: 'idle',
+        createdAt: 0,
+        updatedAt: 0,
+        usage: { input: 0, output: 0, cost: 0 },
+        parentSessionId: parent
+      }) as Session
+
+    const rows = [row('story'), row('kid1', 'story'), row('kid2', 'story'), row('grandkid', 'kid1'), row('loose')]
+    const nested = nestSubtasks(rows)
+    check(
+      'every session appears exactly once',
+      nested.length === rows.length && new Set(nested.map((n) => n.session.id)).size === rows.length
+    )
+    check(
+      'a subtask follows its parent, indented',
+      // Depth first: a subtask's own subtasks belong with it, not after its sibling.
+      nested.map((n) => `${n.session.id}:${n.depth}`).join(',') ===
+        'story:0,kid1:1,grandkid:2,kid2:1,loose:0',
+      nested.map((n) => `${n.session.id}:${n.depth}`)
+    )
+    check(
+      'a subtask whose parent is filtered out still shows, at the top level',
+      nestSubtasks([row('kid1', 'story'), row('loose')]).every((n) => n.depth === 0)
+    )
+    check(
+      'nesting is capped so the 248px sidebar stays readable',
+      nestSubtasks([row('a'), row('b', 'a'), row('c', 'b'), row('d', 'c')]).every((n) => n.depth <= 2)
+    )
+    check(
+      'a subtask is no longer hidden from the session list',
+      filterSessions(rows, {
+        status: 'all',
+        environment: 'all',
+        groupBy: 'none',
+        sortBy: 'recent',
+        search: '',
+        showGitStatus: false
+      }).length === rows.length
     )
   }
 
