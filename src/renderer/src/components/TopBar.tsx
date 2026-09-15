@@ -9,7 +9,6 @@ import {
   MessageSquare,
   ListTree,
   MoreVertical,
-  PanelRight,
   Settings as SettingsIcon,
   SquareTerminal,
   Trash2
@@ -17,6 +16,7 @@ import {
 import { activeSession, useStore, type DockTab } from '../state/store'
 import { folderName } from '../lib/format'
 import { EditableTitle } from './EditableTitle'
+import { DiffSquare } from './icons'
 
 function DockButton({
   tab,
@@ -148,7 +148,7 @@ export function TopBar(): ReactNode {
           <SquareTerminal className="h-4 w-4" />
         </DockButton>
         <DockButton tab="changes" title="Changes">
-          <PanelRight className="h-4 w-4" />
+          <DiffSquare className="h-4 w-4" />
         </DockButton>
         <DockButton tab="browser" title="Browser">
           <Globe className="h-4 w-4" />

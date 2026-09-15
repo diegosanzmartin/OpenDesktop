@@ -198,13 +198,11 @@ export function registerIpc(): void {
       const column = board
         ? (findColumn(board, target?.columnId) ?? columnOfKind(board, 'backlog') ?? board.columns[0])
         : undefined
-      const forked = store.forkSession(id, {
+      return store.forkSession(id, {
         boardId: board?.id,
         columnId: column?.id,
         standalone: Boolean(board)
       })
-      if (forked) history.copyHistory(id, forked.id)
-      return forked
     }
   )
   ipcMain.handle('session:messages', (_e, id: string) => store.listMessages(id))

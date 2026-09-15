@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { nanoid } from 'nanoid'
 import type { Block, Message, MessagePart, Session, SessionStatus } from '@shared/types'
 import { DATA_DIR } from './config'
+import { copyHistory } from './history'
 import { bus } from './bus'
 
 const SESSIONS_DIR = join(DATA_DIR, 'sessions')
@@ -121,72 +122,125 @@ export function setSessionStatus(id: string, status: SessionStatus): void {
   updateSession(id, { status })
 }
 
+/** Every session spawned by this one, however deep. */
+function descendantsOf(id: string): Session[] {
+  const out: Session[] = []
+  const queue = [id]
+  const seen = new Set<string>([id])
+  while (queue.length > 0) {
+    const current = queue.shift()!
+    for (const file of sessions.values()) {
+      const child = file.session
+      if (child.parentSessionId !== current || seen.has(child.id)) continue
+      seen.add(child.id)
+      out.push(child)
+      queue.push(child.id)
+    }
+  }
+  return out
+}
+
 /**
  * A copy of a conversation, to take it somewhere else without losing where it
- * has been.
+ * has been. Independent of the original: deleting either leaves the other whole.
  *
- * Blocks are copied with fresh ids and the message parts are remapped onto
- * them, because a part points at a block by id: reusing the originals would
- * give two sessions the same tool runs, and one deleting them would blank the
- * other's transcript. The model-facing history is copied separately by the
- * caller — this half is what a person reads, that half is what the model does.
+ * The subagent sessions come too. A task block points at the session that ran
+ * it, so copying only the parent would leave the fork's subchats reading from
+ * the original's runs — one delete away from being empty, and one reply away
+ * from diverging. The whole tree is copied and every reference is remapped:
+ * blocks get fresh ids and the message parts that point at them follow, task
+ * blocks point at the copied child, and each child's parent is the copied
+ * parent.
  *
- * A task block's `childSessionId` is left pointing at the original subagent
- * run. Those sessions are not duplicated: the fork's transcript is a record of
- * what happened, and what happened was that run.
+ * Everything lands idle. A copied transcript is a record of work that already
+ * happened, not work in flight.
  */
 export function forkSession(
   id: string,
   overrides?: { title?: string; boardId?: string; columnId?: string; standalone?: boolean }
 ): Session | undefined {
-  const source = sessions.get(id)
-  if (!source) return undefined
+  const root = sessions.get(id)
+  if (!root) return undefined
 
+  const originals = [root.session, ...descendantsOf(id)]
   const now = Date.now()
-  const session: Session = {
-    ...source.session,
-    id: nanoid(12),
-    title: overrides?.title ?? `${source.session.title} (fork)`,
-    status: 'idle',
-    createdAt: now,
-    updatedAt: now,
-    pinned: false,
-    archived: false,
-    blockedReason: undefined,
-    queuedPrompt: undefined,
-    relatedSessionIds: undefined,
-    boardId: overrides?.boardId ?? source.session.boardId,
-    columnId: overrides?.columnId ?? source.session.columnId,
-    order: now,
-    // Moved to a board of its own, a fork is its own task rather than someone
-    // else's subtask.
-    parentSessionId: overrides?.standalone ? undefined : source.session.parentSessionId,
-    taskLabel: overrides?.standalone ? undefined : source.session.taskLabel
-  }
+
+  // Every id is minted first, so a reference can be remapped whichever order
+  // the sessions are copied in.
+  const sessionIds = new Map<string, string>()
+  for (const original of originals) sessionIds.set(original.id, nanoid(12))
 
   const blockIds = new Map<string, string>()
-  const blocks: Block[] = source.blocks.map((block) => {
-    const fresh = nanoid(12)
-    blockIds.set(block.id, fresh)
-    return { ...block, id: fresh, sessionId: session.id }
-  })
-  for (const block of blocks) {
-    if (block.parentBlockId) block.parentBlockId = blockIds.get(block.parentBlockId) ?? block.parentBlockId
+  for (const original of originals) {
+    for (const block of sessions.get(original.id)?.blocks ?? []) blockIds.set(block.id, nanoid(12))
   }
 
-  const messages: Message[] = source.messages.map((message) => ({
-    ...message,
-    id: nanoid(12),
-    sessionId: session.id,
-    parts: message.parts.map((part) =>
-      part.blockId ? { ...part, blockId: blockIds.get(part.blockId) ?? part.blockId } : { ...part }
-    )
-  }))
+  const created: Session[] = []
 
-  sessions.set(session.id, { session, messages, blocks })
-  markDirty(session.id)
-  bus.emit({ type: 'session.created', session })
-  return session
+  for (const original of originals) {
+    const file = sessions.get(original.id)
+    if (!file) continue
+    const isRoot = original.id === id
+    const freshId = sessionIds.get(original.id)!
+
+    const session: Session = {
+      ...original,
+      id: freshId,
+      title: isRoot ? (overrides?.title ?? `${original.title} (fork)`) : original.title,
+      status: 'idle',
+      createdAt: now,
+      updatedAt: now,
+      pinned: false,
+      archived: false,
+      blockedReason: undefined,
+      queuedPrompt: undefined,
+      relatedSessionIds: undefined,
+      order: now,
+      // The copied tree moves as a unit, so a subagent lands on the same board
+      // and in the same column as the parent it belongs to.
+      boardId: overrides?.boardId ?? original.boardId,
+      columnId: overrides?.columnId ?? original.columnId,
+      parentSessionId: isRoot
+        ? overrides?.standalone
+          ? undefined
+          : original.parentSessionId
+        : sessionIds.get(original.parentSessionId ?? '') ?? original.parentSessionId,
+      taskLabel: isRoot && overrides?.standalone ? undefined : original.taskLabel
+    }
+
+    const blocks: Block[] = file.blocks.map((block) => {
+      const childSessionId = block.input?.childSessionId
+      return {
+        ...block,
+        id: blockIds.get(block.id) ?? nanoid(12),
+        sessionId: freshId,
+        parentBlockId: block.parentBlockId ? blockIds.get(block.parentBlockId) : undefined,
+        input:
+          typeof childSessionId === 'string'
+            ? { ...block.input, childSessionId: sessionIds.get(childSessionId) ?? childSessionId }
+            : { ...block.input }
+      }
+    })
+
+    const messages: Message[] = file.messages.map((message) => ({
+      ...message,
+      id: nanoid(12),
+      sessionId: freshId,
+      parts: message.parts.map((part) =>
+        part.blockId ? { ...part, blockId: blockIds.get(part.blockId) ?? part.blockId } : { ...part }
+      )
+    }))
+
+    sessions.set(freshId, { session, messages, blocks })
+    markDirty(freshId)
+    // The model-facing transcript is the other half of a session; a fork that
+    // copied only what a person reads would start the next turn amnesiac.
+    copyHistory(original.id, freshId)
+    created.push(session)
+  }
+
+  for (const session of created) bus.emit({ type: 'session.created', session })
+  return sessions.get(sessionIds.get(id)!)?.session
 }
 
 export function deleteSession(id: string): void {

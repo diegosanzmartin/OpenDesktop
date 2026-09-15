@@ -1000,12 +1000,41 @@ async function main(): Promise<void> {
     history.appendHistory(origin.id, [{ role: 'user', content: 'hello' }])
     store.updateSession(origin.id, { pinned: true, status: 'done' })
 
+    // A subagent run, with the task block in the parent that points at it.
+    const child = store.createSession({
+      title: 'Subagent run',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: 'auto',
+      model: 'test/mock',
+      parentSessionId: origin.id
+    })
+    const grandchild = store.createSession({
+      title: 'Nested run',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: 'auto',
+      model: 'test/mock',
+      parentSessionId: child.id
+    })
+    const taskBlock = store.createBlock({
+      sessionId: origin.id,
+      messageId: 'm',
+      tool: 'task',
+      title: 'delegate',
+      input: { description: 'delegate', childSessionId: child.id },
+      agentId: 'auto',
+      environmentId: 'local',
+      cwd: process.cwd()
+    })
+    store.addMessage({ sessionId: child.id, role: 'user', parts: [{ type: 'text', text: 'do it' }] })
+    history.appendHistory(child.id, [{ role: 'user', content: 'do it' }])
+
     const forked = store.forkSession(origin.id)!
-    history.copyHistory(origin.id, forked.id)
 
     check('a fork is a new session', forked.id !== origin.id)
     check('it carries the conversation', store.listMessages(forked.id).length === 2)
-    check('it carries the tool blocks', store.listBlocks(forked.id).length === 1)
+    check('it carries the tool blocks', store.listBlocks(forked.id).length === 2)
     check(
       'the copied blocks are new objects, not the originals',
       store.listBlocks(forked.id)[0].id !== block.id
@@ -1018,15 +1047,43 @@ async function main(): Promise<void> {
       'deleting the original leaves the fork intact',
       (() => {
         store.deleteSession(origin.id)
-        return store.listBlocks(forked.id).length === 1 && store.listMessages(forked.id).length === 2
+        return store.listBlocks(forked.id).length === 2 && store.listMessages(forked.id).length === 2
       })()
     )
     check('the model transcript comes along', history.getHistory(forked.id).length === 1)
+
+    /* the subagent tree is copied too, so the fork owes the original nothing */
+    const kids = store.listSessions().filter((s) => s.parentSessionId === forked.id)
+    check('its subagent sessions are duplicated', kids.length === 1, kids.length)
+    check('and they are copies, not the originals', kids[0]?.id !== child.id)
+    check('nested subagents come too', store.listSessions().some((s) => s.parentSessionId === kids[0]?.id))
+    check(
+      'the copied run has its own transcript',
+      kids[0] ? store.listMessages(kids[0].id).length === 1 : false
+    )
+    check(
+      'and its own model history',
+      kids[0] ? history.getHistory(kids[0].id).length === 1 : false
+    )
+    check(
+      'the task block points at the copied run, not the original',
+      store.listBlocks(forked.id).find((b) => b.tool === 'task')?.input.childSessionId === kids[0]?.id,
+      store.listBlocks(forked.id).find((b) => b.tool === 'task')?.input.childSessionId
+    )
+    check(
+      'deleting the original subagent leaves the copy whole',
+      (() => {
+        const copyId = kids[0]!.id
+        store.deleteSession(child.id)
+        history.clearHistory(child.id)
+        return store.listMessages(copyId).length === 1 && history.getHistory(copyId).length === 1
+      })()
+    )
     check('a fork starts idle, however the original ended', forked.status === 'idle')
     check('and unpinned, since pinning is about this list not that one', !forked.pinned)
 
     const board = createBoard({ name: 'Fork target', cwd: process.cwd(), environmentId: 'local' })
-    const child = store.createSession({
+    const subtask = store.createSession({
       title: 'Subtask',
       cwd: process.cwd(),
       environmentId: 'local',
@@ -1034,7 +1091,7 @@ async function main(): Promise<void> {
       model: 'test/mock',
       parentSessionId: forked.id
     })
-    const moved = store.forkSession(child.id, {
+    const moved = store.forkSession(subtask.id, {
       boardId: board.id,
       columnId: columnOfKind(board, 'backlog')!.id,
       standalone: true
@@ -1054,10 +1111,16 @@ async function main(): Promise<void> {
     check('pinned rows are lifted out of the grouping', split.pinned.map((r) => r.id).join(',') === 'b')
     check('and the rest keep their order', split.rest.map((r) => r.id).join(',') === 'a,c')
 
-    for (const id of [forked.id, child.id, moved.id]) {
-      store.deleteSession(id)
-      history.clearHistory(id)
+    // Everything this section made, including whatever the forks copied.
+    for (const session of store.listSessions()) {
+      if (/fork|Subagent|Nested|Subtask|Original/i.test(session.title)) {
+        store.deleteSession(session.id)
+        history.clearHistory(session.id)
+      }
     }
+    void grandchild
+    void taskBlock
+    void moved
     deleteBoard(board.id)
   }
 

@@ -27,6 +27,7 @@ import type { Session } from '@shared/types'
 import { columnOfKind } from '@shared/boards'
 import { useStore } from '../state/store'
 import { folderName } from '../lib/format'
+import { DiffSquare } from './icons'
 
 interface Item {
   key: string
@@ -151,7 +152,7 @@ export function SessionMenu({ session }: { session: Session }): ReactNode {
         {
           key: 'changes',
           label: 'Changes',
-          icon: <Columns3 className="h-3.5 w-3.5" />,
+          icon: <DiffSquare className="h-3.5 w-3.5" />,
           onSelect: () => {
             void selectSession(session.id)
             openDock('changes')
