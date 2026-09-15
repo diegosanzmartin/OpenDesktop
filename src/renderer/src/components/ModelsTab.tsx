@@ -61,6 +61,7 @@ function ApiKeyRow({ providerId, onStored }: { providerId: string; onStored: () 
   const [error, setError] = useState<string | null>(null)
 
   const hint = secrets.hints[providerId] ?? null
+  const unreadable = secrets.failed.includes(providerId)
   const status = keyStatus[providerId]
 
   const save = async (): Promise<void> => {
@@ -109,6 +110,12 @@ function ApiKeyRow({ providerId, onStored }: { providerId: string; onStored: () 
         {hint ? <span className="text-ink-500 ml-auto font-mono text-[10.5px]">{hint}</span> : null}
       </div>
 
+      {unreadable ? (
+        <div className="border-warn/40 bg-warn/10 text-warn mb-1.5 rounded border px-2 py-1 text-[10.5px]">
+          A key is stored for this provider but this build cannot decrypt it — the keychain entry
+          was written by a different app identity or on another machine. Paste it again to replace it.
+        </div>
+      ) : null}
       {!secrets.available ? (
         <div className="text-warn text-[10.5px]">
           The system keychain is unavailable, so keys cannot be stored here. Use{' '}

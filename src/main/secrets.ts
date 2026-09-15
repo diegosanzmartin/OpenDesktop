@@ -1,4 +1,4 @@
-import { safeStorage } from 'electron'
+import { app, safeStorage } from 'electron'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { CONFIG_DIR, setSecretResolver } from './config'
@@ -13,7 +13,22 @@ import { CONFIG_DIR, setSecretResolver } from './config'
  */
 const SECRETS_PATH = join(CONFIG_DIR, 'secrets.json')
 
+/**
+ * safeStorage derives its key from the application name, so anything that runs
+ * under a different name gets a different keychain entry and cannot read what
+ * the app stored. Pinning it keeps a dev run, the packaged app and the
+ * self-check on the same entry. This is the name both already resolved to, so
+ * existing secrets keep working.
+ */
+const KEYCHAIN_IDENTITY = 'opendesktop'
+
+export function pinKeychainIdentity(): void {
+  if (app.getName() !== KEYCHAIN_IDENTITY) app.setName(KEYCHAIN_IDENTITY)
+}
+
 const cache = new Map<string, string>()
+/** Present on disk but unreadable here — surfaced so the UI can say so. */
+let failedNames: string[] = []
 let available = false
 
 function readFile(): Record<string, string> {
@@ -32,13 +47,15 @@ function writeFileSecure(data: Record<string, string>): void {
 }
 
 /** Must run after app.whenReady(): safeStorage needs the Keychain to be reachable. */
-export function loadSecrets(): { available: boolean; names: string[]; error?: string } {
+export function loadSecrets(): { available: boolean; names: string[]; failed: string[]; error?: string } {
+  pinKeychainIdentity()
   available = safeStorage.isEncryptionAvailable()
   cache.clear()
 
   if (!available) {
     setSecretResolver(() => undefined)
-    return { available: false, names: [], error: 'the system keychain is not available' }
+    failedNames = []
+    return { available: false, names: [], failed: [], error: 'the system keychain is not available' }
   }
 
   const stored = readFile()
@@ -53,9 +70,11 @@ export function loadSecrets(): { available: boolean; names: string[]; error?: st
   }
 
   setSecretResolver((name) => cache.get(name))
+  failedNames = failed
   return {
     available: true,
     names: [...cache.keys()],
+    failed,
     error: failed.length ? `could not decrypt: ${failed.join(', ')}` : undefined
   }
 }
@@ -74,10 +93,16 @@ export function deleteSecret(name: string): void {
   delete stored[name]
   writeFileSecure(stored)
   cache.delete(name)
+  failedNames = failedNames.filter((entry) => entry !== name)
 }
 
-export function secretStatus(): { available: boolean; names: string[]; path: string } {
-  return { available, names: [...cache.keys()], path: SECRETS_PATH }
+export function secretStatus(): {
+  available: boolean
+  names: string[]
+  failed: string[]
+  path: string
+} {
+  return { available, names: [...cache.keys()], failed: [...failedNames], path: SECRETS_PATH }
 }
 
 /**

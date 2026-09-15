@@ -42,6 +42,49 @@ export function readSshConfigAlias(alias: string): Partial<SshHostSettings> {
   return out
 }
 
+export interface SshAlias {
+  alias: string
+  host?: string
+  username?: string
+  port?: number
+  identityFile?: string
+}
+
+/**
+ * Every Host block in ~/.ssh/config, so the settings form can offer what the
+ * user already has configured instead of asking them to retype it.
+ */
+export function listSshAliases(): SshAlias[] {
+  const path = join(homedir(), '.ssh', 'config')
+  if (!existsSync(path)) return []
+  const out: SshAlias[] = []
+  let current: SshAlias | null = null
+
+  for (const line of readFileSync(path, 'utf8').split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const [rawKey, ...rest] = trimmed.split(/\s+/)
+    const key = rawKey.toLowerCase()
+    const value = rest.join(' ')
+
+    if (key === 'host') {
+      for (const pattern of rest) {
+        // Wildcard blocks set defaults; they are not connectable on their own.
+        if (pattern.includes('*') || pattern.includes('?')) continue
+        current = { alias: pattern }
+        out.push(current)
+      }
+      continue
+    }
+    if (!current) continue
+    if (key === 'hostname') current.host = value
+    else if (key === 'user') current.username = value
+    else if (key === 'port') current.port = Number(value) || undefined
+    else if (key === 'identityfile') current.identityFile = value.replace(/^~/, homedir())
+  }
+  return out
+}
+
 export class SshRuntime implements Runtime {
   readonly kind: EnvironmentKind = 'ssh'
   readonly id: string

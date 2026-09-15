@@ -4,6 +4,7 @@ import { CheckCircle2, CircleAlert, FolderOpen, Plug, Save } from 'lucide-react'
 import { useStore } from '../state/store'
 import { Button, Label, Panel } from './ui'
 import { ModelsTab } from './ModelsTab'
+import { EnvironmentsTab } from './EnvironmentsTab'
 
 type Tab = 'config' | 'agents' | 'environments' | 'providers'
 
@@ -11,7 +12,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'providers', label: 'Models & providers' },
   { id: 'config', label: 'Config file' },
   { id: 'agents', label: 'Agents' },
-  { id: 'environments', label: 'Environments' },
+  { id: 'environments', label: 'Remote hosts' },
 ]
 
 function ConfigEditor(): ReactNode {
@@ -141,97 +142,6 @@ function AgentsTab(): ReactNode {
         it callable by the <span className="font-mono">task</span> tool; primary agents appear in the
         composer picker.
       </p>
-    </div>
-  )
-}
-
-function EnvironmentsTab(): ReactNode {
-  const config = useStore((s) => s.config)
-  const envStatus = useStore((s) => s.envStatus)
-  const [results, setResults] = useState<Record<string, { ok: boolean; message: string }>>({})
-  const [testing, setTesting] = useState<string | null>(null)
-
-  const test = async (id: string): Promise<void> => {
-    setTesting(id)
-    const result = await window.opendesktop.env.test(id)
-    setResults((prev) => ({ ...prev, [id]: result }))
-    setTesting(null)
-  }
-
-  return (
-    <div className="space-y-2 overflow-y-auto">
-      {Object.values(config?.environment ?? {}).map((env) => {
-        const result = results[env.id]
-        const live = envStatus[env.id]
-        return (
-          <Panel key={env.id} className="px-3 py-2.5">
-            <div className="flex items-center gap-2">
-              <span className="text-ink-100 text-[12.5px] font-semibold">{env.name}</span>
-              <span className="text-ink-600 font-mono text-[10px]">{env.id}</span>
-              <span className="border-ink-700 text-ink-400 rounded-full border px-1.5 text-[9.5px] uppercase">
-                {env.kind}
-              </span>
-              {live ? (
-                <span className={live.connected ? 'text-ok text-[10px]' : 'text-ink-600 text-[10px]'}>
-                  {live.connected ? 'connected' : (live.message ?? 'disconnected')}
-                </span>
-              ) : null}
-              <Button
-                size="sm"
-                variant="outline"
-                className="ml-auto"
-                disabled={testing === env.id}
-                onClick={() => void test(env.id)}
-              >
-                <Plug className="h-3 w-3" />
-                {testing === env.id ? 'Testing…' : 'Test'}
-              </Button>
-            </div>
-            <div className="text-ink-500 mt-1 space-y-0.5 font-mono text-[10.5px]">
-              {env.ssh ? (
-                <div>
-                  {env.ssh.username ? `${env.ssh.username}@` : ''}
-                  {env.ssh.host || env.ssh.alias}
-                  {env.ssh.port ? `:${env.ssh.port}` : ''}
-                  {env.ssh.alias ? `  (ssh config alias: ${env.ssh.alias})` : ''}
-                </div>
-              ) : null}
-              <div>cwd: {env.cwd ?? '(home)'}</div>
-            </div>
-            {result ? (
-              <div
-                className={clsx(
-                  'mt-1.5 flex items-start gap-1.5 rounded border px-2 py-1 font-mono text-[10.5px]',
-                  result.ok ? 'border-ok/40 bg-ok/10 text-ok' : 'border-bad/40 bg-bad/10 text-bad'
-                )}
-              >
-                {result.ok ? (
-                  <CheckCircle2 className="mt-[1px] h-3 w-3 shrink-0" />
-                ) : (
-                  <CircleAlert className="mt-[1px] h-3 w-3 shrink-0" />
-                )}
-                <span className="whitespace-pre-wrap">{result.message}</span>
-              </div>
-            ) : null}
-          </Panel>
-        )
-      })}
-      <Panel className="px-3 py-2.5">
-        <Label>Adding a remote host</Label>
-        <pre className="text-ink-400 mt-1.5 font-mono text-[10.5px] leading-[1.6]">{`"environment": {
-  "build-box": {
-    "name": "Build box",
-    "kind": "ssh",
-    "cwd": "/srv/app",
-    "ssh": { "alias": "build-box" }
-  }
-}`}</pre>
-        <p className="text-ink-600 mt-1.5 text-[10.5px]">
-          With an <span className="font-mono">alias</span>, host, user, port and key come from
-          ~/.ssh/config; your ssh-agent is used when no key is given. The model is always called from
-          this machine, so the remote host needs no API key and no network access to the provider.
-        </p>
-      </Panel>
     </div>
   )
 }

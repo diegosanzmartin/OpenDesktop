@@ -37,7 +37,7 @@ interface State {
   config: AppConfig | null
   models: { ref: string; label: string; provider: string }[]
   keyStatus: Record<string, { resolved: boolean; source: string }>
-  secrets: { available: boolean; path: string; hints: Record<string, string | null> }
+  secrets: { available: boolean; path: string; failed: string[]; hints: Record<string, string | null> }
 
   sessions: Session[]
   activeSessionId: string | null
@@ -100,7 +100,7 @@ export const useStore = create<State>((set, get) => ({
   config: null,
   models: [],
   keyStatus: {},
-  secrets: { available: false, path: '', hints: {} },
+  secrets: { available: false, path: '', failed: [], hints: {} },
 
   sessions: [],
   activeSessionId: null,

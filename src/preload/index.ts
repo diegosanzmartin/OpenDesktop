@@ -22,7 +22,12 @@ const api = {
       ipcRenderer.invoke('host:resolvedConfigCheck')
   },
   secrets: {
-    status: (): Promise<{ available: boolean; path: string; hints: Record<string, string | null> }> =>
+    status: (): Promise<{
+      available: boolean
+      path: string
+      failed: string[]
+      hints: Record<string, string | null>
+    }> =>
       ipcRenderer.invoke('secrets:status'),
     set: (name: string, value: string): Promise<string | null> =>
       ipcRenderer.invoke('secrets:set', name, value),
@@ -34,7 +39,10 @@ const api = {
   },
   env: {
     test: (id: string): Promise<{ ok: boolean; message: string }> => ipcRenderer.invoke('env:test', id),
-    home: (id: string): Promise<string> => ipcRenderer.invoke('env:home', id)
+    home: (id: string): Promise<string> => ipcRenderer.invoke('env:home', id),
+    sshAliases: (): Promise<
+      { alias: string; host?: string; username?: string; port?: number; identityFile?: string }[]
+    > => ipcRenderer.invoke('env:sshAliases')
   },
   sessions: {
     list: (): Promise<Session[]> => ipcRenderer.invoke('session:list'),

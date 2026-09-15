@@ -90,7 +90,13 @@ Three placeholder forms are resolved at call time, none of which put a secret in
 | `{file:~/path}` | The contents of that file |
 
 The key row tells you which one resolved, so a key that is not being picked up is visible
-rather than something you discover mid-request.
+rather than something you discover mid-request. SSH passwords and key passphrases use the same
+store, under `env.<id>.password` and `env.<id>.passphrase`.
+
+The keychain entry is derived from the application name, so the app pins it rather than letting
+it vary between a dev run and the packaged build — otherwise a key stored by one would be
+unreadable to the other. A secret that is present but cannot be decrypted here (copied from
+another machine, say) is reported as such in the UI instead of looking like a missing key.
 
 Bundled AI SDK packages: `@ai-sdk/openai-compatible`, `@ai-sdk/openai`, `@ai-sdk/anthropic`,
 `@ai-sdk/google`. Any other package named in `npm` is imported dynamically and must be
@@ -98,7 +104,21 @@ installed alongside the app.
 
 ## Remote execution over SSH
 
-Add an environment and pick it from the composer:
+**Settings → Remote hosts** adds and edits them. Give the environment an id, press *Add remote
+host*, and fill in the form: working directory, host, user and port, and one of three ways to
+authenticate.
+
+| Authentication | What it uses |
+| --- | --- |
+| ssh-agent / default key | `SSH_AUTH_SOCK`, then `~/.ssh/id_ed25519` or `id_rsa` |
+| Private key file | A path you give; only the passphrase is stored, in the keychain |
+| Password | Stored in the keychain, never in the config file |
+
+Hosts already in your `~/.ssh/config` appear in a dropdown — pick one and the host, user, port
+and key come from that block, so there is nothing to retype. **Test connection** runs `uname`
+on the far end and reports what came back.
+
+The equivalent config, if you prefer the file:
 
 ```json
 "environment": {
@@ -110,9 +130,6 @@ Add an environment and pick it from the composer:
   }
 }
 ```
-
-With `alias`, the host, user, port and key come from `~/.ssh/config`; your `ssh-agent` is
-used when no key is given. `host`/`username`/`port`/`privateKey` can also be set explicitly.
 
 **The model is always called from your machine.** Only tool execution travels to the remote
 host — commands over an SSH channel, file reads and writes over SFTP. The remote box never

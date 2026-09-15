@@ -12,6 +12,7 @@ import {
 } from './config'
 import { invalidateProviderCache, listModels } from './providers'
 import { getRuntime, resetRuntimes, testEnvironment } from './runtime'
+import { listSshAliases } from './runtime/ssh'
 import * as store from './store'
 import * as history from './history'
 import { isRunning, runTurn, stop } from './agent/runner'
@@ -60,6 +61,7 @@ export function registerIpc(): void {
     return {
       available: status.available,
       path: status.path,
+      failed: status.failed,
       // Hints only: the values themselves never cross the bridge.
       hints: Object.fromEntries(status.names.map((name) => [name, secretHint(name)]))
     }
@@ -77,6 +79,7 @@ export function registerIpc(): void {
   /* ---------- models & environments ---------- */
   ipcMain.handle('models:list', () => listModels(rawConfig()))
   ipcMain.handle('env:test', (_e, environmentId: string) => testEnvironment(environmentId))
+  ipcMain.handle('env:sshAliases', () => listSshAliases())
   ipcMain.handle('env:home', async (_e, environmentId: string) => {
     try {
       return await getRuntime(environmentId).homeDir()
