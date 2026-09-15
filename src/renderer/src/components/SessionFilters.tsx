@@ -14,9 +14,11 @@ const STATUSES: Option<SessionStatusFilter>[] = [
   { value: 'active', label: 'Active' },
   { value: 'all', label: 'All' },
   { value: 'running', label: 'Running' },
-  { value: 'approval', label: 'Needs approval' },
+  { value: 'queued', label: 'Queued' },
+  { value: 'approval', label: 'Needs you' },
   { value: 'error', label: 'Failed' },
-  { value: 'idle', label: 'Idle' }
+  { value: 'idle', label: 'Idle' },
+  { value: 'done', label: 'Done' }
 ]
 
 const GROUPS: Option<SessionGroupBy>[] = [

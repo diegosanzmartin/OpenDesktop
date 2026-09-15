@@ -13,6 +13,7 @@ import {
   startBackgroundTask
 } from '../background'
 import * as store from '../store'
+import { recordWrite, writeWarning } from '../coordination'
 
 export interface ToolContext {
   config: AppConfig
@@ -382,10 +383,16 @@ export function createTools(ctx: ToolContext): ToolSet {
             }
           },
           async (block) => {
+            // Asked before the write, so a clash is reported against whoever
+            // got there first rather than against this call itself.
+            const warning = writeWarning(ctx.sessionId, resolved)
             await ctx.runtime.writeFile(resolved, content)
+            recordWrite(ctx.sessionId, resolved)
             store.appendBlockOutput(ctx.sessionId, block.id, preview)
             return {
-              output: `${existed ? 'Overwrote' : 'Created'} ${resolved} (+${stats.added} −${stats.removed}).`
+              output:
+                `${existed ? 'Overwrote' : 'Created'} ${resolved} (+${stats.added} −${stats.removed}).` +
+                warning
             }
           }
         )
@@ -435,9 +442,11 @@ export function createTools(ctx: ToolContext): ToolSet {
             permission: { key: 'edit', detail: `Edit ${resolved}`, preview }
           },
           async (block) => {
+            const warning = writeWarning(ctx.sessionId, resolved)
             await ctx.runtime.writeFile(resolved, after)
+            recordWrite(ctx.sessionId, resolved)
             store.appendBlockOutput(ctx.sessionId, block.id, preview)
-            return { output: `Edited ${resolved} (+${stats.added} −${stats.removed}).` }
+            return { output: `Edited ${resolved} (+${stats.added} −${stats.removed}).` + warning }
           }
         )
       }
@@ -606,6 +615,32 @@ export function createTools(ctx: ToolContext): ToolSet {
       }
     })
   }
+
+  /**
+   * The Blocked column's other half. Approvals already land a task there, but
+   * plenty of work stops for a reason no approval covers: a form to fill in, a
+   * credential only a person has, a decision that is not the agent's to make.
+   * Without this the agent's only options are to guess or to give up quietly.
+   */
+  tools.need_human = tool({
+    description:
+      'Stop and hand this task back to a person. Use when you cannot continue without ' +
+      'something only they can do — filling in a form, granting access, choosing between ' +
+      'options that are genuinely theirs to choose. Say exactly what you need. Do not use ' +
+      'this to ask permission to run a command; that is handled for you.',
+    inputSchema: z.object({
+      reason: z.string().describe('What you need from them, in one or two sentences.')
+    }),
+    execute: async ({ reason }) => {
+      store.updateSession(ctx.sessionId, { status: 'blocked', blockedReason: reason })
+      return {
+        output:
+          `Handed back to the user: ${reason}\n\n` +
+          'Stop here. Do not keep working around it — they have been asked and the task is ' +
+          'now waiting on them.'
+      }
+    }
+  })
 
   return tools
 }

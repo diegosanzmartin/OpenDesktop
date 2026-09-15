@@ -13,6 +13,8 @@ import type { Session } from '@shared/types'
 import { useStore } from '../state/store'
 import { filterSessions, groupSessions, sortSessions } from '../lib/group'
 import { SessionFilters } from './SessionFilters'
+import { ViewSwitcher } from './ViewSwitcher'
+import { BoardList } from './BoardList'
 
 /** Branch and dirty count, only when the option is on. */
 function GitChip({ session }: { session: Session }): ReactNode {
@@ -34,8 +36,14 @@ function SessionDot({ status }: { status: Session['status'] }): ReactNode {
   if (status === 'running') {
     return <span className="bg-brand relative h-[7px] w-[7px] shrink-0 rounded-full" />
   }
-  if (status === 'awaiting-approval') {
+  if (status === 'awaiting-approval' || status === 'blocked') {
     return <span className="bg-warn h-[7px] w-[7px] shrink-0 rounded-full" />
+  }
+  if (status === 'queued') {
+    return <span className="border-ink-500 h-[7px] w-[7px] shrink-0 rounded-full border border-dashed" />
+  }
+  if (status === 'done') {
+    return <span className="bg-ok/70 h-[7px] w-[7px] shrink-0 rounded-full" />
   }
   if (status === 'error') {
     return <span className="bg-bad h-[7px] w-[7px] shrink-0 rounded-full" />
@@ -85,6 +93,7 @@ export function Sidebar(): ReactNode {
   const openDock = useStore((s) => s.openDock)
 
   const [searching, setSearching] = useState(false)
+  const view = useStore((s) => s.view)
 
   const labels = useMemo(
     () => ({
@@ -152,7 +161,9 @@ export function Sidebar(): ReactNode {
         </button>
       </div>
 
-      {searching ? (
+      <ViewSwitcher />
+
+      {searching && view === 'chat' ? (
         <div className="px-2.5 pb-1.5">
           <input
             autoFocus
@@ -171,7 +182,25 @@ export function Sidebar(): ReactNode {
       ) : null}
 
       <nav className="space-y-[2px] px-2.5 pb-2">
-        <NavItem icon={<Plus className="h-4 w-4" />} label="New session" onClick={() => void newSession()} />
+        {view === 'board' ? (
+          <NavItem
+            icon={<Plus className="h-4 w-4" />}
+            label="New board"
+            onClick={async () => {
+              const board = await window.opendesktop.boards.create({
+                cwd: sessions[0]?.cwd,
+                environmentId: sessions[0]?.environmentId ?? 'local'
+              })
+              useStore.getState().selectBoard(board.id)
+            }}
+          />
+        ) : (
+          <NavItem
+            icon={<Plus className="h-4 w-4" />}
+            label="New session"
+            onClick={() => void newSession()}
+          />
+        )}
         <NavItem
           icon={<Activity className="h-4 w-4" />}
           label="Activity"
@@ -185,7 +214,9 @@ export function Sidebar(): ReactNode {
       </nav>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2.5 pb-3">
-        {groups.length === 0 ? (
+        {view === 'board' ? (
+          <BoardList />
+        ) : groups.length === 0 ? (
           <div className="text-ink-600 px-1 py-4 text-[12px]">No sessions match this filter.</div>
         ) : (
           groups.map((group, groupIndex) => (

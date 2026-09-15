@@ -167,6 +167,8 @@ interface TurnInput {
   collectFinalText?: boolean
   depth?: number
   parentBlockId?: string
+  /** Appended to the system prompt when other agents are working nearby. */
+  coordinationNote?: string
 }
 
 export async function runTurn(input: TurnInput): Promise<string> {
@@ -195,7 +197,8 @@ export async function runTurn(input: TurnInput): Promise<string> {
       title: input.userText.replace(/\s+/g, ' ').slice(0, 70) || 'New session'
     })
   }
-  store.setSessionStatus(session.id, 'running')
+  // A reply is the answer to whatever it was blocked on, so the reason goes.
+  store.updateSession(session.id, { status: 'running', blockedReason: undefined })
 
   const assistant: Message = store.addMessage({
     sessionId: session.id,
@@ -254,13 +257,14 @@ export async function runTurn(input: TurnInput): Promise<string> {
 
     const result = streamText({
       model: resolved.model,
-      system: systemPrompt(agent, {
-        cwd: session.cwd,
-        environmentLabel: runtime.label,
-        environmentKind: runtime.kind,
-        platform,
-        date: new Date().toISOString().slice(0, 10)
-      }),
+      system:
+        systemPrompt(agent, {
+          cwd: session.cwd,
+          environmentLabel: runtime.label,
+          environmentKind: runtime.kind,
+          platform,
+          date: new Date().toISOString().slice(0, 10)
+        }) + (input.coordinationNote ?? ''),
       messages,
       tools,
       temperature: agent.temperature,
@@ -336,8 +340,11 @@ export async function runTurn(input: TurnInput): Promise<string> {
       completedAt: Date.now(),
       usage: { input: inputTokens, output: outputTokens }
     })
+    // The agent may have handed the task back mid-turn; finishing the turn
+    // does not un-block it, so the status it set is left alone.
+    const ended = store.getSession(session.id)
     store.updateSession(session.id, {
-      status: 'idle',
+      status: ended?.status === 'blocked' ? 'blocked' : 'idle',
       usage: {
         input: session.usage.input + inputTokens,
         output: session.usage.output + outputTokens,

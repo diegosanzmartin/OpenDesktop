@@ -2,7 +2,19 @@
 
 export type BlockStatus = 'pending' | 'awaiting-approval' | 'running' | 'success' | 'error' | 'canceled'
 
-export type SessionStatus = 'idle' | 'running' | 'awaiting-approval' | 'error'
+/**
+ * `queued` waits for the scheduler to free a slot; `blocked` waits for a human;
+ * `done` is a board task whose work finished. A plain chat only ever sees
+ * idle/running/awaiting-approval/error, exactly as before.
+ */
+export type SessionStatus =
+  | 'idle'
+  | 'queued'
+  | 'running'
+  | 'awaiting-approval'
+  | 'blocked'
+  | 'error'
+  | 'done'
 
 export type EnvironmentKind = 'local' | 'ssh' | 'gcp-workstation'
 
@@ -135,6 +147,8 @@ export interface AppConfig {
   agent: Record<string, AgentConfig>
   permissions: Permissions
   maxSteps: number
+  /** How many board tasks the scheduler will run at once. */
+  maxConcurrentTasks?: number
   /**
    * Milliseconds between words when re-chunking the model's text for display.
    * 0 disables the smoothing and shows provider chunks as they arrive.
@@ -213,6 +227,21 @@ export interface Session {
   /** Short label for a subagent session, shown on its subchat. */
   taskLabel?: string
   archived?: boolean
+
+  /* ---- board placement. Absent on a session that is just a chat. ---- */
+  boardId?: string
+  columnId?: string
+  /** Position within the column; lower is higher up. */
+  order?: number
+  /** What to send when the scheduler starts a queued task. */
+  queuedPrompt?: string
+  /** Why a human is needed, shown on the card while it sits in Blocked. */
+  blockedReason?: string
+  /**
+   * Other tasks judged to be working on the same thing. Set by the
+   * coordinator, shown on the card, and named in the agent's prompt.
+   */
+  relatedSessionIds?: string[]
 }
 
 export interface ApprovalRequest {
@@ -292,12 +321,50 @@ export interface Group<T> {
   items: T[]
 }
 
+/* ---------- Boards ---------- */
+
+/**
+ * What a column means, which is what makes the board more than decoration:
+ * `todo` is the scheduler's queue, `in-progress` is what is running, `blocked`
+ * is waiting on a human. `backlog` and `review` are parked — nothing starts by
+ * itself from there.
+ */
+export type ColumnKind = 'backlog' | 'todo' | 'in-progress' | 'blocked' | 'review' | 'done'
+
+export interface BoardColumn {
+  id: string
+  name: string
+  kind: ColumnKind
+  /** Warn past this many cards. Advisory: it never blocks a drag. */
+  wipLimit?: number
+}
+
+export interface Board {
+  id: string
+  name: string
+  /** The workspace: a folder on an environment. Several boards may share one. */
+  cwd: string
+  environmentId: string
+  columns: BoardColumn[]
+  createdAt: number
+  updatedAt: number
+  archived?: boolean
+}
+
 /* ---------- Session list filtering ---------- */
 
 export type SessionGroupBy = 'none' | 'folder' | 'status' | 'date' | 'environment' | 'agent'
 export type SessionSortBy = 'recent' | 'created' | 'title' | 'folder' | 'status'
 /** `active` is everything not archived — the sensible default, not a state. */
-export type SessionStatusFilter = 'active' | 'all' | 'running' | 'approval' | 'error' | 'idle'
+export type SessionStatusFilter =
+  | 'active'
+  | 'all'
+  | 'running'
+  | 'queued'
+  | 'approval'
+  | 'error'
+  | 'idle'
+  | 'done'
 
 export interface SessionQuery {
   status: SessionStatusFilter
@@ -342,6 +409,8 @@ export type AppEvent =
   | { type: 'session.created'; session: Session }
   | { type: 'session.updated'; session: Session }
   | { type: 'session.deleted'; sessionId: string }
+  | { type: 'board.updated'; board: Board }
+  | { type: 'board.deleted'; boardId: string }
   | { type: 'message.created'; message: Message }
   | { type: 'message.updated'; message: Message }
   | { type: 'message.part.delta'; messageId: string; sessionId: string; partIndex: number; text: string }

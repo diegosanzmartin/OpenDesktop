@@ -7,6 +7,7 @@ import type {
   ApprovalRequest,
   BackgroundTask,
   Block,
+  Board,
   GitSummary,
   Message,
   RepoChanges,
@@ -18,6 +19,9 @@ import { AUTO_AGENT } from '@shared/types'
 
 /** What the right-hand dock is showing. The centre column is always the chat. */
 export type DockTab = 'changes' | 'terminal' | 'browser' | 'files' | 'activity' | 'background'
+
+/** The two ways of working: one conversation at a time, or the whole board. */
+export type AppView = 'chat' | 'board'
 
 // Declared in @shared/types, beside ActivityQuery, so the headless tests can
 // reach the list logic without pulling the renderer's DOM types in.
@@ -63,6 +67,10 @@ interface State {
   sessionQuery: SessionQuery
   activityQuery: ActivityQuery
   browserUrl: string
+  view: AppView
+  boards: Board[]
+  /** Null means the overview: every card from every board. */
+  activeBoardId: string | null
   /** Block ids expanded in the transcript. */
   expanded: Record<string, boolean>
   activityCollapsed: boolean
@@ -86,6 +94,10 @@ interface State {
   setSettingsOpen: (open: boolean) => void
   refreshChanges: () => Promise<void>
   setSessionQuery: (patch: Partial<SessionQuery>) => void
+  setView: (view: AppView) => void
+  selectBoard: (id: string | null) => void
+  refreshBoards: () => Promise<void>
+  openTask: (sessionId: string) => Promise<void>
   setActivityQuery: (patch: Partial<ActivityQuery>) => void
   setBrowserUrl: (url: string) => void
   toggleBlock: (id: string) => void
@@ -151,9 +163,23 @@ export const useStore = create<State>((set, get) => ({
   browserUrl: '',
   expanded: {},
   activityCollapsed: false,
+  view: 'chat',
+  boards: [],
+  activeBoardId: null,
 
   async bootstrap() {
-    const [config, models, sessions, approvals, activity, keyStatus, secrets, skills, backgroundTasks] =
+    const [
+      config,
+      models,
+      sessions,
+      approvals,
+      activity,
+      keyStatus,
+      secrets,
+      skills,
+      backgroundTasks,
+      boards
+    ] =
       await Promise.all([
         api().config.get(),
         api().models.list(),
@@ -163,7 +189,8 @@ export const useStore = create<State>((set, get) => ({
         api().config.keyStatus(),
         api().secrets.status(),
         api().skills.list(),
-        api().background.list()
+        api().background.list(),
+        api().boards.list()
       ])
     const blocks: Record<string, Block> = {}
     for (const block of activity) blocks[block.id] = block
@@ -179,6 +206,7 @@ export const useStore = create<State>((set, get) => ({
       secrets,
       skills,
       backgroundTasks,
+      boards,
       ready: true
     })
 
@@ -192,6 +220,21 @@ export const useStore = create<State>((set, get) => ({
       case 'config.updated':
         set({ config: event.config })
         void api().models.list().then((models) => set({ models }))
+        break
+
+      case 'board.updated':
+        set({
+          boards: [...state.boards.filter((b) => b.id !== event.board.id), event.board].sort((a, b) =>
+            a.name.localeCompare(b.name)
+          )
+        })
+        break
+
+      case 'board.deleted':
+        set({
+          boards: state.boards.filter((b) => b.id !== event.boardId),
+          activeBoardId: state.activeBoardId === event.boardId ? null : state.activeBoardId
+        })
         break
 
       case 'session.created':
@@ -390,6 +433,23 @@ export const useStore = create<State>((set, get) => ({
     set({ sessionQuery: { ...get().sessionQuery, ...patch } })
     if (patch.showGitStatus) void get().refreshGitSummaries()
   },
+  setView: (view) => set({ view }),
+  selectBoard: (activeBoardId) => set({ activeBoardId }),
+
+  async refreshBoards() {
+    set({ boards: await api().boards.list() })
+  },
+
+  /**
+   * Opening a card is opening its chat, with everything that led to it — which
+   * is the whole point of the board being made of real sessions rather than of
+   * task records that merely reference them.
+   */
+  async openTask(sessionId) {
+    await get().selectSession(sessionId)
+    set({ view: 'chat' })
+  },
+
   setActivityQuery: (patch) => set({ activityQuery: { ...get().activityQuery, ...patch } }),
   setBrowserUrl: (browserUrl) => set({ browserUrl }),
   toggleBlock: (id) => set({ expanded: { ...get().expanded, [id]: !get().expanded[id] } }),

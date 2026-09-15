@@ -21,6 +21,9 @@ import { previewOrigin, previewUrl } from './preview'
 import { deleteSecret, secretHint, secretStatus, setSecret } from './secrets'
 import { createTerminal, killTerminal, resizeTerminal, terminalBuffer, writeTerminal } from './terminal'
 import { readBranchSummary, readChanges, readFileDiff } from './git'
+import { createBoard, deleteBoard, getBoard, listBoards, updateBoard, defaultBoardFor } from './boards'
+import { columnOfKind, defaultColumns, findColumn, statusForColumn } from '@shared/boards'
+import { tick } from './scheduler'
 import {
   clearFinished,
   killBackgroundTask,
@@ -184,6 +187,123 @@ export function registerIpc(): void {
   ipcMain.handle('session:messages', (_e, id: string) => store.listMessages(id))
   ipcMain.handle('session:blocks', (_e, id: string) => store.listBlocks(id))
   ipcMain.handle('session:running', (_e, id: string) => isRunning(id))
+
+  /* ---------- boards ---------- */
+  ipcMain.handle('board:list', () => listBoards())
+  ipcMain.handle(
+    'board:create',
+    (_e, input: { name?: string; cwd?: string; environmentId?: string }) => {
+      const config = rawConfig()
+      const environmentId = input.environmentId ?? 'local'
+      return createBoard({
+        name: input.name,
+        cwd: input.cwd ?? config.environment[environmentId]?.cwd ?? homedir(),
+        environmentId,
+        columns: defaultColumns()
+      })
+    }
+  )
+  ipcMain.handle('board:update', (_e, id: string, patch: Record<string, unknown>) =>
+    updateBoard(id, patch)
+  )
+  ipcMain.handle('board:delete', (_e, id: string) => {
+    // The cards outlive the board: they go back to being ordinary chats.
+    for (const session of store.listSessions()) {
+      if (session.boardId === id) {
+        store.updateSession(session.id, { boardId: undefined, columnId: undefined })
+      }
+    }
+    deleteBoard(id)
+  })
+
+  /**
+   * Creating a task is creating a session plus its placement. Dropping it in a
+   * queueing column marks it `queued` and hands it to the scheduler; anywhere
+   * else it just sits there until someone moves it.
+   */
+  ipcMain.handle(
+    'board:createTask',
+    (
+      _e,
+      input: {
+        boardId?: string
+        columnId?: string
+        title: string
+        prompt: string
+        agentId?: string
+        model?: string
+        parentSessionId?: string
+      }
+    ) => {
+      const config = rawConfig()
+      const board = (input.boardId && getBoard(input.boardId)) || undefined
+      const target = board ?? defaultBoardFor(config.environment.local?.cwd ?? homedir(), 'local')
+      const column =
+        findColumn(target, input.columnId) ?? columnOfKind(target, 'todo') ?? target.columns[0]
+
+      const session = store.createSession({
+        title: input.title.trim() || 'New task',
+        cwd: target.cwd,
+        environmentId: target.environmentId,
+        agentId: input.agentId ?? AUTO_AGENT,
+        model: input.model ?? config.model,
+        parentSessionId: input.parentSessionId
+      })
+
+      const queueing = column.kind === 'todo' || column.kind === 'in-progress'
+      store.updateSession(session.id, {
+        boardId: target.id,
+        columnId: column.id,
+        order: Date.now(),
+        queuedPrompt: input.prompt,
+        status: queueing ? 'queued' : 'idle'
+      })
+      void tick()
+      return store.getSession(session.id)
+    }
+  )
+
+  /** A drag. The column carries the intent; the status follows it. */
+  ipcMain.handle(
+    'board:moveTask',
+    (_e, input: { sessionId: string; boardId: string; columnId: string; order?: number }) => {
+      const session = store.getSession(input.sessionId)
+      const board = getBoard(input.boardId)
+      if (!session || !board) return undefined
+      const column = findColumn(board, input.columnId)
+      if (!column) return undefined
+
+      const status = statusForColumn(column.kind, session.status)
+      const updated = store.updateSession(session.id, {
+        boardId: board.id,
+        columnId: column.id,
+        order: input.order ?? Date.now(),
+        status,
+        // Queueing something with nothing to send would spin the scheduler.
+        queuedPrompt: status === 'queued' ? (session.queuedPrompt ?? '') : session.queuedPrompt,
+        blockedReason: column.kind === 'blocked' ? session.blockedReason : undefined
+      })
+      void tick()
+      return updated
+    }
+  )
+
+  /** Puts an existing chat on a board, so a conversation can become a task. */
+  ipcMain.handle(
+    'board:addSession',
+    (_e, input: { sessionId: string; boardId: string; columnId?: string }) => {
+      const board = getBoard(input.boardId)
+      const session = store.getSession(input.sessionId)
+      if (!board || !session) return undefined
+      const column =
+        findColumn(board, input.columnId) ?? columnOfKind(board, 'backlog') ?? board.columns[0]
+      return store.updateSession(session.id, { boardId: board.id, columnId: column.id, order: Date.now() })
+    }
+  )
+
+  ipcMain.handle('board:removeSession', (_e, sessionId: string) =>
+    store.updateSession(sessionId, { boardId: undefined, columnId: undefined, queuedPrompt: undefined })
+  )
 
   /* ---------- attachments ---------- */
   ipcMain.handle('attachments:pick', async (_e, sessionId: string) => {

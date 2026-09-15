@@ -36,7 +36,26 @@ import { diffLines, renderDiff } from './diff'
 import { decide, matchesAny, splitCommand } from './approvals'
 import { parseGcloudCommand } from '@shared/gcloud'
 import { filterSessions, groupSessions, sortSessions } from '@shared/sessions'
-import type { Session, SessionQuery } from '@shared/types'
+import type { Board, Session, SessionQuery } from '@shared/types'
+import {
+  columnForStatus,
+  columnOfKind,
+  defaultColumns,
+  statusForColumn,
+  storiesInColumn
+} from '@shared/boards'
+import { createBoard, deleteBoard, getBoard, listBoards, loadBoards } from './boards'
+import { startBoardSync } from './board-sync'
+import { queuedTasks, tick } from './scheduler'
+import {
+  clearClaims,
+  coordinationNote,
+  keywords,
+  recordWrite,
+  setRelatednessJudge,
+  shareSurface,
+  writeWarning
+} from './coordination'
 
 const failures: string[] = []
 let checks = 0
@@ -803,6 +822,247 @@ async function main(): Promise<void> {
       'every session lands in exactly one group',
       byFolder.reduce((sum, g) => sum + g.items.length, 0) === 4
     )
+  }
+
+  /* ---------- the board ---------- */
+
+  section('board rules')
+  {
+    const columns = defaultColumns()
+    const board: Board = {
+      id: 'b1',
+      name: 'Smoke',
+      cwd: '/tmp/smoke',
+      environmentId: 'local',
+      columns,
+      createdAt: 0,
+      updatedAt: 0
+    }
+
+    check('a dropped card queues in To do', statusForColumn('todo', 'idle') === 'queued')
+    check('a dropped card queues in In progress too', statusForColumn('in-progress', 'idle') === 'queued')
+    check(
+      'dragging never stops a running task',
+      statusForColumn('backlog', 'running') === 'running' &&
+        statusForColumn('done', 'running') === 'running'
+    )
+    check('Blocked keeps an approval as an approval', statusForColumn('blocked', 'awaiting-approval') === 'awaiting-approval')
+    check('Blocked otherwise means a human is needed', statusForColumn('blocked', 'idle') === 'blocked')
+    check('Backlog parks a card', statusForColumn('backlog', 'queued') === 'idle')
+
+    check('running lands in In progress', columnForStatus(board, 'running')?.kind === 'in-progress')
+    check('queued lands in To do', columnForStatus(board, 'queued')?.kind === 'todo')
+    check(
+      'anything needing a person lands in Blocked',
+      columnForStatus(board, 'awaiting-approval')?.kind === 'blocked' &&
+        columnForStatus(board, 'blocked')?.kind === 'blocked' &&
+        columnForStatus(board, 'error')?.kind === 'blocked'
+    )
+    check('done lands in Done', columnForStatus(board, 'done')?.kind === 'done')
+    check('idle asks for no move at all', columnForStatus(board, 'idle') === undefined)
+
+    const card = (over: Partial<Session>): Session =>
+      ({
+        id: 'c',
+        title: 't',
+        cwd: '/tmp/smoke',
+        environmentId: 'local',
+        agentId: 'auto',
+        model: 'm',
+        status: 'idle',
+        createdAt: 0,
+        updatedAt: 0,
+        usage: { input: 0, output: 0, cost: 0 },
+        boardId: 'b1',
+        columnId: 'todo',
+        ...over
+      }) as Session
+
+    const story = card({ id: 'story', columnId: 'backlog' })
+    const cards = [
+      story,
+      card({ id: 'k1', parentSessionId: 'story', order: 2 }),
+      card({ id: 'k2', parentSessionId: 'story', order: 1 }),
+      card({ id: 'loose', order: 3 }),
+      card({ id: 'orphan', parentSessionId: 'nowhere', order: 4 })
+    ]
+    const stories = storiesInColumn(cards, 'todo', cards)
+    check(
+      'subtasks of one story are grouped together',
+      stories.length === 3 && stories[0].parent?.id === 'story' && stories[0].items.length === 2,
+      stories.map((s) => [s.parent?.id ?? 'solo', s.items.length])
+    )
+    check('cards inside a story keep their order', stories[0].items.map((i) => i.id).join(',') === 'k2,k1')
+    check(
+      'a subtask whose story is elsewhere still shows, on its own',
+      stories.some((s) => !s.parent && s.items[0].id === 'orphan')
+    )
+  }
+
+  /* ---------- the queue ---------- */
+
+  section('scheduler and board sync')
+  {
+    loadBoards()
+    startBoardSync()
+    const board = createBoard({ name: 'Smoke queue', cwd: process.cwd(), environmentId: 'local' })
+    check('a new board gets the reference columns', board.columns.length === 5)
+    check('the board is readable by id', getBoard(board.id)?.name === 'Smoke queue')
+    check('it is listed', listBoards().some((b) => b.id === board.id))
+
+    const todo = columnOfKind(board, 'todo')!
+    const backlog = columnOfKind(board, 'backlog')!
+
+    const queued = store.createSession({
+      title: 'queued task',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: 'auto',
+      model: 'test/mock'
+    })
+    store.updateSession(queued.id, {
+      boardId: board.id,
+      columnId: todo.id,
+      queuedPrompt: 'do the thing',
+      status: 'queued'
+    })
+    check('a queued card in To do is picked up', queuedTasks().some((t) => t.id === queued.id))
+
+    const parked = store.createSession({
+      title: 'parked task',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: 'auto',
+      model: 'test/mock'
+    })
+    store.updateSession(parked.id, {
+      boardId: board.id,
+      columnId: backlog.id,
+      queuedPrompt: 'later',
+      status: 'queued'
+    })
+    check('a card parked in Backlog is not', !queuedTasks().some((t) => t.id === parked.id))
+
+    const noPrompt = store.createSession({
+      title: 'no prompt',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: 'auto',
+      model: 'test/mock'
+    })
+    store.updateSession(noPrompt.id, { boardId: board.id, columnId: todo.id, status: 'queued' })
+    check('nor is one with nothing to send', !queuedTasks().some((t) => t.id === noPrompt.id))
+
+    // A chat dragged into the queue has no prompt but does have a transcript.
+    store.addMessage({ sessionId: noPrompt.id, role: 'user', parts: [{ type: 'text', text: 'hi' }] })
+    check(
+      'but a chat with a transcript is, since there is something to carry on from',
+      queuedTasks().some((t) => t.id === noPrompt.id)
+    )
+
+    // The sync layer moves cards as the status changes underneath them.
+    store.updateSession(queued.id, { columnId: columnOfKind(board, 'in-progress')!.id, status: 'running' })
+    store.updateSession(queued.id, { status: 'idle' })
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    const finished = store.getSession(queued.id)!
+    check(
+      'a turn ending in In progress moves the card to Done',
+      finished.status === 'done' && finished.columnId === columnOfKind(board, 'done')!.id,
+      [finished.status, finished.columnId]
+    )
+
+    store.updateSession(parked.id, { status: 'blocked', blockedReason: 'needs a form filled in' })
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    check(
+      'a task that needs a person moves itself to Blocked',
+      store.getSession(parked.id)?.columnId === columnOfKind(board, 'blocked')!.id
+    )
+
+    for (const id of [queued.id, parked.id, noPrompt.id]) {
+      store.deleteSession(id)
+      history.clearHistory(id)
+    }
+    deleteBoard(board.id)
+  }
+
+  /* ---------- keeping agents out of each other's way ---------- */
+
+  section('coordination')
+  {
+    check('keywords drop filler words', !keywords('add the new rule to the app').has('the'))
+    check(
+      'two tasks about the same thing share a surface',
+      shareSurface('Add detection rules to Okta', 'Write new Okta detection rules')
+    )
+    check(
+      'unrelated tasks do not',
+      !shareSurface('Update the billing invoice PDF', 'Rotate the Okta signing key')
+    )
+
+    const a = store.createSession({
+      title: 'terraform: add the VPC',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: 'auto',
+      model: 'test/mock'
+    })
+    const b = store.createSession({
+      title: 'terraform: add the subnet',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: 'auto',
+      model: 'test/mock'
+    })
+
+    check('a file nobody else touched draws no warning', writeWarning(a.id, '/tmp/x/main.tf') === '')
+    recordWrite(a.id, '/tmp/x/main.tf')
+    check('nor does your own earlier write', writeWarning(a.id, '/tmp/x/main.tf') === '')
+
+    store.updateSession(a.id, { status: 'running' })
+    const warning = writeWarning(b.id, '/tmp/x/main.tf')
+    check('but another task writing the same file does', warning.includes('terraform: add the VPC'))
+    check('and the warning says it is still running', warning.includes('still running'))
+    check('and it names the task, so the agent can go and read it', warning.includes(a.id))
+
+    const note = coordinationNote([
+      { sessionId: a.id, sameFiles: false, sameTopic: true, why: 'both change the network module' }
+    ])
+    check('the prompt note names the other task', note.includes('terraform: add the VPC'))
+    check('and lists what it has already changed', note.includes('/tmp/x/main.tf'))
+    check('and tells the agent what to do about it', /Read those files before/.test(note))
+    check('an empty assessment produces no note', coordinationNote([]) === '')
+
+    // The whole dequeue path, with the model's judgement stubbed out.
+    setRelatednessJudge(async ({ other }) => ({
+      related: true,
+      same_files: other.includes('VPC'),
+      reason: 'both edit the network module'
+    }))
+    const board = createBoard({ name: 'Coord', cwd: process.cwd(), environmentId: 'local' })
+    const todo = columnOfKind(board, 'todo')!
+    store.updateSession(b.id, {
+      boardId: board.id,
+      columnId: todo.id,
+      queuedPrompt: 'add the subnet',
+      status: 'queued'
+    })
+    await tick()
+    const held = store.getSession(b.id)!
+    check(
+      'a task that would edit the same files waits instead of racing',
+      held.status === 'queued',
+      held.status
+    )
+    check('and the card says who it is waiting on', (held.relatedSessionIds ?? []).includes(a.id))
+
+    setRelatednessJudge(null)
+    store.updateSession(a.id, { status: 'idle' })
+    deleteBoard(board.id)
+    for (const id of [a.id, b.id]) {
+      clearClaims(id)
+      store.deleteSession(id)
+      history.clearHistory(id)
+    }
   }
 
   // Leave no smoke sessions behind.

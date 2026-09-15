@@ -5,6 +5,7 @@ import type {
   Attachment,
   BackgroundTask,
   AppEvent,
+  Board,
   ApprovalRequest,
   Block,
   FileEntry,
@@ -83,6 +84,36 @@ const api = {
     messages: (id: string): Promise<Message[]> => ipcRenderer.invoke('session:messages', id),
     blocks: (id: string): Promise<Block[]> => ipcRenderer.invoke('session:blocks', id),
     running: (id: string): Promise<boolean> => ipcRenderer.invoke('session:running', id)
+  },
+  boards: {
+    list: (): Promise<Board[]> => ipcRenderer.invoke('board:list'),
+    create: (input: { name?: string; cwd?: string; environmentId?: string }): Promise<Board> =>
+      ipcRenderer.invoke('board:create', input),
+    update: (id: string, patch: Partial<Board>): Promise<Board | undefined> =>
+      ipcRenderer.invoke('board:update', id, patch),
+    remove: (id: string): Promise<void> => ipcRenderer.invoke('board:delete', id),
+    createTask: (input: {
+      boardId?: string
+      columnId?: string
+      title: string
+      prompt: string
+      agentId?: string
+      model?: string
+      parentSessionId?: string
+    }): Promise<Session | undefined> => ipcRenderer.invoke('board:createTask', input),
+    moveTask: (input: {
+      sessionId: string
+      boardId: string
+      columnId: string
+      order?: number
+    }): Promise<Session | undefined> => ipcRenderer.invoke('board:moveTask', input),
+    addSession: (input: {
+      sessionId: string
+      boardId: string
+      columnId?: string
+    }): Promise<Session | undefined> => ipcRenderer.invoke('board:addSession', input),
+    removeSession: (sessionId: string): Promise<Session | undefined> =>
+      ipcRenderer.invoke('board:removeSession', sessionId)
   },
   attachments: {
     pick: (sessionId: string): Promise<{ added: Attachment[]; errors: string[] }> =>

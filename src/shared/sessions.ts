@@ -11,11 +11,14 @@ import type { Group, Session, SessionQuery } from './types'
 export const SESSION_STATUS_RANK: Record<string, number> = {
   running: 0,
   'awaiting-approval': 1,
-  pending: 2,
-  error: 3,
-  success: 4,
-  canceled: 5,
-  idle: 6
+  blocked: 2,
+  queued: 3,
+  pending: 4,
+  error: 5,
+  success: 6,
+  canceled: 7,
+  idle: 8,
+  done: 9
 }
 
 export function folderName(path: string): string {
@@ -40,8 +43,13 @@ function matchesStatus(session: Session, filter: SessionQuery['status']): boolea
       return true
     case 'running':
       return session.status === 'running'
+    case 'queued':
+      return session.status === 'queued'
+    case 'done':
+      return session.status === 'done'
     case 'approval':
-      return session.status === 'awaiting-approval'
+      // Both mean the same thing to a person looking for what needs them.
+      return session.status === 'awaiting-approval' || session.status === 'blocked'
     case 'error':
       return session.status === 'error'
     case 'idle':

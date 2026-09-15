@@ -72,6 +72,7 @@ export function defaultConfig(): AppConfig {
     agent: {},
     permissions: DEFAULT_PERMISSIONS,
     maxSteps: 60,
+    maxConcurrentTasks: 2,
     smoothStreamMs: 10,
     theme: 'dark'
   }

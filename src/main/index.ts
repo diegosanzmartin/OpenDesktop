@@ -8,6 +8,9 @@ import { registerIpc } from './ipc'
 import { startPreviewServer, stopPreviewServer } from './preview'
 import { disposeRuntimes } from './runtime'
 import { flush, loadStore } from './store'
+import { loadBoards } from './boards'
+import { reconcileOnStart, startBoardSync } from './board-sync'
+import { startScheduler, stopScheduler } from './scheduler'
 import { stopAll } from './agent/runner'
 import { killAllTerminals } from './terminal'
 import { killAllBackgroundTasks } from './background'
@@ -102,6 +105,10 @@ void app.whenReady().then(async () => {
 
   loadConfig()
   loadStore()
+  loadBoards()
+  startBoardSync()
+  reconcileOnStart()
+  startScheduler()
   await startPreviewServer()
   registerIpc()
   createWindow()
@@ -116,6 +123,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  stopScheduler()
   stopAll()
   killAllTerminals()
   killAllBackgroundTasks()

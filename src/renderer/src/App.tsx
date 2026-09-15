@@ -7,6 +7,7 @@ import { TopBar } from './components/TopBar'
 import { RightDock } from './components/RightDock'
 import { ChatView } from './components/ChatView'
 import { SettingsPane } from './components/SettingsPane'
+import { BoardView } from './components/BoardView'
 
 function Toasts(): ReactNode {
   const toasts = useStore((s) => s.toasts)
@@ -73,6 +74,7 @@ function SettingsOverlay(): ReactNode {
 
 export default function App(): ReactNode {
   const ready = useStore((s) => s.ready)
+  const view = useStore((s) => s.view)
   const session = useStore(activeSession)
   const bootstrap = useStore((s) => s.bootstrap)
   const applyEvent = useStore((s) => s.applyEvent)
@@ -107,16 +109,22 @@ export default function App(): ReactNode {
     <div className="bg-ink-900 flex h-full">
       <Sidebar />
       <div className="border-ink-800 bg-ink-950 my-2 mr-1 flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg border">
-        <TopBar />
-        {session ? (
-          <ChatView session={session} />
+        {view === 'board' ? (
+          <BoardView />
         ) : (
-          <div className="text-ink-500 flex flex-1 items-center justify-center text-[13px]">
-            Create a session to begin.
-          </div>
+          <>
+            <TopBar />
+            {session ? (
+              <ChatView session={session} />
+            ) : (
+              <div className="text-ink-500 flex flex-1 items-center justify-center text-[13px]">
+                Create a session to begin.
+              </div>
+            )}
+          </>
         )}
       </div>
-      <RightDock />
+      {view === 'board' ? null : <RightDock />}
       <SettingsOverlay />
       <Toasts />
     </div>
