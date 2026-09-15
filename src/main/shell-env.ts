@@ -12,7 +12,26 @@ const run = promisify(execFile)
  * So ask the login shell what it thinks the environment is, and merge in anything
  * we are missing. Existing variables are never overwritten — a value the process
  * already has was set deliberately (by a terminal launch, or by the OS).
+ *
+ * PATH is the exception. launchd always provides one, and it is the bare
+ * /usr/bin:/bin:/usr/sbin:/sbin, so the never-overwrite rule would pin the whole
+ * app to it: no node, no pnpm, no rg, and a gcloud that finds the system
+ * Python 3.9 and refuses to run. The shell's PATH wins, with anything only
+ * launchd knew about appended rather than dropped.
  */
+
+/** Shell PATH first, then whatever launchd had that the shell did not mention. */
+function mergePath(shellPath: string | null): boolean {
+  if (!shellPath) return false
+  const shellEntries = shellPath.split(':').filter(Boolean)
+  if (shellEntries.length === 0) return false
+
+  const seen = new Set(shellEntries)
+  const extra = (process.env.PATH ?? '').split(':').filter((entry) => entry && !seen.has(entry))
+  process.env.PATH = [...shellEntries, ...extra].join(':')
+  return true
+}
+
 export async function loadShellEnvironment(): Promise<{ loaded: string[]; error?: string }> {
   if (process.platform === 'win32') return { loaded: [] }
 
@@ -39,9 +58,11 @@ export async function loadShellEnvironment(): Promise<{ loaded: string[]; error?
     // newlines, so only split where a line actually starts a new assignment.
     let current: string | null = null
     let buffer = ''
+    let shellPath: string | null = null
     const commit = (): void => {
       if (!current) return
-      if (process.env[current] === undefined) {
+      if (current === 'PATH') shellPath = buffer
+      else if (process.env[current] === undefined) {
         process.env[current] = buffer
         loaded.push(current)
       }
@@ -60,6 +81,9 @@ export async function loadShellEnvironment(): Promise<{ loaded: string[]; error?
       }
     }
     commit()
+
+    const merged = mergePath(shellPath)
+    if (merged) loaded.push('PATH')
 
     return { loaded }
   } catch (err) {

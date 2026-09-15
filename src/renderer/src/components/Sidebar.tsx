@@ -103,7 +103,10 @@ export function Sidebar(): ReactNode {
 
   if (collapsed) {
     return (
-      <aside className="bg-ink-900 flex w-[52px] shrink-0 flex-col items-center gap-1 pt-3">
+      <aside className="bg-ink-900 flex w-[52px] shrink-0 flex-col items-center">
+        {/* The window's traffic lights sit over the first ~40px, so the strip
+            starts below them. It doubles as a drag region. */}
+        <div className="drag-region h-11 w-full shrink-0" />
         <button
           type="button"
           onClick={toggleSidebar}
@@ -116,7 +119,7 @@ export function Sidebar(): ReactNode {
           type="button"
           onClick={() => void newSession()}
           title="New session"
-          className="text-ink-400 hover:bg-ink-800 hover:text-ink-100 rounded-md p-1.5"
+          className="text-ink-400 hover:bg-ink-800 hover:text-ink-100 mt-1 rounded-md p-1.5"
         >
           <Plus className="h-4 w-4" />
         </button>
@@ -126,7 +129,7 @@ export function Sidebar(): ReactNode {
 
   return (
     <aside className="bg-ink-900 flex w-[248px] shrink-0 flex-col">
-      <div className="drag-region flex h-11 items-center gap-1 px-2.5 pl-[76px]">
+      <div className="drag-region flex h-11 items-center gap-1 px-2.5 pl-[82px]">
         <button
           type="button"
           onClick={toggleSidebar}

@@ -45,6 +45,12 @@ has. The consequence is that the key has to be exported from a file the login sh
 put it in a dotfile, use `"apiKey": "{file:~/.helmcode-key}"` instead, which does not depend
 on the environment at all. The **Providers** tab tells you which way it went.
 
+`PATH` is the one variable that is replaced rather than merely filled in. launchd always
+supplies one, and it is the bare `/usr/bin:/bin:/usr/sbin:/sbin`, so leaving it alone would
+pin the app to a world without `node`, `pnpm`, `rg` or `gcloud` — and give gcloud the system
+Python 3.9, which it refuses to run under. The shell's `PATH` wins, with anything only
+launchd knew about appended rather than dropped.
+
 ## Configuration
 
 **Settings → Models & providers** is the place to do this from the UI: add or remove
