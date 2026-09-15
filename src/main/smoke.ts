@@ -7,7 +7,7 @@
  */
 import { MockLanguageModelV4 } from 'ai/test'
 import type { LanguageModel } from 'ai'
-import { defaultConfig, loadConfig, saveConfig } from './config'
+import { defaultConfig, loadConfig, normalizeConfig, saveConfig } from './config'
 import * as store from './store'
 import * as history from './history'
 import { bus } from './bus'
@@ -168,6 +168,11 @@ async function main(): Promise<void> {
     Object.keys(config.agent)
   )
   check('plan agent cannot write', config.agent.plan.permissions?.write === 'deny')
+  check('streaming is smoothed by default', config.smoothStreamMs > 0, config.smoothStreamMs)
+  check(
+    'a config without the key keeps the default',
+    normalizeConfig({ model: 'p/m' }).smoothStreamMs > 0
+  )
 
   section('model ref parsing')
   check(

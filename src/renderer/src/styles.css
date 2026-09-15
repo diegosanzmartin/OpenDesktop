@@ -120,3 +120,22 @@ textarea {
 .xterm-screen {
   padding: 8px 10px;
 }
+
+
+/* The streaming caret, placed by the renderer rather than by a ::after rule so
+   it never lands inside a table cell or a code block. */
+@keyframes caret-blink {
+  0%, 45% { opacity: 1 }
+  55%, 100% { opacity: 0 }
+}
+
+.caret {
+  display: inline-block;
+  width: 0.45em;
+  height: 1.05em;
+  margin-left: 0.12em;
+  vertical-align: text-bottom;
+  background: var(--color-brand);
+  border-radius: 1px;
+  animation: caret-blink 1.05s step-end infinite;
+}

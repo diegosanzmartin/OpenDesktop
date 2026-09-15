@@ -105,7 +105,14 @@ function MessageRow({ message }: { message: Message }): ReactNode {
                   </div>
                 )
               }
-              return part.text?.trim() ? <Markdown key={partIndex} text={part.text} /> : null
+              // The caret belongs on the last part of a turn still in flight.
+              const streaming =
+                !message.completedAt &&
+                index === chunks.length - 1 &&
+                partIndex === chunk.parts.length - 1
+              return part.text?.trim() ? (
+                <Markdown key={partIndex} text={part.text} streaming={streaming} />
+              ) : null
             })}
           </div>
         )

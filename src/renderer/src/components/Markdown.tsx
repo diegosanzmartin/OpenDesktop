@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { useMemo, type ReactNode } from 'react'
+import { Fragment, useMemo, type ReactNode } from 'react'
 import { marked, type Token, type Tokens } from 'marked'
 
 /**
@@ -11,6 +11,11 @@ import { marked, type Token, type Tokens } from 'marked'
  */
 
 marked.use({ gfm: true, breaks: true })
+
+/** Marks where the text has got to, so a pause reads as thinking, not as done. */
+function Caret(): ReactNode {
+  return <span className="caret" aria-hidden />
+}
 
 function Inline({ tokens }: { tokens: Token[] | undefined }): ReactNode {
   if (!tokens) return null
@@ -148,10 +153,24 @@ function TableBlock({ token }: { token: Tokens.Table }): ReactNode {
   )
 }
 
-function Blocks({ tokens, tight }: { tokens: Token[]; tight?: boolean }): ReactNode {
+/** Blocks that read naturally with a caret sitting inside them. */
+const CARET_INLINE = new Set(['paragraph', 'heading', 'text'])
+
+function Blocks({
+  tokens,
+  tight,
+  caretAt
+}: {
+  tokens: Token[]
+  tight?: boolean
+  /** Index of the token the caret belongs to, or -1. */
+  caretAt?: number
+}): ReactNode {
   return (
     <>
       {tokens.map((token, index) => {
+        const caret = index === caretAt
+        const trailing = caret && !CARET_INLINE.has(token.type)
         switch (token.type) {
           case 'space':
             return null
@@ -166,6 +185,7 @@ function Blocks({ tokens, tight }: { tokens: Token[]; tight?: boolean }): ReactN
                 className={clsx('text-ink-100 mb-1.5 mt-4 font-semibold first:mt-0', size)}
               >
                 <Inline tokens={heading.tokens} />
+                {caret ? <Caret /> : null}
               </div>
             )
           }
@@ -174,6 +194,7 @@ function Blocks({ tokens, tight }: { tokens: Token[]; tight?: boolean }): ReactN
             return (
               <p key={index} className={tight ? 'my-0' : 'my-2 first:mt-0 last:mb-0'}>
                 <Inline tokens={(token as Tokens.Paragraph).tokens} />
+                {caret ? <Caret /> : null}
               </p>
             )
 
@@ -182,6 +203,7 @@ function Blocks({ tokens, tight }: { tokens: Token[]; tight?: boolean }): ReactN
             return (
               <span key={index}>
                 {text.tokens ? <Inline tokens={text.tokens} /> : text.text}
+                {caret ? <Caret /> : null}
               </span>
             )
           }
@@ -189,20 +211,30 @@ function Blocks({ tokens, tight }: { tokens: Token[]; tight?: boolean }): ReactN
           case 'code': {
             const code = token as Tokens.Code
             return (
-              <pre
-                key={index}
-                className="bg-ink-850 border-ink-800 text-ink-200 my-2.5 overflow-x-auto rounded-lg border px-3 py-2.5 font-mono text-[12px] leading-[1.6]"
-              >
-                {code.text}
-              </pre>
+              <Fragment key={index}>
+                <pre className="bg-ink-850 border-ink-800 text-ink-200 my-2.5 overflow-x-auto rounded-lg border px-3 py-2.5 font-mono text-[12px] leading-[1.6]">
+                  {code.text}
+                </pre>
+                {trailing ? <Caret /> : null}
+              </Fragment>
             )
           }
 
           case 'list':
-            return <ListBlock key={index} token={token as Tokens.List} />
+            return (
+              <Fragment key={index}>
+                <ListBlock token={token as Tokens.List} />
+                {trailing ? <Caret /> : null}
+              </Fragment>
+            )
 
           case 'table':
-            return <TableBlock key={index} token={token as Tokens.Table} />
+            return (
+              <Fragment key={index}>
+                <TableBlock token={token as Tokens.Table} />
+                {trailing ? <Caret /> : null}
+              </Fragment>
+            )
 
           case 'blockquote':
             return (
@@ -238,7 +270,7 @@ function Blocks({ tokens, tight }: { tokens: Token[]; tight?: boolean }): ReactN
   )
 }
 
-export function Markdown({ text }: { text: string }): ReactNode {
+export function Markdown({ text, streaming }: { text: string; streaming?: boolean }): ReactNode {
   const tokens = useMemo(() => {
     try {
       return marked.lexer(text)
@@ -249,11 +281,30 @@ export function Markdown({ text }: { text: string }): ReactNode {
 
   // A half-written table or fence mid-stream can trip the lexer; showing the
   // raw text is better than showing nothing until the turn settles.
-  if (!tokens) return <div className="prose-body whitespace-pre-wrap">{text}</div>
+  if (!tokens) {
+    return (
+      <div className="prose-body whitespace-pre-wrap">
+        {text}
+        {streaming ? <Caret /> : null}
+      </div>
+    )
+  }
+
+  // Placed by index rather than by CSS: an ::after on the last child lands
+  // inside a table cell or a code block, which reads as a stray mark.
+  let caretAt = -1
+  if (streaming) {
+    for (let i = tokens.length - 1; i >= 0; i--) {
+      if (tokens[i].type !== 'space') {
+        caretAt = i
+        break
+      }
+    }
+  }
 
   return (
     <div className="prose-body">
-      <Blocks tokens={tokens} />
+      <Blocks tokens={tokens} caretAt={caretAt} />
     </div>
   )
 }

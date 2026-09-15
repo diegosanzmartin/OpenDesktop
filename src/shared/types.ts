@@ -104,6 +104,11 @@ export interface AppConfig {
   agent: Record<string, AgentConfig>
   permissions: Permissions
   maxSteps: number
+  /**
+   * Milliseconds between words when re-chunking the model's text for display.
+   * 0 disables the smoothing and shows provider chunks as they arrive.
+   */
+  smoothStreamMs: number
   theme: 'dark' | 'light' | 'system'
 }
 

@@ -1,4 +1,4 @@
-import { stepCountIs, streamText, type ModelMessage } from 'ai'
+import { smoothStream, stepCountIs, streamText, type ModelMessage } from 'ai'
 import type { AgentConfig, AppConfig, Message } from '@shared/types'
 import { effectivePermissions, resolvedConfig } from '../config'
 import { bus } from '../bus'
@@ -158,6 +158,18 @@ export async function runTurn(input: TurnInput): Promise<string> {
       tools,
       temperature: agent.temperature,
       stopWhen: stepCountIs(config.maxSteps),
+      // Providers emit text in lumps of wildly varying size — a whole paragraph
+      // in one chunk, then three characters. Re-chunking by word at a steady
+      // cadence makes the transcript read as it is written instead of jumping.
+      // Set smoothStreamMs to 0 to see the provider's own chunking instead.
+      ...((config.smoothStreamMs ?? 10) > 0
+        ? {
+            experimental_transform: smoothStream({
+              delayInMs: config.smoothStreamMs ?? 10,
+              chunking: 'word'
+            })
+          }
+        : {}),
       abortSignal: controller.signal,
       onError: ({ error }) => {
         store.pushPart(session.id, assistant.id, {

@@ -127,6 +127,7 @@ export function defaultConfig(): AppConfig {
     agent: DEFAULT_AGENTS,
     permissions: DEFAULT_PERMISSIONS,
     maxSteps: 60,
+    smoothStreamMs: 10,
     theme: 'dark'
   }
 }

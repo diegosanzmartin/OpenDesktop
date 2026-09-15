@@ -182,7 +182,11 @@ Three columns: a collapsible session list, the transcript, and a dock on the rig
 group header exposes the grouping and sorting (folder, status, date, environment, agent).
 `⌘B` collapses it to a strip.
 
-**Transcript** — prose reads as prose. Markdown is lexed with `marked` and the tokens are
+**Transcript** — the answer renders as it is written: markdown is re-parsed on every delta, so
+a table grows a row at a time and a caret marks where the text has got to. Providers emit
+text in lumps of wildly varying size, so the stream is re-chunked by word at a steady cadence
+(`smoothStreamMs`, 10ms by default; 0 shows the provider's own chunking). Markdown is lexed
+with `marked` and the tokens are
 turned into React elements rather than into an HTML string, so tables, nested and ordered
 lists, task lists, blockquotes, links, rules and fenced code all render in the app's own
 styling, and nothing the model emits can inject markup. A run of tool calls collapses into a

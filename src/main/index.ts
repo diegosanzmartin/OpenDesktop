@@ -86,6 +86,7 @@ void app.whenReady().then(async () => {
   registerIpc()
   createWindow()
 
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
