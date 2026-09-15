@@ -178,7 +178,9 @@ function ProviderCard({
   const models = Object.values(provider.models)
   const usesBaseUrl = provider.npm === '@ai-sdk/openai-compatible' || provider.npm === '@ai-sdk/openai'
 
-  const setModels = (list: { id: string; name: string; contextWindow?: number }[]): void => {
+  const setModels = (
+    list: { id: string; name: string; contextWindow?: number; vision?: boolean }[]
+  ): void => {
     const map: ProviderConfig['models'] = {}
     for (const m of list) map[m.id || 'unnamed'] = { ...m, id: m.id || 'unnamed' }
     patch({ models: map })
@@ -236,7 +238,7 @@ function ProviderCard({
         <div className="border-ink-700 flex items-center gap-2 border-b px-2.5 py-1.5">
           <Label>Models</Label>
           <span className="text-ink-600 text-[11px]">
-            referenced as {provider.id}/&lt;id&gt;
+            referenced as {provider.id}/&lt;id&gt; · mark “vision” to let images be attached
           </span>
           <Button
             size="sm"
@@ -287,6 +289,27 @@ function ProviderCard({
                 }}
                 className="border-ink-800 bg-ink-900 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 w-20 rounded-md border px-2.5 py-1.5 font-mono text-[12px] outline-none"
               />
+              <button
+                type="button"
+                title={
+                  model.vision
+                    ? 'Images are sent to this model'
+                    : 'Mark this model as able to read images'
+                }
+                onClick={() => {
+                  const next = models.slice()
+                  next[index] = { ...model, vision: !model.vision }
+                  setModels(next)
+                }}
+                className={clsx(
+                  'rounded-md border px-2 py-1 text-[11px]',
+                  model.vision
+                    ? 'border-ok/40 bg-ok/10 text-ok'
+                    : 'border-ink-700 text-ink-600 hover:text-ink-300'
+                )}
+              >
+                vision
+              </button>
               <button
                 type="button"
                 title="Remove model"

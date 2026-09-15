@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import type {
   ActivityQuery,
   AppConfig,
+  Attachment,
   AppEvent,
   ApprovalRequest,
   Block,
@@ -72,7 +73,7 @@ interface State {
     agentId?: string
     model?: string
   }) => Promise<void>
-  send: (text: string) => Promise<void>
+  send: (text: string, attachments?: Attachment[]) => Promise<void>
   stop: () => Promise<void>
   openDock: (tab: DockTab) => void
   toggleDock: (tab: DockTab) => void
@@ -321,10 +322,10 @@ export const useStore = create<State>((set, get) => ({
     await get().selectSession(session.id)
   },
 
-  async send(text) {
+  async send(text, attachments) {
     const id = get().activeSessionId
-    if (!id || !text.trim()) return
-    await api().turn.send(id, text)
+    if (!id || (!text.trim() && !attachments?.length)) return
+    await api().turn.send(id, text, attachments)
   },
 
   async stop() {

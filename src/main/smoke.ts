@@ -11,6 +11,11 @@ import { defaultConfig, loadConfig, normalizeConfig, saveConfig, setAgentLoader 
 import { listAgents, parseAgentFile, saveAgent, seedBuiltins, serializeAgent } from './agents'
 import { expandSkills, listSkills } from './skills'
 import { parseDocument } from './frontmatter'
+import { addFromPaths, dropSessionAttachments, modelAcceptsImages } from './attachments'
+import { buildUserMessage } from './agent/runner'
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import * as store from './store'
 import * as history from './history'
 import { bus } from './bus'
@@ -296,6 +301,78 @@ async function main(): Promise<void> {
       expandSkills(`path/${first.id}`).used.length === 0
     )
   }
+
+  section('attachments')
+  const attachDir = join(tmpdir(), `opendesktop-attach-${Date.now()}`)
+  mkdirSync(attachDir, { recursive: true })
+  const textFile = join(attachDir, 'notes.md')
+  const pngFile = join(attachDir, 'shot.png')
+  const binFile = join(attachDir, 'blob.bin')
+  writeFileSync(textFile, '# Notes\nsome content')
+  // A minimal but genuine PNG header, so the media type is real.
+  writeFileSync(pngFile, Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex'))
+  writeFileSync(binFile, Buffer.from([0x00, 0x01, 0x02, 0x00, 0xff]))
+
+  const attachSession = store.createSession({
+    title: 'attach',
+    cwd: process.cwd(),
+    environmentId: 'local',
+    agentId: 'build',
+    model: 'mock/mock'
+  })
+
+  const picked = addFromPaths(attachSession.id, [textFile, pngFile, binFile])
+  check('a text file is accepted', picked.added.some((a) => a.kind === 'text'), picked.errors)
+  check('an image is accepted', picked.added.some((a) => a.kind === 'image'))
+  check('a binary file is refused', picked.errors.length === 1, picked.errors)
+  check('the refusal names the file', picked.errors[0]?.includes('blob.bin'), picked.errors[0])
+  const textAttachment = picked.added.find((a) => a.kind === 'text')!
+  const imageAttachment = picked.added.find((a) => a.kind === 'image')!
+  check('text is inlined at attach time', textAttachment.text?.includes('some content') === true)
+  check('an image is not inlined', imageAttachment.text === undefined)
+  check('a copy is kept, not a reference', textAttachment.path !== textFile)
+  check('the copy exists on disk', existsSync(textAttachment.path))
+
+  const withVision = normalizeConfig({
+    model: 'p/seeing',
+    provider: {
+      p: {
+        npm: '@ai-sdk/openai-compatible',
+        name: 'P',
+        options: { baseURL: 'https://x', apiKey: 'k' },
+        models: { seeing: { name: 'Seeing', vision: true }, blind: { name: 'Blind' } }
+      }
+    }
+  })
+  check('a model marked vision accepts images', modelAcceptsImages(withVision, 'p/seeing'))
+  check('a model without the flag does not', !modelAcceptsImages(withVision, 'p/blind'))
+  check('an unknown model does not', !modelAcceptsImages(withVision, 'p/missing'))
+
+  const seeing = buildUserMessage(withVision, 'p/seeing', 'look at this', picked.added)
+  const seeingParts = seeing.content as { type: string; text?: string }[]
+  check('the image is sent to a vision model', seeingParts.some((p) => p.type === 'image'))
+  check('the text file is inlined as text', JSON.stringify(seeing.content).includes('some content'))
+  check(
+    'the user prompt comes last',
+    seeingParts[seeingParts.length - 1]?.text === 'look at this'
+  )
+
+  const blind = buildUserMessage(withVision, 'p/blind', 'look at this', picked.added)
+  const blindParts = blind.content as { type: string }[]
+  check('no image reaches a model that cannot read one', !blindParts.some((p) => p.type === 'image'))
+  check(
+    'and the model is told the image was withheld',
+    JSON.stringify(blind.content).includes('not configured to read images')
+  )
+  check(
+    'a message with no attachments stays a plain string',
+    typeof buildUserMessage(withVision, 'p/blind', 'hello', []).content === 'string'
+  )
+
+  dropSessionAttachments(attachSession.id)
+  check('removing a session clears its attachments', !existsSync(textAttachment.path))
+  store.deleteSession(attachSession.id)
+  rmSync(attachDir, { recursive: true, force: true })
 
   section('diff')
   const d = diffLines('a\nb\nc', 'a\nB\nc')

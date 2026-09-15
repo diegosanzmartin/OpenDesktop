@@ -1,7 +1,8 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type {
   AgentConfig,
   AppConfig,
+  Attachment,
   AppEvent,
   ApprovalRequest,
   Block,
@@ -82,9 +83,30 @@ const api = {
     blocks: (id: string): Promise<Block[]> => ipcRenderer.invoke('session:blocks', id),
     running: (id: string): Promise<boolean> => ipcRenderer.invoke('session:running', id)
   },
+  attachments: {
+    pick: (sessionId: string): Promise<{ added: Attachment[]; errors: string[] }> =>
+      ipcRenderer.invoke('attachments:pick', sessionId),
+    addPaths: (
+      sessionId: string,
+      paths: string[]
+    ): Promise<{ added: Attachment[]; errors: string[] }> =>
+      ipcRenderer.invoke('attachments:addPaths', sessionId, paths),
+    addBytes: (
+      sessionId: string,
+      name: string,
+      mediaType: string,
+      bytes: Uint8Array
+    ): Promise<{ added: Attachment[]; errors: string[] }> =>
+      ipcRenderer.invoke('attachments:addBytes', sessionId, name, mediaType, bytes),
+    remove: (path: string): Promise<void> => ipcRenderer.invoke('attachments:remove', path),
+    accepted: (model: string): Promise<{ images: boolean }> =>
+      ipcRenderer.invoke('attachments:accepted', model),
+    /** Electron no longer exposes File.path; this is the supported way. */
+    pathFor: (file: File): string => webUtils.getPathForFile(file)
+  },
   turn: {
-    send: (sessionId: string, text: string): Promise<boolean> =>
-      ipcRenderer.invoke('turn:send', sessionId, text),
+    send: (sessionId: string, text: string, attachments?: Attachment[]): Promise<boolean> =>
+      ipcRenderer.invoke('turn:send', sessionId, text, attachments),
     stop: (sessionId: string): Promise<void> => ipcRenderer.invoke('turn:stop', sessionId)
   },
   approvals: {

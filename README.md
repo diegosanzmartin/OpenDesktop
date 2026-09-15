@@ -215,6 +215,15 @@ in the pane.
 The browser wraps anything that is not natively renderable — source, markdown, config — in a
 readable page, rather than handing the webview a download it cannot perform.
 
+**Attachments** — the paperclip, a drag onto the composer, or a pasted screenshot. Text files
+are inlined into the prompt, which every model can read and which keeps the transcript
+reproducible. Images are only sent to a model marked **vision** in *Models & providers*: an
+OpenAI-compatible endpoint cannot be asked what it accepts, so it is declared rather than
+detected, and an unmarked model gets told an image was withheld instead of answering as
+though nothing was sent. Attachments are copied beside the session, so the transcript still
+makes sense after the original is moved. Binaries that are not images are refused, with the
+reason.
+
 **Approvals** — bash, write, edit and fetch ask before running, with the command or diff
 shown. Allow once, allow for the session, or reject. An allowlist of read-only commands skips
 the prompt; a denylist always refuses. Chained commands are checked segment by segment, so

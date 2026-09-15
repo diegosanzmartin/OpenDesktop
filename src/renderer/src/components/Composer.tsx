@@ -1,7 +1,7 @@
 import clsx from 'clsx'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { ArrowUp, ChevronDown, FolderOpen, Square } from 'lucide-react'
-import type { Session, Skill } from '@shared/types'
+import { ArrowUp, ChevronDown, FileText, FolderOpen, ImageIcon, Paperclip, Square, X } from 'lucide-react'
+import type { Attachment, Session, Skill } from '@shared/types'
 import { AUTO_AGENT } from '@shared/types'
 import { useStore } from '../state/store'
 import { folderName, shortenPath } from '../lib/format'
@@ -120,6 +120,52 @@ function SkillMenu({
   )
 }
 
+function AttachmentChip({
+  attachment,
+  blocked,
+  onRemove
+}: {
+  attachment: Attachment
+  blocked: boolean
+  onRemove: () => void
+}): ReactNode {
+  const [preview, setPreview] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (attachment.kind !== 'image') return
+    void window.opendesktop.files.previewUrl('local', attachment.path).then(setPreview)
+  }, [attachment.kind, attachment.path])
+
+  return (
+    <div
+      title={blocked ? `${attachment.name} — this model cannot read images` : attachment.name}
+      className={clsx(
+        'group border-ink-700 bg-ink-850 relative flex items-center gap-1.5 rounded-lg border py-1 pl-1.5 pr-2',
+        blocked && 'border-warn/50'
+      )}
+    >
+      {attachment.kind === 'image' ? (
+        preview ? (
+          <img src={preview} alt="" className="h-7 w-7 rounded object-cover" />
+        ) : (
+          <ImageIcon className="text-ink-500 h-4 w-4" />
+        )
+      ) : (
+        <FileText className="text-ink-500 h-4 w-4" />
+      )}
+      <span className="max-w-[150px] truncate text-[11.5px]">{attachment.name}</span>
+      <button
+        type="button"
+        onClick={onRemove}
+        title="Remove"
+        className="text-ink-600 hover:text-bad ml-0.5"
+      >
+        <X className="h-3 w-3" />
+      </button>
+    </div>
+  )
+}
+
 export function Composer({ session }: { session: Session }): ReactNode {
   const [text, setText] = useState('')
   const config = useStore((s) => s.config)
@@ -167,6 +213,31 @@ export function Composer({ session }: { session: Session }): ReactNode {
     })
   }
 
+  const [attachments, setAttachments] = useState<Attachment[]>([])
+  const [acceptsImages, setAcceptsImages] = useState(false)
+  const [dropping, setDropping] = useState(false)
+  const [attachError, setAttachError] = useState<string | null>(null)
+
+  useEffect(() => {
+    void window.opendesktop.attachments
+      .accepted(session.model)
+      .then((accepted) => setAcceptsImages(accepted.images))
+  }, [session.model])
+
+  // Attachments belong to the message being composed, not to the session.
+  useEffect(() => {
+    setAttachments([])
+  }, [session.id])
+
+  const take = (result: { added: Attachment[]; errors: string[] }): void => {
+    if (result.added.length > 0) setAttachments((current) => [...current, ...result.added])
+    setAttachError(result.errors[0] ?? null)
+  }
+
+  const attachPaths = async (paths: string[]): Promise<void> => {
+    if (paths.length > 0) take(await window.opendesktop.attachments.addPaths(session.id, paths))
+  }
+
   const busy = session.status === 'running' || session.status === 'awaiting-approval'
   const primaryAgents = Object.values(config?.agent ?? {}).filter(
     (a) => a.mode === 'primary' || a.mode === 'all'
@@ -178,10 +249,12 @@ export function Composer({ session }: { session: Session }): ReactNode {
 
   const submit = (): void => {
     const value = text.trim()
-    if (!value || busy) return
+    if ((!value && attachments.length === 0) || busy) return
     setText('')
     setMenuAt(null)
-    void send(value)
+    setAttachError(null)
+    void send(value, attachments)
+    setAttachments([])
   }
 
   const patch = (next: Partial<Session>): void => {
@@ -193,7 +266,70 @@ export function Composer({ session }: { session: Session }): ReactNode {
       <div className="mx-auto max-w-[760px]">
         <ChangesBar session={session} />
 
-        <div className="border-ink-700 bg-ink-850 focus-within:border-ink-600 relative flex items-end gap-2 rounded-2xl border px-3.5 py-2.5">
+        {attachError ? (
+          <div className="border-warn/40 bg-warn/10 text-warn mb-2 flex items-start gap-2 rounded-lg border px-3 py-1.5 text-[11.5px]">
+            <span className="flex-1">{attachError}</span>
+            <button type="button" onClick={() => setAttachError(null)}>
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+        ) : null}
+
+        <div
+          onDragOver={(event) => {
+            event.preventDefault()
+            setDropping(true)
+          }}
+          onDragLeave={() => setDropping(false)}
+          onDrop={(event) => {
+            event.preventDefault()
+            setDropping(false)
+            const paths = Array.from(event.dataTransfer.files).map((file) =>
+              window.opendesktop.attachments.pathFor(file)
+            )
+            void attachPaths(paths.filter(Boolean))
+          }}
+          onPaste={(event) => {
+            // A pasted screenshot has no path, so it arrives as bytes.
+            const image = Array.from(event.clipboardData.items).find((item) =>
+              item.type.startsWith('image/')
+            )
+            const file = image?.getAsFile()
+            if (!file) return
+            event.preventDefault()
+            void file.arrayBuffer().then(async (buffer) =>
+              take(
+                await window.opendesktop.attachments.addBytes(
+                  session.id,
+                  file.name || `pasted-${Date.now()}.png`,
+                  file.type,
+                  new Uint8Array(buffer)
+                )
+              )
+            )
+          }}
+          className={clsx(
+            'border-ink-700 bg-ink-850 focus-within:border-ink-600 relative flex flex-col rounded-2xl border px-3.5 py-2.5',
+            dropping && 'border-brand bg-brand/5'
+          )}
+        >
+          {attachments.length > 0 ? (
+            <div className="mb-2 flex flex-wrap gap-1.5">
+              {attachments.map((attachment) => (
+                <AttachmentChip
+                  key={attachment.id}
+                  attachment={attachment}
+                  blocked={attachment.kind === 'image' && !acceptsImages}
+                  onRemove={() => {
+                    void window.opendesktop.attachments.remove(attachment.path)
+                    setAttachments((current) => current.filter((a) => a.id !== attachment.id))
+                  }}
+                />
+              ))}
+            </div>
+          ) : null}
+
+          <div className="flex items-end gap-2">
           {menuAt !== null ? (
             <SkillMenu skills={matches} query={query} active={active} onPick={insertSkill} />
           ) : null}
@@ -236,8 +372,16 @@ export function Composer({ session }: { session: Session }): ReactNode {
           />
           <button
             type="button"
+            title="Attach files"
+            onClick={async () => take(await window.opendesktop.attachments.pick(session.id))}
+            className="text-ink-500 hover:bg-ink-800 hover:text-ink-200 mb-0.5 shrink-0 rounded-md p-1.5"
+          >
+            <Paperclip className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
             onClick={busy ? () => void stop() : submit}
-            disabled={!busy && !text.trim()}
+            disabled={!busy && !text.trim() && attachments.length === 0}
             title={busy ? 'Stop' : 'Send'}
             className={clsx(
               'flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors',
@@ -250,6 +394,7 @@ export function Composer({ session }: { session: Session }): ReactNode {
           >
             {busy ? <Square className="h-3 w-3" /> : <ArrowUp className="h-4 w-4" />}
           </button>
+          </div>
         </div>
 
         <div className="mt-2 flex items-center gap-3 px-1">
@@ -276,7 +421,11 @@ export function Composer({ session }: { session: Session }): ReactNode {
               ...primaryAgents.map((a) => ({ value: a.id, label: a.name }))
             ]}
           />
-          {isAuto ? (
+          {attachments.some((a) => a.kind === 'image') && !acceptsImages ? (
+            <span className="text-warn text-[11.5px]">
+              this model is not set as vision-capable — images will not be sent
+            </span>
+          ) : isAuto ? (
             <span className="text-ink-600 text-[11.5px]">splits the work across specialists</span>
           ) : agent?.description ? (
             <span className="text-ink-600 max-w-[280px] truncate text-[11.5px]">

@@ -1,14 +1,53 @@
 import clsx from 'clsx'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { Message, Session } from '@shared/types'
+import { FileText } from 'lucide-react'
+import type { Attachment, Message, Session } from '@shared/types'
 import { AUTO_AGENT } from '@shared/types'
 import { useStore } from '../state/store'
 import { tokens } from '../lib/format'
 import { ApprovalCard } from './ApprovalCard'
 import { Composer } from './Composer'
 import { EditedFiles, MessageParts } from './Transcript'
+import { usePreviewOpener } from './BlockCard'
 
 const EMPTY_MESSAGES: Message[] = []
+
+/** What was attached to a sent message; images keep a thumbnail. */
+function SentAttachment({ attachment }: { attachment: Attachment }): ReactNode {
+  const [preview, setPreview] = useState<string | null>(null)
+  const openInBrowser = usePreviewOpener()
+
+  useEffect(() => {
+    if (attachment.kind !== 'image') return
+    void window.opendesktop.files.previewUrl('local', attachment.path).then(setPreview)
+  }, [attachment.kind, attachment.path])
+
+  if (attachment.kind === 'image' && preview) {
+    return (
+      <button type="button" onClick={() => void openInBrowser('local', attachment.path)}>
+        <img
+          src={preview}
+          alt={attachment.name}
+          title={attachment.name}
+          className="border-ink-700 max-h-44 rounded-lg border object-cover"
+        />
+      </button>
+    )
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => void openInBrowser('local', attachment.path)}
+      title={attachment.name}
+      className="border-ink-700 bg-ink-850 hover:border-ink-600 flex items-center gap-1.5 rounded-lg border px-2 py-1"
+    >
+      <FileText className="text-ink-500 h-3.5 w-3.5" />
+      <span className="max-w-[200px] truncate text-[11.5px]">{attachment.name}</span>
+      <span className="text-ink-600 text-[10.5px]">{Math.max(1, Math.round(attachment.size / 1024))} KB</span>
+    </button>
+  )
+}
 
 function MessageRow({ message }: { message: Message }): ReactNode {
   const blocks = useStore((s) => s.blocks)
@@ -19,10 +58,19 @@ function MessageRow({ message }: { message: Message }): ReactNode {
   if (message.role === 'user') {
     const text = message.parts.map((p) => p.text ?? '').join('')
     return (
-      <div className="flex justify-end">
-        <div className="bg-ink-800 text-ink-100 max-w-[80%] rounded-2xl px-3.5 py-2 text-[14px] leading-[1.6] whitespace-pre-wrap">
-          {text}
-        </div>
+      <div className="flex flex-col items-end gap-1.5">
+        {message.attachments && message.attachments.length > 0 ? (
+          <div className="flex max-w-[80%] flex-wrap justify-end gap-1.5">
+            {message.attachments.map((attachment) => (
+              <SentAttachment key={attachment.id} attachment={attachment} />
+            ))}
+          </div>
+        ) : null}
+        {text ? (
+          <div className="bg-ink-800 text-ink-100 max-w-[80%] rounded-2xl px-3.5 py-2 text-[14px] leading-[1.6] whitespace-pre-wrap">
+            {text}
+          </div>
+        ) : null}
       </div>
     )
   }

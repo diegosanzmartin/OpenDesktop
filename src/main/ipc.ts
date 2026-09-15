@@ -37,7 +37,14 @@ import {
   importableSkills,
   listSkills
 } from './skills'
-import { AUTO_AGENT, type AgentConfig } from '@shared/types'
+import { AUTO_AGENT, type AgentConfig, type Attachment } from '@shared/types'
+import {
+  addFromBytes,
+  addFromPaths,
+  dropSessionAttachments,
+  modelAcceptsImages,
+  removeAttachment
+} from './attachments'
 
 function broadcast(): void {
   bus.subscribe((event) => {
@@ -159,6 +166,7 @@ export function registerIpc(): void {
   ipcMain.handle('session:delete', (_e, id: string) => {
     if (isRunning(id)) stop(id)
     history.clearHistory(id)
+    dropSessionAttachments(id)
     store.deleteSession(id)
   })
   ipcMain.handle('session:clear', (_e, id: string) => {
@@ -169,11 +177,36 @@ export function registerIpc(): void {
   ipcMain.handle('session:blocks', (_e, id: string) => store.listBlocks(id))
   ipcMain.handle('session:running', (_e, id: string) => isRunning(id))
 
-  /* ---------- turns ---------- */
-  ipcMain.handle('turn:send', async (_e, sessionId: string, text: string) => {
-    void runTurn({ sessionId, userText: text }).catch(() => undefined)
-    return true
+  /* ---------- attachments ---------- */
+  ipcMain.handle('attachments:pick', async (_e, sessionId: string) => {
+    const result = await dialog.showOpenDialog({
+      properties: ['openFile', 'multiSelections'],
+      title: 'Attach files'
+    })
+    if (result.canceled) return { added: [], errors: [] }
+    return addFromPaths(sessionId, result.filePaths)
   })
+  ipcMain.handle('attachments:addPaths', (_e, sessionId: string, paths: string[]) =>
+    addFromPaths(sessionId, paths)
+  )
+  ipcMain.handle(
+    'attachments:addBytes',
+    (_e, sessionId: string, name: string, mediaType: string, bytes: Uint8Array) =>
+      addFromBytes(sessionId, name, mediaType, bytes)
+  )
+  ipcMain.handle('attachments:remove', (_e, path: string) => removeAttachment(path))
+  ipcMain.handle('attachments:accepted', (_e, model: string) => ({
+    images: modelAcceptsImages(rawConfig(), model)
+  }))
+
+  /* ---------- turns ---------- */
+  ipcMain.handle(
+    'turn:send',
+    async (_e, sessionId: string, text: string, attachments?: Attachment[]) => {
+      void runTurn({ sessionId, userText: text, attachments }).catch(() => undefined)
+      return true
+    }
+  )
   ipcMain.handle('turn:stop', (_e, sessionId: string) => stop(sessionId))
 
   /* ---------- approvals ---------- */

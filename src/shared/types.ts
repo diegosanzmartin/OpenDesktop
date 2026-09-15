@@ -40,6 +40,19 @@ export interface EnvironmentConfig {
   }
 }
 
+export interface Attachment {
+  id: string
+  name: string
+  mediaType: string
+  size: number
+  /** Images need a model that can read them; text is inlined and always works. */
+  kind: 'image' | 'text' | 'binary'
+  /** A copy kept beside the session, so the transcript survives the original moving. */
+  path: string
+  /** Present for text: the contents, inlined into the prompt. */
+  text?: string
+}
+
 export interface ProviderModelConfig {
   id: string
   name: string
@@ -48,6 +61,8 @@ export interface ProviderModelConfig {
   maxOutputTokens?: number
   reasoning?: boolean
   toolCall?: boolean
+  /** Declared, not detected: an OpenAI-compatible endpoint cannot be asked. */
+  vision?: boolean
 }
 
 export interface ProviderConfig {
@@ -173,6 +188,7 @@ export interface Message {
   sessionId: string
   role: 'user' | 'assistant' | 'system'
   parts: MessagePart[]
+  attachments?: Attachment[]
   agentId?: string
   model?: string
   createdAt: number

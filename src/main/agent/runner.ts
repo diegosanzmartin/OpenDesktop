@@ -1,5 +1,5 @@
-import { smoothStream, stepCountIs, streamText, type ModelMessage } from 'ai'
-import { AUTO_AGENT, type AgentConfig, type AppConfig, type Message } from '@shared/types'
+import { smoothStream, stepCountIs, streamText, type ModelMessage, type UserContent } from 'ai'
+import { AUTO_AGENT, type AgentConfig, type AppConfig, type Attachment, type Message } from '@shared/types'
 import { effectivePermissions, resolvedConfig } from '../config'
 import { bus } from '../bus'
 import { cancelSessionApprovals } from '../approvals'
@@ -9,6 +9,7 @@ import * as store from '../store'
 import * as history from '../history'
 import { createTools, type ToolContext } from './tools'
 import { expandSkills } from '../skills'
+import { modelAcceptsImages, readAttachment } from '../attachments'
 
 const controllers = new Map<string, AbortController>()
 
@@ -111,9 +112,57 @@ async function describeTarget(environmentId: string): Promise<{ platform: string
   }
 }
 
+/**
+ * Text files are inlined — every model can read them and it keeps the
+ * transcript reproducible. Images are only attached when the model has been
+ * declared able to read them; otherwise they are named in the text so the model
+ * knows something was left out rather than answering as if nothing was sent.
+ */
+export function buildUserMessage(
+  config: AppConfig,
+  model: string,
+  text: string,
+  attachments: Attachment[] | undefined
+): ModelMessage {
+  if (!attachments || attachments.length === 0) return { role: 'user', content: text }
+
+  const parts: Extract<UserContent, unknown[]> = []
+
+  const images = attachments.filter((a) => a.kind === 'image')
+  const texts = attachments.filter((a) => a.kind === 'text')
+  const canSeeImages = modelAcceptsImages(config, model)
+
+  for (const file of texts) {
+    parts.push({
+      type: 'text',
+      text: `<file name="${file.name}" media-type="${file.mediaType}">\n${file.text ?? ''}\n</file>`
+    })
+  }
+
+  if (canSeeImages) {
+    for (const image of images) {
+      const bytes = readAttachment(image)
+      if (bytes) parts.push({ type: 'image', image: bytes, mediaType: image.mediaType })
+    }
+  } else if (images.length > 0) {
+    parts.push({
+      type: 'text',
+      text:
+        `[${images.length} image${images.length === 1 ? '' : 's'} were attached (${images
+          .map((image) => image.name)
+          .join(', ')}) but this model is not configured to read images, so they were not sent. ` +
+        `Say so rather than guessing at their contents.]`
+    })
+  }
+
+  parts.push({ type: 'text', text })
+  return { role: 'user', content: parts }
+}
+
 interface TurnInput {
   sessionId: string
   userText: string
+  attachments?: Attachment[]
   /** Set for subagent turns so the reply is returned instead of only rendered. */
   collectFinalText?: boolean
   depth?: number
@@ -138,7 +187,8 @@ export async function runTurn(input: TurnInput): Promise<string> {
   store.addMessage({
     sessionId: session.id,
     role: 'user',
-    parts: [{ type: 'text', text: input.userText }]
+    parts: [{ type: 'text', text: input.userText }],
+    attachments: input.attachments
   })
   if (session.title === 'New session') {
     store.updateSession(session.id, {
@@ -198,11 +248,9 @@ export async function runTurn(input: TurnInput): Promise<string> {
 
     const tools = createTools(ctx)
 
-    const messages: ModelMessage[] = [
-      ...history.getHistory(session.id),
-      { role: 'user', content: expanded.prompt }
-    ]
-    history.appendHistory(session.id, [{ role: 'user', content: expanded.prompt }])
+    const userMessage = buildUserMessage(config, session.model, expanded.prompt, input.attachments)
+    const messages: ModelMessage[] = [...history.getHistory(session.id), userMessage]
+    history.appendHistory(session.id, [userMessage])
 
     const result = streamText({
       model: resolved.model,
