@@ -1,6 +1,7 @@
 import { app, BrowserWindow, shell } from 'electron'
 import { join } from 'node:path'
 import { loadConfig } from './config'
+import { loadSecrets } from './secrets'
 import { loadShellEnvironment } from './shell-env'
 import { registerIpc } from './ipc'
 import { startPreviewServer, stopPreviewServer } from './preview'
@@ -70,6 +71,12 @@ void app.whenReady().then(async () => {
         ? `[env] could not read the login shell: ${shellEnv.error}`
         : `[env] merged ${shellEnv.loaded.length} variables from ${process.env.SHELL}`
     )
+  }
+
+  // Before loadConfig: {secret:...} placeholders resolve against this cache.
+  const secrets = loadSecrets()
+  if (process.env.OPENDESKTOP_DEBUG) {
+    console.log(`[secrets] keychain=${secrets.available} stored=${secrets.names.length}${secrets.error ? ` (${secrets.error})` : ''}`)
   }
 
   loadConfig()

@@ -134,7 +134,11 @@ export default function App(): ReactNode {
         <SessionSidebar />
         <main className="flex min-h-0 min-w-0 flex-1 flex-col">
           {pane === 'chat' && session ? <ChatView session={session} /> : null}
-          {pane === 'browser' ? <BrowserPane /> : null}
+          {/* Always mounted: unmounting a <webview> destroys its guest, and the
+              pane comes back blank. Hiding it also keeps the page loaded. */}
+          <div className={clsx('min-h-0 flex-1 flex-col', pane === 'browser' ? 'flex' : 'hidden')}>
+            <BrowserPane />
+          </div>
           {pane === 'files' ? <FilesPane /> : null}
           {pane === 'settings' ? <SettingsPane /> : null}
           {pane === 'chat' && !session ? (

@@ -34,7 +34,8 @@ interface State {
   ready: boolean
   config: AppConfig | null
   models: { ref: string; label: string; provider: string }[]
-  keyStatus: Record<string, boolean>
+  keyStatus: Record<string, { resolved: boolean; source: string }>
+  secrets: { available: boolean; path: string; hints: Record<string, string | null> }
 
   sessions: Session[]
   activeSessionId: string | null
@@ -73,6 +74,7 @@ interface State {
   toggleActivity: () => void
   refreshActivity: () => Promise<void>
   refreshConfig: () => Promise<void>
+  refreshSecrets: () => Promise<void>
   pushToast: (level: Toast['level'], message: string) => void
   dismissToast: (id: number) => void
 }
@@ -86,6 +88,7 @@ export const useStore = create<State>((set, get) => ({
   config: null,
   models: [],
   keyStatus: {},
+  secrets: { available: false, path: '', hints: {} },
 
   sessions: [],
   activeSessionId: null,
@@ -122,18 +125,19 @@ export const useStore = create<State>((set, get) => ({
   activityCollapsed: false,
 
   async bootstrap() {
-    const [config, models, sessions, approvals, activity, keyStatus] = await Promise.all([
+    const [config, models, sessions, approvals, activity, keyStatus, secrets] = await Promise.all([
       api().config.get(),
       api().models.list(),
       api().sessions.list(),
       api().approvals.list(),
       api().activity.all(),
-      api().config.keyStatus()
+      api().config.keyStatus(),
+      api().secrets.status()
     ])
     const blocks: Record<string, Block> = {}
     for (const block of activity) blocks[block.id] = block
 
-    set({ config, models, sessions, approvals, activity, blocks, keyStatus, ready: true })
+    set({ config, models, sessions, approvals, activity, blocks, keyStatus, secrets, ready: true })
 
     if (sessions.length > 0) await get().selectSession(sessions[0].id)
     else await get().newSession()
@@ -300,6 +304,11 @@ export const useStore = create<State>((set, get) => ({
     const blocks = { ...get().blocks }
     for (const block of activity) blocks[block.id] = block
     set({ activity, blocks })
+  },
+
+  async refreshSecrets() {
+    const [secrets, keyStatus] = await Promise.all([api().secrets.status(), api().config.keyStatus()])
+    set({ secrets, keyStatus })
   },
 
   async refreshConfig() {

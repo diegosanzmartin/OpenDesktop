@@ -18,6 +18,7 @@ pnpm dev
 | `pnpm icon` | Regenerate `build/icon.icns` |
 | `pnpm typecheck` | Typecheck main, preload and renderer |
 | `pnpm smoke` | Headless engine test — 50 checks, no provider or window needed |
+| `pnpm secrets:check` | Verifies the keychain path — 14 checks, needs Electron |
 
 `OPENDESKTOP_DEBUG=1 pnpm start` mirrors renderer console errors to the terminal.
 
@@ -46,9 +47,13 @@ on the environment at all. The **Providers** tab tells you which way it went.
 
 ## Configuration
 
-Everything lives in `~/.config/opendesktop/config.json`, editable from the **Settings** tab
-inside the app (it validates, saves and hot-reloads providers and connections). The provider
-block is the opencode shape, so an existing config drops straight in:
+**Settings → Models & providers** is the place to do this from the UI: add or remove
+providers, edit the base URL and the AI SDK package, manage each provider's model list, set
+the default model, and paste the API key. Nothing there requires touching a file.
+
+Everything is persisted to `~/.config/opendesktop/config.json`, which the **Config file** tab
+also exposes raw for anything the form does not cover. The provider block is the opencode
+shape, so an existing config drops straight in:
 
 ```json
 {
@@ -67,10 +72,25 @@ block is the opencode shape, so an existing config drops straight in:
 }
 ```
 
-`{env:VAR}` and `{file:~/path}` are resolved at call time, so no secret is ever written to
-the config file. The **Providers** tab shows whether each key actually resolved — the most
-common first-run problem is launching the app from Finder, which does not inherit your
-shell's exports.
+### API keys
+
+A key pasted into **Models & providers** is encrypted with Electron's `safeStorage` — on
+macOS that means a key held in your login Keychain — and written to
+`~/.config/opendesktop/secrets.json` with mode 0600. The config file only ever stores the
+reference `{secret:<provider-id>}`, so it stays safe to read, diff and commit. The key is
+decrypted into memory at startup and never crosses back to the renderer: the UI only sees a
+masked hint like `••••a41f`.
+
+Three placeholder forms are resolved at call time, none of which put a secret in the config:
+
+| Placeholder | Where the value comes from |
+| --- | --- |
+| `{secret:name}` | The system keychain, written from the Settings UI |
+| `{env:VAR}` | The environment, including what the login shell exports |
+| `{file:~/path}` | The contents of that file |
+
+The key row tells you which one resolved, so a key that is not being picked up is visible
+rather than something you discover mid-request.
 
 Bundled AI SDK packages: `@ai-sdk/openai-compatible`, `@ai-sdk/openai`, `@ai-sdk/anthropic`,
 `@ai-sdk/google`. Any other package named in `npm` is imported dynamically and must be

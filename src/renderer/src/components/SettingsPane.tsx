@@ -3,14 +3,15 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { CheckCircle2, CircleAlert, FolderOpen, Plug, Save } from 'lucide-react'
 import { useStore } from '../state/store'
 import { Button, Label, Panel } from './ui'
+import { ModelsTab } from './ModelsTab'
 
 type Tab = 'config' | 'agents' | 'environments' | 'providers'
 
 const TABS: { id: Tab; label: string }[] = [
+  { id: 'providers', label: 'Models & providers' },
   { id: 'config', label: 'Config file' },
   { id: 'agents', label: 'Agents' },
   { id: 'environments', label: 'Environments' },
-  { id: 'providers', label: 'Providers' }
 ]
 
 function ConfigEditor(): ReactNode {
@@ -235,57 +236,8 @@ function EnvironmentsTab(): ReactNode {
   )
 }
 
-function ProvidersTab(): ReactNode {
-  const config = useStore((s) => s.config)
-  const keyStatus = useStore((s) => s.keyStatus)
-
-  return (
-    <div className="space-y-2 overflow-y-auto">
-      {Object.values(config?.provider ?? {}).map((provider) => (
-        <Panel key={provider.id} className="px-3 py-2.5">
-          <div className="flex items-center gap-2">
-            <span className="text-ink-100 text-[12.5px] font-semibold">{provider.name}</span>
-            <span className="text-ink-600 font-mono text-[10px]">{provider.id}</span>
-            {keyStatus[provider.id] ? (
-              <span className="text-ok flex items-center gap-1 text-[10px]">
-                <CheckCircle2 className="h-3 w-3" />
-                key resolved
-              </span>
-            ) : (
-              <span className="text-warn flex items-center gap-1 text-[10px]">
-                <CircleAlert className="h-3 w-3" />
-                key missing
-              </span>
-            )}
-          </div>
-          <div className="text-ink-500 mt-1 space-y-0.5 font-mono text-[10.5px]">
-            <div>npm: {provider.npm}</div>
-            {provider.options.baseURL ? <div>baseURL: {String(provider.options.baseURL)}</div> : null}
-            <div>apiKey: {String(provider.options.apiKey ?? '(from the package default)')}</div>
-          </div>
-          <div className="mt-1.5 flex flex-wrap gap-1.5">
-            {Object.values(provider.models).map((model) => (
-              <span
-                key={model.id}
-                className="border-ink-700 text-ink-300 rounded border px-1.5 py-[1px] font-mono text-[10px]"
-              >
-                {provider.id}/{model.id}
-              </span>
-            ))}
-          </div>
-        </Panel>
-      ))}
-      <p className="text-ink-600 text-[10.5px]">
-        A missing key means the environment variable was not set in the shell that launched
-        OpenDesktop. Export it and restart, or point <span className="font-mono">apiKey</span> at a
-        file with <span className="font-mono">{'{file:~/.helmcode-key}'}</span>.
-      </p>
-    </div>
-  )
-}
-
 export function SettingsPane(): ReactNode {
-  const [tab, setTab] = useState<Tab>('config')
+  const [tab, setTab] = useState<Tab>('providers')
 
   return (
     <div className="flex min-h-0 flex-1 flex-col px-5 py-4">
@@ -308,7 +260,7 @@ export function SettingsPane(): ReactNode {
         {tab === 'config' ? <ConfigEditor /> : null}
         {tab === 'agents' ? <AgentsTab /> : null}
         {tab === 'environments' ? <EnvironmentsTab /> : null}
-        {tab === 'providers' ? <ProvidersTab /> : null}
+        {tab === 'providers' ? <ModelsTab /> : null}
       </div>
     </div>
   )

@@ -131,9 +131,20 @@ export function defaultConfig(): AppConfig {
   }
 }
 
-/** Expands `{env:VAR}` and `{file:/path}` placeholders inside a config string. */
+/**
+ * Reads a stored secret by name. Injected by the secrets module so that config
+ * loading has no dependency on electron, which keeps it testable under plain node.
+ */
+let secretResolver: (name: string) => string | undefined = () => undefined
+
+export function setSecretResolver(fn: (name: string) => string | undefined): void {
+  secretResolver = fn
+}
+
+/** Expands `{env:VAR}`, `{file:/path}` and `{secret:NAME}` placeholders. */
 export function expandPlaceholders(value: string): string {
   return value
+    .replace(/\{secret:([A-Za-z0-9_.-]+)\}/g, (_m, name: string) => secretResolver(name) ?? '')
     .replace(/\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, (_m, name: string) => process.env[name] ?? '')
     .replace(/\{file:([^}]+)\}/g, (_m, p: string) => {
       const target = p.startsWith('~') ? join(homedir(), p.slice(1)) : p

@@ -17,7 +17,15 @@ const api = {
     setText: (text: string): Promise<AppConfig> => ipcRenderer.invoke('config:setText', text),
     save: (next: AppConfig): Promise<AppConfig> => ipcRenderer.invoke('config:save', next),
     reveal: (): Promise<void> => ipcRenderer.invoke('config:reveal'),
-    keyStatus: (): Promise<Record<string, boolean>> => ipcRenderer.invoke('host:resolvedConfigCheck')
+    keyStatus: (): Promise<Record<string, { resolved: boolean; source: string }>> =>
+      ipcRenderer.invoke('host:resolvedConfigCheck')
+  },
+  secrets: {
+    status: (): Promise<{ available: boolean; path: string; hints: Record<string, string | null> }> =>
+      ipcRenderer.invoke('secrets:status'),
+    set: (name: string, value: string): Promise<string | null> =>
+      ipcRenderer.invoke('secrets:set', name, value),
+    remove: (name: string): Promise<void> => ipcRenderer.invoke('secrets:delete', name)
   },
   models: {
     list: (): Promise<{ ref: string; label: string; provider: string }[]> =>

@@ -17,6 +17,7 @@ import * as history from './history'
 import { isRunning, runTurn, stop } from './agent/runner'
 import { listPending, resolveApproval, type ApprovalAnswer } from './approvals'
 import { previewOrigin, previewUrl } from './preview'
+import { deleteSecret, secretHint, secretStatus, setSecret } from './secrets'
 
 function broadcast(): void {
   bus.subscribe((event) => {
@@ -50,6 +51,26 @@ export function registerIpc(): void {
     return config
   })
   ipcMain.handle('config:reveal', () => shell.showItemInFolder(CONFIG_PATH))
+
+  /* ---------- secrets ---------- */
+  ipcMain.handle('secrets:status', () => {
+    const status = secretStatus()
+    return {
+      available: status.available,
+      path: status.path,
+      // Hints only: the values themselves never cross the bridge.
+      hints: Object.fromEntries(status.names.map((name) => [name, secretHint(name)]))
+    }
+  })
+  ipcMain.handle('secrets:set', (_e, name: string, value: string) => {
+    setSecret(name, value)
+    invalidateProviderCache()
+    return secretHint(name)
+  })
+  ipcMain.handle('secrets:delete', (_e, name: string) => {
+    deleteSecret(name)
+    invalidateProviderCache()
+  })
 
   /* ---------- models & environments ---------- */
   ipcMain.handle('models:list', () => listModels(rawConfig()))
@@ -145,9 +166,20 @@ export function registerIpc(): void {
   ipcMain.handle('host:resolvedConfigCheck', () => {
     // Reports whether each provider's apiKey actually resolved, without leaking it.
     const resolved = resolvedConfig()
-    const out: Record<string, boolean> = {}
+    const raw = rawConfig()
+    const out: Record<string, { resolved: boolean; source: string }> = {}
     for (const [id, provider] of Object.entries(resolved.provider)) {
-      out[id] = Boolean(provider.options.apiKey)
+      const template = String(raw.provider[id]?.options.apiKey ?? '')
+      const source = template.startsWith('{secret:')
+        ? 'keychain'
+        : template.startsWith('{env:')
+          ? `environment (${template.slice(5, -1)})`
+          : template.startsWith('{file:')
+            ? `file (${template.slice(6, -1)})`
+            : template
+              ? 'config file'
+              : 'not set'
+      out[id] = { resolved: Boolean(provider.options.apiKey), source }
     }
     return out
   })

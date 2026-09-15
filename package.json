@@ -13,7 +13,8 @@
     "package": "electron-vite build && electron-builder --dir",
     "dist": "electron-vite build && electron-builder",
     "smoke": "vite build -c vite.smoke.config.ts && node out/smoke/smoke.mjs",
-    "icon": "electron scripts/make-icon.cjs"
+    "icon": "electron scripts/make-icon.cjs",
+    "secrets:check": "vite build -c vite.smoke.config.ts && electron out/smoke/secrets-check.mjs"
   },
   "build": {
     "appId": "com.opendesktop.app",

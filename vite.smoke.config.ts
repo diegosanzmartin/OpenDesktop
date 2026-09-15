@@ -15,9 +15,12 @@ export default defineConfig({
     emptyOutDir: true,
     target: 'node22',
     rollupOptions: {
-      input: resolve('src/main/smoke.ts'),
-      external: [...Object.keys(pkg.dependencies), 'ai/test', 'cpu-features', /^node:/],
-      output: { format: 'esm', entryFileNames: 'smoke.mjs' }
+      input: {
+        smoke: resolve('src/main/smoke.ts'),
+        'secrets-check': resolve('src/main/secrets-check.ts')
+      },
+      external: [...Object.keys(pkg.dependencies), 'ai/test', 'electron', 'cpu-features', /^node:/],
+      output: { format: 'esm', entryFileNames: '[name].mjs' }
     }
   }
 })
