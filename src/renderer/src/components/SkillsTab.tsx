@@ -4,6 +4,10 @@ import type { Skill } from '@shared/types'
 import { useStore } from '../state/store'
 import { Button, Label, Panel } from './ui'
 
+function extraFiles(count: number): string {
+  return count === 1 ? '1 extra file' : `${count} extra files`
+}
+
 export function SkillsTab(): ReactNode {
   const skills = useStore((s) => s.skills)
   const refreshSkills = useStore((s) => s.refreshSkills)
@@ -53,16 +57,28 @@ export function SkillsTab(): ReactNode {
               None yet. Import the ones you already have below.
             </span>
           ) : (
-            <div className="space-y-1.5">
+            <div className="divide-ink-800 divide-y">
               {skills.map((skill) => (
-                <div key={skill.id} className="flex items-start gap-2">
-                  <span className="text-brand shrink-0 font-mono text-[12px]">/{skill.id}</span>
-                  <span className="text-ink-500 min-w-0 flex-1 text-[11.5px]">
-                    {skill.description}
-                    {skill.files.length > 0 ? (
-                      <span className="text-ink-700"> · {skill.files.length} extra files</span>
-                    ) : null}
-                  </span>
+                <div key={skill.id} className="group flex items-start gap-3 py-2 first:pt-0 last:pb-0">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-brand font-mono text-[12.5px]">/{skill.id}</span>
+                      {skill.files.length > 0 ? (
+                        <span className="border-ink-800 text-ink-600 rounded-full border px-1.5 text-[10.5px]">
+                          {extraFiles(skill.files.length)}
+                        </span>
+                      ) : null}
+                    </div>
+                    {skill.description ? (
+                      // Two lines is enough to recognise a skill; the full text
+                      // is in its own file and would swamp the list.
+                      <p className="text-ink-500 mt-0.5 line-clamp-2 max-w-[70ch] text-[12px] leading-[1.5]">
+                        {skill.description}
+                      </p>
+                    ) : (
+                      <p className="text-ink-700 mt-0.5 text-[12px] italic">No description.</p>
+                    )}
+                  </div>
                   <button
                     type="button"
                     title="Remove"
@@ -70,9 +86,9 @@ export function SkillsTab(): ReactNode {
                       await window.opendesktop.skills.remove(skill.id)
                       await reload()
                     }}
-                    className="text-ink-600 hover:text-bad shrink-0"
+                    className="text-ink-700 hover:text-bad mt-0.5 shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
                   >
-                    <Trash2 className="h-3 w-3" />
+                    <Trash2 className="h-3.5 w-3.5" />
                   </button>
                 </div>
               ))}
@@ -106,11 +122,11 @@ export function SkillsTab(): ReactNode {
               both tools use, so it can simply be copied.
             </span>
           ) : (
-            <div className="space-y-1">
+            <div className="divide-ink-800 divide-y">
               {importable.map((skill) => (
                 <label
                   key={skill.id}
-                  className="flex cursor-pointer items-start gap-2 py-[2px]"
+                  className="flex cursor-pointer items-start gap-3 py-2 first:pt-0 last:pb-0"
                   title={skill.alreadyHere ? 'Importing again overwrites the copy here' : undefined}
                 >
                   <input
@@ -122,14 +138,20 @@ export function SkillsTab(): ReactNode {
                       else next.delete(skill.id)
                       setPicked(next)
                     }}
-                    className="accent-brand mt-[3px]"
+                    className="accent-brand mt-1 shrink-0"
                   />
                   <span className="min-w-0 flex-1">
-                    <span className="text-ink-200 font-mono text-[12px]">/{skill.id}</span>
-                    {skill.alreadyHere ? (
-                      <span className="text-ink-700 ml-2 text-[11px]">already installed</span>
-                    ) : null}
-                    <div className="text-ink-600 line-clamp-2 text-[11.5px]">{skill.description}</div>
+                    <span className="flex items-center gap-2">
+                      <span className="text-ink-200 font-mono text-[12.5px]">/{skill.id}</span>
+                      {skill.alreadyHere ? (
+                        <span className="border-ink-800 text-ink-600 rounded-full border px-1.5 text-[10.5px]">
+                          installed
+                        </span>
+                      ) : null}
+                    </span>
+                    <span className="text-ink-600 mt-0.5 line-clamp-2 max-w-[70ch] text-[12px] leading-[1.5]">
+                      {skill.description}
+                    </span>
                   </span>
                 </label>
               ))}

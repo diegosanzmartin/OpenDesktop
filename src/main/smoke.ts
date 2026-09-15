@@ -10,6 +10,7 @@ import type { LanguageModel } from 'ai'
 import { defaultConfig, loadConfig, normalizeConfig, saveConfig, setAgentLoader } from './config'
 import { listAgents, parseAgentFile, saveAgent, seedBuiltins, serializeAgent } from './agents'
 import { expandSkills, listSkills } from './skills'
+import { parseDocument } from './frontmatter'
 import * as store from './store'
 import * as history from './history'
 import { bus } from './bus'
@@ -263,6 +264,19 @@ async function main(): Promise<void> {
   check('the trailing port is not the name', tunnel?.workstation !== '22')
   check('quoted values are unquoted', parseGcloudCommand('gcloud workstations ssh --project="a b" w')?.project === 'a b')
   check('unrelated text is rejected', parseGcloudCommand('ls -la') === null)
+
+  section('frontmatter')
+  // Prose descriptions contain colons, which strict YAML rejects; the header
+  // must still yield its name rather than being dropped whole.
+  const prosy = parseDocument<{ name: string; description: string }>(
+    ['---', 'name: add-soar', 'description: Use when adding an integration: it asks questions, then applies.', '---', '', 'Body.'].join('\n')
+  )
+  check('a colon inside a description still parses', prosy.data.name === 'add-soar', prosy.data)
+  check('and the description survives intact', (prosy.data.description ?? '').includes('it asks questions'))
+  check('the fallback is reported', prosy.lenient)
+  check('the body is not lost', prosy.body === 'Body.')
+  const clean = parseDocument<{ name: string }>(['---', 'name: ok', '---', 'Body.'].join('\n'))
+  check('a valid header does not use the fallback', !clean.lenient && clean.data.name === 'ok')
 
   section('skills')
   const installed = listSkills()

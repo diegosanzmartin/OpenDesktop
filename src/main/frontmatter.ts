@@ -11,16 +11,52 @@ export interface Document<T> {
 
 const FENCE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/
 
-export function parseDocument<T = Record<string, unknown>>(text: string): Document<Partial<T>> {
+/**
+ * Recovers a header that strict YAML rejects.
+ *
+ * Skill and agent descriptions are prose, and prose contains colons — "Defines
+ * the mandatory rule: never override…" is not valid unquoted YAML, yet files
+ * like that are common and other tools read them. Rather than drop the whole
+ * header and lose the name as well, take each `key: value` line verbatim.
+ * Nested maps are not recoverable this way, but a file that needs them is a
+ * file that parsed cleanly in the first place.
+ */
+function lenientParse(header: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  let key: string | null = null
+
+  for (const line of header.split('\n')) {
+    const match = /^([A-Za-z_][\w-]*):[ \t]?(.*)$/.exec(line)
+    if (match && !/^\s/.test(line)) {
+      key = match[1]
+      out[key] = match[2].trim()
+    } else if (key && line.trim()) {
+      // A wrapped value continues the previous key.
+      out[key] = `${out[key]} ${line.trim()}`.trim()
+    }
+  }
+
+  for (const [name, value] of Object.entries(out)) {
+    out[name] = value.replace(/^["']|["']$/g, '')
+  }
+  return out
+}
+
+export function parseDocument<T = Record<string, unknown>>(
+  text: string
+): Document<Partial<T>> & { lenient: boolean } {
   const match = FENCE.exec(text)
-  if (!match) return { data: {}, body: text.trim() }
+  if (!match) return { data: {}, body: text.trim(), lenient: false }
+
   let data: Partial<T> = {}
+  let lenient = false
   try {
     data = (parseYaml(match[1]) as Partial<T>) ?? {}
   } catch {
-    // A malformed header should not lose the body.
+    data = lenientParse(match[1]) as Partial<T>
+    lenient = true
   }
-  return { data, body: text.slice(match[0].length).trim() }
+  return { data, body: text.slice(match[0].length).trim(), lenient }
 }
 
 export function stringifyDocument(data: Record<string, unknown>, body: string): string {
