@@ -270,7 +270,7 @@ kept verbatim.
 Per invariant 5, the UI keeps the full output. It is the model's copy that
 shrinks.
 
-### E. Show the budget, and say what compaction costs
+### E. Show the budget, and say what compaction costs — **done**
 
 `StatusLine` (`ChatView.tsx`) already renders tokens, cost and rate per turn.
 Once A exists there is a real percentage to show — context used against the
@@ -278,18 +278,53 @@ model's window — and it belongs somewhere always visible for the session, not
 only per message. People who can see 70% approaching understand why a summary
 happened; people who cannot experience it as the app losing their work.
 
+Done. `ContextGauge` sits in the window bar beside the folder and the session
+cost, because it is a property of the conversation rather than of a turn: a
+10-wide bar and a percentage, neutral below the threshold, brand-coloured as it
+approaches, amber past it. `budgetFor` and `contextShare` moved to
+`@shared/context` so the runner's decision and the gauge's denominator cannot
+drift apart — a gauge that disagrees with the behaviour it describes is worse
+than none.
+
+Nothing is shown when the model declares no `contextWindow`, and nothing before
+a turn has been measured. An invented percentage would be worse than an absent
+one, and both cases are asserted in `ui-check`.
+
+`Session.contextTokens` carries the number: the provider's measured count for
+the prefix while nothing has been removed, and `estimateTokens` over the new
+shape when the transcript has just been tightened — otherwise the gauge would
+sit at the pre-compaction figure until the turn after next.
+
 Worth stating in the same breath: **compaction is not free and not only a
 saving.** Rewriting the front of the transcript invalidates the provider's
 prompt-cache prefix, so the turn after a compaction is billed at full input
 price. Placing the summary first and keeping it stable afterwards is what lets
 the cache re-form, which is a reason not to rewrite it more often than needed.
 
-### F. Make it configurable and manual
+That is already the shape of the code, and it should stay that way: the note is
+the first message, it is only rewritten when there is something new to fold in
+(`chunk.length === 0` returns `null`), and the free pass in §5.D runs first
+precisely so a session does not buy a rewrite it did not need. **Do not** add a
+periodic or per-turn compaction; the trigger is a threshold for a reason.
+
+### F. Make it configurable and manual — **done**
 
 Thresholds (`fraction`, `keepRecent`, dehydration age) belong in `AppConfig`
 next to `maxSteps` and `smallModel`, not as literals in `history.ts`. And a
 manual "compact now" — the user knows when a thread of work is finished and the
 last hour is dead weight, and they know it before any threshold does.
+
+Done. `compactAtFraction`, `keepRecentMessages`, `dehydrateAfterTurns` and
+`dehydrateOverChars` are in `AppConfig`, and the first three are rows in a
+**Context** section on the Models page — beside the windows and prices they are
+measured against. The fraction is edited as a percentage, since that is how it
+is read on the gauge.
+
+"Compact context now" is in the conversation's ⋮ menu and goes through
+`compactHistory` with `force: true`, which skips the budget check and nothing
+else: the same safe boundary, the same merge, the same notice in the chat. Smoke
+asserts a session small enough to be left alone is summarised anyway when
+asked.
 
 ### G. Keep using subagents as compaction
 

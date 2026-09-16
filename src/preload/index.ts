@@ -85,6 +85,7 @@ const api = {
       id: string,
       target?: { boardId?: string; columnId?: string }
     ): Promise<Session | undefined> => ipcRenderer.invoke('session:fork', id, target),
+    compact: (id: string): Promise<boolean> => ipcRenderer.invoke('session:compact', id),
     messages: (id: string): Promise<Message[]> => ipcRenderer.invoke('session:messages', id),
     blocks: (id: string): Promise<Block[]> => ipcRenderer.invoke('session:blocks', id),
     running: (id: string): Promise<boolean> => ipcRenderer.invoke('session:running', id)

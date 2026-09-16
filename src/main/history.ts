@@ -288,6 +288,8 @@ export interface CompactionOptions {
   maxChars?: number
   /** How many messages at the end stay verbatim. */
   keepRecent?: number
+  /** Summarise regardless of the budget, because a person asked. */
+  force?: boolean
 }
 
 /** Whether the transcript has outgrown its budget. */
@@ -340,7 +342,7 @@ export async function compactHistory(
   const keepRecent = options.keepRecent ?? 8
 
   const history = getHistory(sessionId)
-  if (!shouldCompact(history, options)) return null
+  if (!options.force && !shouldCompact(history, options)) return null
   // Nothing to gain from summarising a handful of messages; over budget with
   // this few means they are individually enormous, and cutting them would lose
   // more than it saves.

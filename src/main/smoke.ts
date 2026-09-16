@@ -51,6 +51,7 @@ import { approvalDetail, approvalQuestion } from '@shared/approvals'
 import { mentionToken, mentionedAgents, splitMentions } from '@shared/mentions'
 import { extensionOf, fileSize, isDocument } from '@shared/documents'
 import { costOf, formatCost } from '@shared/cost'
+import { budgetFor, contextShare } from '@shared/context'
 import { MANAGER_AGENT, isManager } from '@shared/types'
 import { familyOf, highlight, isShell, looksLikePath, terminalPayload } from '@shared/highlight'
 import type {
@@ -1114,6 +1115,48 @@ async function main(): Promise<void> {
     )
   }
 
+  section('how full the window is, as shown')
+  {
+    const withWindow: AppConfig = {
+      ...defaultConfig(),
+      provider: {
+        p: {
+          id: 'p',
+          npm: '@ai-sdk/openai-compatible',
+          name: 'P',
+          options: {},
+          models: {
+            big: { id: 'big', name: 'Big', contextWindow: 200_000, maxOutputTokens: 8_000 },
+            plain: { id: 'plain', name: 'Plain', contextWindow: 32_000 },
+            unknown: { id: 'unknown', name: 'Unknown' }
+          }
+        }
+      }
+    }
+
+    check(
+      'the budget is the window less the reply and the framing',
+      budgetFor(withWindow, 'p/big') === 200_000 - 8_000 - 4_000,
+      budgetFor(withWindow, 'p/big')
+    )
+    check(
+      'a model with no output limit gets a default reserve',
+      budgetFor(withWindow, 'p/plain') === 32_000 - 8_000 - 4_000,
+      budgetFor(withWindow, 'p/plain')
+    )
+    check('an undeclared window is zero, meaning unknown', budgetFor(withWindow, 'p/unknown') === 0)
+    check('as is a model that is not there', budgetFor(withWindow, 'p/ghost') === 0)
+    check(
+      'two models of different sizes no longer share one threshold',
+      budgetFor(withWindow, 'p/big') !== budgetFor(withWindow, 'p/plain')
+    )
+
+    check('the share is used over budget', contextShare(94_000, 188_000) === 0.5)
+    check('an unknown budget has no share', contextShare(94_000, 0) === null)
+    check('nor does an unmeasured session', contextShare(undefined, 188_000) === null)
+    check('nor one that has sent nothing', contextShare(0, 188_000) === null)
+  }
+
   section('compacting a long session')
   {
     const long = store.createSession({
@@ -1223,6 +1266,39 @@ async function main(): Promise<void> {
         String(m.content).includes('earlier-in-this-session')
       ).length === 1
     )
+
+    /* Asked for by a person, whatever the budget says. */
+    const short = store.createSession({
+      title: 'short',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: 'auto',
+      model: 'test/mock'
+    })
+    history.clearHistory(short.id)
+    for (let i = 0; i < 20; i++) {
+      history.appendHistory(short.id, [
+        { role: 'user', content: `q${i}` },
+        { role: 'assistant', content: `a${i}` }
+      ])
+    }
+    check(
+      'a small session is left alone on its own',
+      (await history.compactHistory(short.id, async () => 'nope', { maxChars: 10_000_000 })) === null
+    )
+    const forced = await history.compactHistory(
+      short.id,
+      async ({ messages }) => `asked for: ${messages.length} messages`,
+      { maxChars: 10_000_000, force: true, keepRecent: 4 }
+    )
+    check('but summarised when asked', forced !== null, forced?.summarised)
+    check(
+      'and the transcript shrinks to the note plus what was kept',
+      history.getHistory(short.id).length === 5,
+      history.getHistory(short.id).length
+    )
+    store.deleteSession(short.id)
+    history.clearHistory(short.id)
 
     store.deleteSession(long.id)
     history.clearHistory(long.id)

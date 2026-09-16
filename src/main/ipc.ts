@@ -15,7 +15,7 @@ import { getRuntime, resetRuntimes, testEnvironment } from './runtime'
 import { listSshAliases } from './runtime/ssh'
 import * as store from './store'
 import * as history from './history'
-import { isRunning, runTurn, stop } from './agent/runner'
+import { compactNow, isRunning, runTurn, stop } from './agent/runner'
 import { deniedSegment, listPending, resolveApproval, type ApprovalAnswer } from './approvals'
 import { previewOrigin, previewUrl } from './preview'
 import { deleteSecret, secretHint, secretStatus, setSecret } from './secrets'
@@ -205,6 +205,7 @@ export function registerIpc(): void {
       })
     }
   )
+  ipcMain.handle('session:compact', (_e, id: string) => compactNow(id))
   ipcMain.handle('session:messages', (_e, id: string) => store.listMessages(id))
   ipcMain.handle('session:blocks', (_e, id: string) => store.listBlocks(id))
   ipcMain.handle('session:running', (_e, id: string) => isRunning(id))

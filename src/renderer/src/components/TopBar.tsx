@@ -2,6 +2,7 @@ import clsx from 'clsx'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   Activity,
+  Minimize2,
   PanelLeft,
   Plus,
   Search,
@@ -19,6 +20,7 @@ import {
 import { activeSession, useStore, type DockTab } from '../state/store'
 import { folderName } from '../lib/format'
 import { formatCost } from '@shared/cost'
+import { ContextGauge } from './ContextGauge'
 import { EditableTitle } from './EditableTitle'
 import { DiffSquare } from './icons'
 
@@ -169,6 +171,7 @@ export function TopBar(): ReactNode {
       {/* What this conversation has cost so far, when any model in it has a
           price. Shown here because it is a fact about the session, like its
           folder, rather than about any one turn. */}
+      {view === 'chat' && session ? <ContextGauge session={session} /> : null}
       {view === 'chat' && session && session.usage.cost > 0 ? (
         <span
           title="What this session has cost so far"
@@ -250,6 +253,17 @@ export function TopBar(): ReactNode {
                       model: session.model
                     })
                   }
+                  setMenuOpen(false)
+                }}
+              />
+              <div className="bg-ink-800 my-1 h-px" />
+              <MenuItem
+                icon={<Minimize2 className="h-4 w-4" />}
+                label="Compact context now"
+                onClick={() => {
+                  // A person knows a thread of work is finished before any
+                  // threshold does.
+                  if (session) void window.opendesktop.sessions.compact(session.id)
                   setMenuOpen(false)
                 }}
               />

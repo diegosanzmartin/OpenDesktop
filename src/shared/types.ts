@@ -254,6 +254,12 @@ export interface Session {
   updatedAt: number
   /** Accumulated token usage across all turns. */
   usage: { input: number; output: number; cost: number }
+  /**
+   * Roughly what the next turn will resend — measured when the provider last
+   * charged for it, estimated when the transcript has been tightened since.
+   * Drives the context gauge.
+   */
+  contextTokens?: number
   /** Parent session when this was spawned by a `task` tool call. */
   parentSessionId?: string
   /** Short label for a subagent session, shown on its subchat. */

@@ -19,6 +19,7 @@ import { ApprovalCard } from './src/components/ApprovalCard'
 import { Mentions } from './src/components/Markdown'
 import { DocumentCard } from './src/components/DocumentCard'
 import { Composer } from './src/components/Composer'
+import { ContextGauge } from './src/components/ContextGauge'
 
 const failures: string[] = []
 let checks = 0
@@ -225,6 +226,67 @@ async function run(): Promise<void> {
     check('and its name', text.includes('report.md'), text)
     check('and its size once known', /KB|B\b/.test(text), text)
     check('with a way to save it', Boolean(host.querySelector('button[title="Save a copy"]')))
+  }
+
+  section('the context gauge')
+  {
+    // The window is declared on the model, so the gauge has a real denominator:
+    // 200k less 8k for the reply and 4k of framing = 188k usable.
+    useStore.setState({
+      config: {
+        ...useStore.getState().config!,
+        compactAtFraction: 0.7,
+        provider: {
+          p: {
+            id: 'p',
+            npm: '@ai-sdk/openai-compatible',
+            name: 'P',
+            options: {},
+            models: {
+              m: { id: 'm', name: 'M', contextWindow: 200_000, maxOutputTokens: 8_000 }
+            }
+          }
+        }
+      }
+    })
+
+    const at = (contextTokens?: number): HTMLElement =>
+      mount(<ContextGauge session={{ ...session, contextTokens }} />)
+
+    const half = at(94_000)
+    await settle()
+    check('shows the share of the usable window', (half.textContent ?? '').includes('50%'), half.textContent)
+    check('and is calm well below the threshold', !half.innerHTML.includes('text-warn'))
+
+    const full = at(150_000)
+    await settle()
+    check('warns once past the point it will summarise', full.innerHTML.includes('text-warn'), full.textContent)
+
+    const silent = at(undefined)
+    await settle()
+    check('says nothing before a turn has been measured', (silent.textContent ?? '') === '', silent.textContent)
+
+    useStore.setState({
+      config: {
+        ...useStore.getState().config!,
+        provider: {
+          p: {
+            id: 'p',
+            npm: '@ai-sdk/openai-compatible',
+            name: 'P',
+            options: {},
+            models: { m: { id: 'm', name: 'M' } }
+          }
+        }
+      }
+    })
+    const unknown = at(94_000)
+    await settle()
+    check(
+      'and invents no percentage when the model declares no window',
+      (unknown.textContent ?? '') === '',
+      unknown.textContent
+    )
   }
 
   section('the composer footer, by the width of its pane')

@@ -497,6 +497,59 @@ export function ModelsTab(): ReactNode {
         </Row>
       </Section>
 
+      <Section
+        title="Context"
+        description="How much of a model's window a session may fill before its older half is summarised, and when tool output stops being resent."
+      >
+        <Row
+          label="Summarise at"
+          description="Share of the usable window — the model's context minus room for its reply — at which the older messages are replaced by a summary."
+        >
+          <RowInput
+            mono
+            width="w-[72px]"
+            value={String(Math.round((draft.compactAtFraction ?? 0.7) * 100))}
+            onChange={(value) => {
+              const parsed = Number(value.replace(/\D/g, ''))
+              setDraft({
+                ...draft,
+                compactAtFraction: Math.min(0.95, Math.max(0.2, (parsed || 70) / 100))
+              })
+            }}
+          />
+          <Hint>%</Hint>
+        </Row>
+        <Row
+          label="Keep verbatim"
+          description="Messages at the end of the transcript that a summary never touches."
+        >
+          <RowInput
+            mono
+            width="w-[72px]"
+            value={String(draft.keepRecentMessages ?? 8)}
+            onChange={(value) => {
+              const parsed = Number(value.replace(/\D/g, ''))
+              setDraft({ ...draft, keepRecentMessages: Math.min(40, Math.max(2, parsed || 8)) })
+            }}
+          />
+        </Row>
+        <Row
+          label="Drop tool output after"
+          description="Turns after which a command's output stops being resent, replaced by a note naming the call. Costs nothing and usually saves more than a summary."
+        >
+          <RowInput
+            mono
+            width="w-[72px]"
+            value={String(draft.dehydrateAfterTurns ?? 2)}
+            onChange={(value) => {
+              const parsed = Number(value.replace(/\D/g, ''))
+              setDraft({ ...draft, dehydrateAfterTurns: Math.min(20, Math.max(1, parsed || 2)) })
+            }}
+          />
+          <Hint>turns</Hint>
+        </Row>
+      </Section>
+
       {creating ? (
         <Section title="New provider">
           <Row

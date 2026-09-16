@@ -16,6 +16,7 @@ import {
 } from '@shared/types'
 import { mentionToken, mentionedAgents } from '@shared/mentions'
 import { costOf } from '@shared/cost'
+import { budgetFor } from '@shared/context'
 import { effectivePermissions, resolvedConfig } from '../config'
 import { bus } from '../bus'
 import { cancelSessionApprovals } from '../approvals'
@@ -232,20 +233,29 @@ async function tighten(
     afterTurns: config.dehydrateAfterTurns,
     overChars: config.dehydrateOverChars
   })
-  await compactIfNeeded(
-    config,
-    sessionId,
-    modelRef,
-    Math.max(0, measuredTokens - freed.freedTokens)
-  )
+  const projected = Math.max(0, measuredTokens - freed.freedTokens)
+  const compacted = await compactIfNeeded(config, sessionId, modelRef, projected)
+
+  /*
+   * What the next turn will actually send. Measured while nothing was removed;
+   * estimated when something was, because the provider has not seen the new
+   * shape yet and an estimate that is roughly right beats a measurement that is
+   * certainly stale. The gauge this feeds would otherwise sit at the
+   * pre-compaction figure until the turn after next.
+   */
+  store.updateSession(sessionId, {
+    contextTokens:
+      compacted || freed.dropped > 0 ? history.estimateTokens(history.getHistory(sessionId)) : projected
+  })
 }
 
 async function compactIfNeeded(
   config: AppConfig,
   sessionId: string,
   modelRef: string,
-  measuredTokens: number
-): Promise<void> {
+  measuredTokens: number,
+  force = false
+): Promise<boolean> {
   // The smaller model if one is configured: this is a summary, not the work.
   const ref = config.smallModel ?? modelRef
 
@@ -289,11 +299,12 @@ async function compactIfNeeded(
       measuredTokens,
       budgetTokens: budgetFor(config, modelRef),
       fraction: config.compactAtFraction,
-      keepRecent: config.keepRecentMessages
+      keepRecent: config.keepRecentMessages,
+      force
     }
   )
 
-  if (!result) return
+  if (!result) return false
 
   // Said out loud in the transcript, at the point it happened.
   store.addMessage({
@@ -309,28 +320,26 @@ async function compactIfNeeded(
       }
     ]
   })
+  return true
 }
 
 /**
- * How many tokens of transcript this model can actually be sent.
+ * Summarises now, whatever the budget says.
  *
- * Its declared window, less what the rest of the request needs: the system
- * prompt with the agent's instructions and the environment block, the tool
- * definitions, and room for the reply itself. Without the reserve the budget
- * would be met exactly at the point the model has no space left to answer.
- *
- * Zero when the window is not declared, which tells the caller to fall back to
- * counting characters.
+ * A person knows a thread of work is finished before any threshold does, and
+ * the hour behind them is dead weight they can see and the app cannot.
  */
-function budgetFor(config: AppConfig, modelRef: string): number {
-  const slash = modelRef.indexOf('/')
-  if (slash === -1) return 0
-  const model = config.provider[modelRef.slice(0, slash)]?.models[modelRef.slice(slash + 1)]
-  if (!model?.contextWindow) return 0
-
-  const reply = model.maxOutputTokens ?? 8_000
-  const overhead = 4_000 // system prompt and tool schemas, measured generously
-  return Math.max(0, model.contextWindow - reply - overhead)
+export async function compactNow(sessionId: string): Promise<boolean> {
+  const session = store.getSession(sessionId)
+  if (!session) return false
+  const config = resolvedConfig()
+  const agent = config.agent[session.agentId]
+  const modelRef = agent?.model ?? session.model
+  const done = await compactIfNeeded(config, sessionId, modelRef, 0, true)
+  store.updateSession(sessionId, {
+    contextTokens: history.estimateTokens(history.getHistory(sessionId))
+  })
+  return done
 }
 
 interface TurnInput {
