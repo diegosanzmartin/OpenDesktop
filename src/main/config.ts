@@ -84,6 +84,8 @@ export function defaultConfig(): AppConfig {
     permissions: DEFAULT_PERMISSIONS,
     maxSteps: 60,
     maxConcurrentTasks: 2,
+    compactAtFraction: 0.7,
+    keepRecentMessages: 8,
     smoothStreamMs: 10,
     theme: 'dark'
   }

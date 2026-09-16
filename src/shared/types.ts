@@ -164,6 +164,10 @@ export interface AppConfig {
   maxSteps: number
   /** How many board tasks the scheduler will run at once. */
   maxConcurrentTasks?: number
+  /** Share of a model's usable window at which the transcript is summarised. */
+  compactAtFraction?: number
+  /** How many messages stay verbatim after a summary. */
+  keepRecentMessages?: number
   /**
    * Milliseconds between words when re-chunking the model's text for display.
    * 0 disables the smoothing and shows provider chunks as they arrive.

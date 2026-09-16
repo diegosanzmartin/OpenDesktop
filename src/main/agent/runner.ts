@@ -215,34 +215,55 @@ function mentionDirective(config: AppConfig, text: string): string {
 async function compactIfNeeded(
   config: AppConfig,
   sessionId: string,
-  modelRef: string
+  modelRef: string,
+  measuredTokens: number
 ): Promise<void> {
   // The smaller model if one is configured: this is a summary, not the work.
   const ref = config.smallModel ?? modelRef
 
-  const result = await history.compactHistory(sessionId, async (older) => {
-    const resolved = await resolveModel(config, ref)
-    const answer = await generateText({
-      model: resolved.model,
-      system:
-        'You are compressing the earlier part of a working session so it can replace those ' +
-        'messages in the model\'s context. Write it for whoever picks the work up next. Keep: ' +
-        'decisions and why, files created or changed with their paths, commands whose result ' +
-        'mattered, facts established about the system, and anything still open. Drop: greetings, ' +
-        'restatements, and tool output that no longer matters. Use short sections, name things ' +
-        'exactly, and never invent a detail that is not there.',
-      prompt: older
-        .map((message) => {
-          const content =
-            typeof message.content === 'string'
-              ? message.content
-              : JSON.stringify(message.content)
-          return `[${message.role}] ${content.slice(0, 4000)}`
-        })
-        .join('\n\n')
-    })
-    return answer.text
-  })
+  const result = await history.compactHistory(
+    sessionId,
+    async ({ previous, messages }) => {
+      const resolved = await resolveModel(config, ref)
+      const answer = await generateText({
+        model: resolved.model,
+        system:
+          'You are maintaining a running summary of a working session so it can replace the ' +
+          'messages it covers in the model\'s context. Write it for whoever picks the work up ' +
+          'next. Keep: decisions and why, files created or changed with their paths, commands ' +
+          'whose result mattered, facts established about the system, and anything still open. ' +
+          'Drop: greetings, restatements, and tool output that no longer matters. Use short ' +
+          'sections, name things exactly, and never invent a detail that is not there.' +
+          (previous
+            ? ' You are given an existing summary and the messages that came after it. Merge ' +
+              'them into one summary. Everything in the existing summary stays unless the new ' +
+              'messages contradict it — it covers work you can no longer see, so dropping a ' +
+              'fact from it loses that fact for good.'
+            : ''),
+        prompt:
+          // The previous summary goes in whole and unabridged. Passed as just
+          // another message it would be truncated like the rest, and it is the
+          // one artefact holding the oldest decisions in the session.
+          (previous ? `<existing-summary>\n${previous}\n</existing-summary>\n\n` : '') +
+          `<new-messages>\n${messages
+            .map((message) => {
+              const content =
+                typeof message.content === 'string'
+                  ? message.content
+                  : JSON.stringify(message.content)
+              return `[${message.role}] ${content.slice(0, 4000)}`
+            })
+            .join('\n\n')}\n</new-messages>`
+      })
+      return answer.text
+    },
+    {
+      measuredTokens,
+      budgetTokens: budgetFor(config, modelRef),
+      fraction: config.compactAtFraction,
+      keepRecent: config.keepRecentMessages
+    }
+  )
 
   if (!result) return
 
@@ -255,10 +276,33 @@ async function compactIfNeeded(
         type: 'text',
         text:
           `The ${result.summarised} messages before this were summarised to stay inside the ` +
-          `context window.\n\n${result.summary}`
+          `context window${result.total > result.summarised ? `, ${result.total} in total so far` : ''}.` +
+          `\n\n${result.summary}`
       }
     ]
   })
+}
+
+/**
+ * How many tokens of transcript this model can actually be sent.
+ *
+ * Its declared window, less what the rest of the request needs: the system
+ * prompt with the agent's instructions and the environment block, the tool
+ * definitions, and room for the reply itself. Without the reserve the budget
+ * would be met exactly at the point the model has no space left to answer.
+ *
+ * Zero when the window is not declared, which tells the caller to fall back to
+ * counting characters.
+ */
+function budgetFor(config: AppConfig, modelRef: string): number {
+  const slash = modelRef.indexOf('/')
+  if (slash === -1) return 0
+  const model = config.provider[modelRef.slice(0, slash)]?.models[modelRef.slice(slash + 1)]
+  if (!model?.contextWindow) return 0
+
+  const reply = model.maxOutputTokens ?? 8_000
+  const overhead = 4_000 // system prompt and tool schemas, measured generously
+  return Math.max(0, model.contextWindow - reply - overhead)
 }
 
 interface TurnInput {
@@ -405,6 +449,9 @@ export async function runTurn(input: TurnInput): Promise<string> {
     // conversation, which is what the turn actually costs.
     let usedInput = 0
     let usedOutput = 0
+    // The last step's input is the size of the assembled prefix. The sum across
+    // steps is what the turn cost; it is not how full the window is.
+    let lastStepInput = 0
 
     for await (const part of result.fullStream) {
       if (controller.signal.aborted) break
@@ -425,6 +472,7 @@ export async function runTurn(input: TurnInput): Promise<string> {
           break
         }
         case 'finish-step': {
+          lastStepInput = part.usage.inputTokens ?? lastStepInput
           usedInput += part.usage.inputTokens ?? 0
           usedOutput += part.usage.outputTokens ?? 0
           const so_far = costOf(config, agent.model ?? session.model, {
@@ -460,7 +508,7 @@ export async function runTurn(input: TurnInput): Promise<string> {
 
     const responseMessages = await result.responseMessages
     history.appendHistory(session.id, responseMessages as ModelMessage[])
-    await compactIfNeeded(config, session.id, agent.model ?? session.model)
+    await compactIfNeeded(config, session.id, agent.model ?? session.model, lastStepInput)
 
     const usage = await result.totalUsage
     const inputTokens = usage.inputTokens ?? 0

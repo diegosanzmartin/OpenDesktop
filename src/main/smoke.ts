@@ -6,7 +6,7 @@
  * Run with: pnpm smoke
  */
 import { MockLanguageModelV4 } from 'ai/test'
-import type { LanguageModel } from 'ai'
+import type { LanguageModel, ModelMessage } from 'ai'
 import {
   defaultConfig,
   loadConfig,
@@ -36,6 +36,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as store from './store'
 import * as history from './history'
+import { estimateTokens, safeBoundary, shouldCompact } from './history'
 import { bus } from './bus'
 import { runTurn } from './agent/runner'
 import { resolveApproval } from './approvals'
@@ -866,6 +867,119 @@ async function main(): Promise<void> {
     )
   }
 
+  section('where a transcript may be cut')
+  {
+    /* A tool-using turn is several messages; half the boundaries land inside a pair. */
+    const turn: ModelMessage[] = [
+      { role: 'user', content: 'do it' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'ok' },
+          { type: 'tool-call', toolCallId: 't1', toolName: 'bash', input: {} }
+        ]
+      } as ModelMessage,
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 't1',
+            toolName: 'bash',
+            output: { type: 'text', value: 'x' }
+          }
+        ]
+      } as ModelMessage,
+      {
+        role: 'assistant',
+        content: [{ type: 'tool-call', toolCallId: 't2', toolName: 'read', input: {} }]
+      } as ModelMessage,
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 't2',
+            toolName: 'read',
+            output: { type: 'text', value: 'y' }
+          }
+        ]
+      } as ModelMessage,
+      { role: 'assistant', content: [{ type: 'text', text: 'done' }] } as ModelMessage
+    ]
+
+    const orphaned = (kept: ModelMessage[]): boolean =>
+      kept.some((message, index) => message.role === 'tool' && kept[index - 1]?.role !== 'assistant')
+
+    check(
+      'a naive cut orphans a result — which is the bug',
+      orphaned(turn.slice(turn.length - 2)) && orphaned(turn.slice(turn.length - 4))
+    )
+    for (const keep of [1, 2, 3, 4, 5]) {
+      const cut = safeBoundary(turn, turn.length - keep)
+      check(
+        `keeping ${keep} snaps to a boundary with no orphaned result`,
+        !orphaned(turn.slice(cut)),
+        { keep, cut, startsWith: turn.slice(cut)[0]?.role }
+      )
+    }
+    check(
+      'and it snaps backwards, never forwards',
+      safeBoundary(turn, 2) <= 2 && safeBoundary(turn, 4) <= 4
+    )
+    check('a transcript with no tools is cut where asked', safeBoundary(
+      [
+        { role: 'user', content: 'a' },
+        { role: 'assistant', content: 'b' },
+        { role: 'user', content: 'c' }
+      ],
+      2
+    ) === 2)
+  }
+
+  section('measuring how full the window is')
+  {
+    const text: ModelMessage[] = [{ role: 'user', content: 'x'.repeat(4000) }]
+    check('text counts at about four characters a token', Math.abs(estimateTokens(text) - 1004) < 20, estimateTokens(text))
+
+    // The old measure serialised image bytes and read one screenshot as more
+    // than the entire budget.
+    const image: ModelMessage[] = [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'look' },
+          { type: 'image', image: Buffer.from(new Uint8Array(1024 * 1024)), mediaType: 'image/png' }
+        ]
+      } as ModelMessage
+    ]
+    check(
+      'a megabyte of image is not a megabyte of context',
+      estimateTokens(image) < 100,
+      estimateTokens(image)
+    )
+    check(
+      'where JSON.stringify called it more than the whole budget',
+      JSON.stringify(image).length > 600_000,
+      JSON.stringify(image).length
+    )
+
+    const big: ModelMessage[] = [{ role: 'user', content: 'x'.repeat(400_000) }]
+    check(
+      'a declared window decides the trigger',
+      shouldCompact(big, { budgetTokens: 100_000, measuredTokens: 80_000 }) &&
+        !shouldCompact(big, { budgetTokens: 400_000, measuredTokens: 80_000 })
+    )
+    check(
+      'the measured count is preferred over the estimate',
+      !shouldCompact(big, { budgetTokens: 200_000, measuredTokens: 1_000 })
+    )
+    check(
+      'and without a window it falls back to characters',
+      shouldCompact(big, { maxChars: 100_000 }) && !shouldCompact(big, { maxChars: 10_000_000 })
+    )
+  }
+
   section('compacting a long session')
   {
     const long = store.createSession({
@@ -913,10 +1027,12 @@ async function main(): Promise<void> {
 
     const done = await history.compactHistory(
       long.id,
-      async (older) => `Summary of ${older.length} messages: decided to keep going.`,
+      async ({ previous, messages }) =>
+        `${previous ? 'merged: ' : ''}Summary of ${messages.length} messages. Decided: keep going. ESTABLISHED-EARLY-FACT.`,
       { maxChars: 1000, keepRecent: 6 }
     )
     check('a summary replaces the older messages', done?.summarised === 74, done?.summarised)
+    check('and reports the running total', done?.total === 74, done?.total)
     check(
       'leaving the summary plus what was kept',
       history.getHistory(long.id).length === 7,
@@ -930,10 +1046,48 @@ async function main(): Promise<void> {
       'and the most recent exchanges survive verbatim',
       String(history.getHistory(long.id).at(-1)?.content).includes('answer 39')
     )
+
+    /* Round two: the summary must be merged, not summarised again. */
+    for (let i = 40; i < 60; i++) {
+      history.appendHistory(long.id, [
+        { role: 'user', content: `question ${i} ${filler}` },
+        { role: 'assistant', content: `answer ${i} ${filler}` }
+      ])
+    }
+    // Typed loosely on purpose: the closure assigns it, which narrowing cannot see.
+    const seen: { previous?: string | null } = {}
+    const second = await history.compactHistory(
+      long.id,
+      async ({ previous, messages }) => {
+        seen.previous = previous
+        return `merged: ${previous ?? ''} plus ${messages.length} more`
+      },
+      { maxChars: 1000, keepRecent: 6 }
+    )
+    check('the second round runs', second !== null)
     check(
-      'the transcript is meaningfully smaller',
-      history.historySize(long.id) < 20_000,
-      history.historySize(long.id)
+      'the previous summary is handed over separately',
+      typeof seen.previous === 'string' && seen.previous.includes('ESTABLISHED-EARLY-FACT'),
+      seen.previous
+    )
+    check(
+      'and is not re-summarised as just another message',
+      !String(seen.previous).includes('[user]')
+    )
+    check(
+      'a fact from the first window survives the second',
+      String(history.getHistory(long.id)[0]?.content).includes('ESTABLISHED-EARLY-FACT')
+    )
+    check(
+      'and the running total accumulates rather than resetting',
+      (second?.total ?? 0) > 74,
+      second?.total
+    )
+    check(
+      'only one summary note is carried, not one per round',
+      history.getHistory(long.id).filter((m) =>
+        String(m.content).includes('earlier-in-this-session')
+      ).length === 1
     )
 
     store.deleteSession(long.id)
