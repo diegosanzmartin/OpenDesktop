@@ -91,6 +91,7 @@ const api = {
       model?: string
       title?: string
       savings?: Partial<Savings>
+      autoApprove?: boolean
     }): Promise<Session> => ipcRenderer.invoke('session:create', input),
     update: (id: string, patch: Partial<Session>): Promise<Session | undefined> =>
       ipcRenderer.invoke('session:update', id, patch),

@@ -78,7 +78,7 @@ import {
   rtkStatus
 } from './rtk'
 import { diffLines, renderDiff } from './diff'
-import { decide, deniedSegment, matchesAny, splitCommand } from './approvals'
+import { decide, deniedSegment, matchesAny, splitCommand, withoutPrompts } from './approvals'
 import { parseGcloudCommand } from '@shared/gcloud'
 import { filterSessions, groupSessions, nestSubtasks, sortSessions, splitPinned } from '@shared/sessions'
 import { activityOf, duration, tokenRate } from '@shared/progress'
@@ -4007,6 +4007,122 @@ async function main(): Promise<void> {
 
     store.deleteSession(broken.id)
     history.clearHistory(broken.id)
+  }
+
+  section('running without being asked')
+  {
+    const base = defaultConfig().permissions
+    const auto = withoutPrompts(base)
+    check('asking becomes allowing', auto.bash === 'allow' && auto.edit === 'allow' && auto.write === 'allow')
+    check('and fetching too', auto.fetch === 'allow')
+    check('something already allowed is untouched', auto.read === 'allow')
+    check(
+      'but a tool set to deny stays denied — this removes the prompt, not the policy',
+      withoutPrompts({ ...base, bash: 'deny' }).bash === 'deny'
+    )
+    check(
+      'the lists are carried over whole',
+      auto.denylist.join() === base.denylist.join() && auto.allowlist.join() === base.allowlist.join()
+    )
+
+    // The property that makes the switch safe to offer at all.
+    check(
+      'a denylisted command is still refused',
+      decide(auto, 'bash', 'rm -rf /etc').mode === 'deny'
+    )
+    check(
+      'and one buried in a chain is too',
+      decide(auto, 'bash', 'ls && rm -rf /etc').mode === 'deny'
+    )
+    check('while an ordinary one no longer asks', decide(auto, 'bash', 'python3 build.py').mode === 'allow')
+    check('which it would have, without this', decide(base, 'bash', 'python3 build.py').mode === 'ask')
+
+    check('the default is to ask', defaultConfig().autoApprove === false)
+    check(
+      'and only a real true turns it off',
+      normalizeConfig({ autoApprove: 'yes' }).autoApprove === false &&
+        normalizeConfig({ autoApprove: true }).autoApprove === true
+    )
+  }
+
+  section('a session that was told not to ask')
+  {
+    const asked: string[] = []
+    const watch = bus.subscribe((event) => {
+      if (event.type === 'approval.requested') {
+        asked.push(event.request.title)
+        resolveApproval(event.request.id, 'once')
+      }
+    })
+
+    // The same command, in two sessions, one of which was told not to ask.
+    const runs: { autoApprove: boolean; command: string }[] = [
+      { autoApprove: false, command: 'printf asks' },
+      { autoApprove: true, command: 'printf quiet' }
+    ]
+    const ids: string[] = []
+    for (const run of runs) {
+      const s = store.createSession({
+        title: `auto-${run.autoApprove}`,
+        cwd: process.cwd(),
+        environmentId: 'local',
+        agentId: 'build',
+        model: 'mock/mock',
+        autoApprove: run.autoApprove
+      })
+      ids.push(s.id)
+      history.clearHistory(s.id)
+      providers.setModelResolverOverride(() => ({
+        providerId: 'mock',
+        modelId: 'mock',
+        label: 'Mock',
+        model: scriptedModel(run.command)
+      }))
+      await runTurn({ sessionId: s.id, userText: 'run it' })
+      providers.setModelResolverOverride(null)
+      const block = store.listBlocks(s.id)[0]
+      check(
+        run.autoApprove ? 'it runs without a prompt' : 'the ordinary session is asked first',
+        block?.status === 'success' && (block?.output ?? '').includes(run.command.split(' ')[1]),
+        block?.status
+      )
+    }
+    check('only one of the two was put to a person', asked.length === 1, asked)
+
+    // ...and the thing it still will not do.
+    const denied = store.createSession({
+      title: 'auto-denied',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: 'build',
+      model: 'mock/mock',
+      autoApprove: true
+    })
+    ids.push(denied.id)
+    history.clearHistory(denied.id)
+    providers.setModelResolverOverride(() => ({
+      providerId: 'mock',
+      modelId: 'mock',
+      label: 'Mock',
+      model: scriptedModel('rm -rf /etc')
+    }))
+    await runTurn({ sessionId: denied.id, userText: 'do the dangerous thing' })
+    providers.setModelResolverOverride(null)
+    watch()
+
+    const refused = store.listBlocks(denied.id)[0]
+    check('a denylisted command is refused rather than run quietly', refused?.status === 'error', refused?.status)
+    check('and nobody was asked to approve it either', asked.length === 1, asked)
+    check(
+      'the block says why',
+      /not permitted/i.test(refused?.error ?? ''),
+      refused?.error
+    )
+
+    for (const id of ids) {
+      store.deleteSession(id)
+      history.clearHistory(id)
+    }
   }
 
   // Leave no smoke sessions behind.

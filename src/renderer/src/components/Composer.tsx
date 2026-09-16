@@ -4,6 +4,8 @@ import { createPortal } from 'react-dom'
 import {
   ArrowUp,
   Check,
+  ShieldCheck,
+  Zap,
   ChevronDown,
   FileText,
   FolderOpen,
@@ -200,6 +202,42 @@ function SavingsChip({ session }: { session: Session }): ReactNode {
           )
         : null}
     </>
+  )
+}
+
+/**
+ * Whether this session asks before it acts.
+ *
+ * Always shown, in both states, because the dangerous one is the one that is
+ * easy to forget you are in: a chat that runs commands without asking should
+ * say so every time you look at it, not only when you turn it on.
+ *
+ * It lifts `ask` to `allow` and nothing else. Anything set to `deny` stays
+ * denied and the denylist is checked before any of this, so the things nobody
+ * should ever run still cannot run — which is what makes the toggle safe to
+ * offer at all.
+ */
+function ApprovalChip({ session }: { session: Session }): ReactNode {
+  const config = useStore((s) => s.config)
+  const auto = session.autoApprove ?? config?.autoApprove ?? false
+
+  return (
+    <button
+      type="button"
+      title={
+        auto
+          ? 'Running without asking. Commands still cannot run if they match the denylist, or if a tool is set to deny.'
+          : 'Asking before bash, edit and write. Click to run without asking.'
+      }
+      onClick={() => void window.opendesktop.sessions.update(session.id, { autoApprove: !auto })}
+      className={clsx(
+        'flex shrink-0 items-center gap-1 rounded-md px-1.5 py-[3px] text-[12px] transition-colors',
+        auto ? 'text-warn hover:bg-warn/10' : 'text-ink-500 hover:text-ink-200'
+      )}
+    >
+      {auto ? <Zap className="h-3.5 w-3.5" /> : <ShieldCheck className="h-3.5 w-3.5" />}
+      {auto ? 'Auto-approve' : 'Asks first'}
+    </button>
   )
 }
 
@@ -659,6 +697,8 @@ export function Composer({ session }: { session: Session }): ReactNode {
           />
 
           <SavingsChip session={session} />
+
+          <ApprovalChip session={session} />
 
           <div className="ml-auto flex min-w-0 items-center gap-3">
             <Picker

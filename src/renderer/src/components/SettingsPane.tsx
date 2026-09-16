@@ -15,7 +15,7 @@ import { ModelsTab } from './ModelsTab'
 import { EnvironmentsTab } from './EnvironmentsTab'
 import { AgentsTab } from './AgentsTab'
 import { SkillsTab } from './SkillsTab'
-import { Hint, IconButton, Row, Section } from './settings-ui'
+import { Hint, IconButton, Row, Section, Toggle } from './settings-ui'
 
 type Page = 'providers' | 'agents' | 'skills' | 'environments' | 'config'
 
@@ -149,6 +149,40 @@ function ConfigEditor(): ReactNode {
 }
 
 /**
+ * Whether a new session asks before it acts.
+ *
+ * One setting, because this is a default and not a policy: the per-session
+ * switch is in the composer, where the session is. Here so that someone who
+ * works this way every day does not have to turn it on every time.
+ */
+function Approvals(): ReactNode {
+  const config = useStore((s) => s.config)
+  const refreshConfig = useStore((s) => s.refreshConfig)
+  if (!config) return null
+
+  return (
+    <Section
+      title="Approvals"
+      description="Running a command, editing a file or writing one asks first unless the session says otherwise."
+    >
+      <Row
+        label="New sessions run without asking"
+        description="Lifts every “ask” to “allow” for the session. Nothing else changes: a tool set to deny stays denied, and the denylist is checked before any of this, so what it cannot run it still cannot run. Each session can be switched either way from the composer."
+      >
+        <Toggle
+          checked={config.autoApprove === true}
+          onChange={(next) => {
+            void window.opendesktop.config
+              .save({ ...config, autoApprove: next })
+              .then(() => refreshConfig())
+          }}
+        />
+      </Row>
+    </Section>
+  )
+}
+
+/**
  * Where the failures are written down.
  *
  * Here rather than anywhere cleverer because this is the page about what this
@@ -236,6 +270,7 @@ export function SettingsPane(): ReactNode {
         <div className="mx-auto max-w-[760px]">
           {page === 'config' ? (
             <>
+              <Approvals />
               <ConfigEditor />
               <LogFile />
             </>

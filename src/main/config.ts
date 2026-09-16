@@ -86,6 +86,7 @@ export function defaultConfig(): AppConfig {
     maxSteps: 60,
     maxConcurrentTasks: 2,
     savings: { rtk: false, shunt: false },
+    autoApprove: false,
     shuntMinLines: 350,
     compactAtFraction: 0.7,
     keepRecentMessages: 8,
@@ -142,6 +143,9 @@ export function normalizeConfig(raw: Record<string, unknown>): AppConfig {
     ...base,
     ...(raw as Partial<AppConfig>),
     permissions: { ...base.permissions, ...((raw.permissions as Partial<Permissions>) ?? {}) },
+    // Only ever true when it says true: a config is hand-editable, and
+    // "yes" or 1 must not be what turns the prompts off.
+    autoApprove: raw.autoApprove === true,
     // Only the two switches this app has, and only as booleans: a config is
     // hand-editable, and `"rtk": "yes"` should not switch anything on.
     savings: {

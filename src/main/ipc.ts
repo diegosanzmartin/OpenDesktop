@@ -203,6 +203,7 @@ export function registerIpc(): void {
         model?: string
         title?: string
         savings?: Partial<Savings>
+        autoApprove?: boolean
       }
     ) => {
       const config = rawConfig()
@@ -214,7 +215,8 @@ export function registerIpc(): void {
         environmentId,
         agentId: input.agentId ?? MANAGER_AGENT,
         model: input.model ?? config.model,
-        savings: input.savings ?? config.savings
+        savings: input.savings ?? config.savings,
+        autoApprove: input.autoApprove ?? config.autoApprove
       })
     }
   )

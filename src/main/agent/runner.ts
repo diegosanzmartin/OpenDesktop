@@ -22,7 +22,7 @@ import { isAbort } from '@shared/errors'
 import { budgetFor } from '@shared/context'
 import { effectivePermissions, resolvedConfig } from '../config'
 import { bus } from '../bus'
-import { cancelSessionApprovals } from '../approvals'
+import { cancelSessionApprovals, withoutPrompts } from '../approvals'
 import { resolveModel } from '../providers'
 import { getRuntime } from '../runtime'
 import { rtkStatus } from '../rtk'
@@ -554,6 +554,7 @@ export async function runTurn(input: TurnInput): Promise<string> {
     const resolved = await resolveModel(config, agent.model ?? session.model)
 
     const modelRef = agent.model ?? session.model
+    const autoApprove = session.autoApprove ?? config.autoApprove ?? false
     const savings = await announceSavingsProblems({
       config,
       sessionId: session.id,
@@ -571,7 +572,15 @@ export async function runTurn(input: TurnInput): Promise<string> {
     const ctx: ToolContext = {
       config,
       agent,
-      permissions: effectivePermissions(config, agent.id),
+      /*
+       * The session's own permissions. Auto-approve is read from the session,
+       * falling back to the app's default, and it only ever removes the
+       * prompt: `deny` stays denied and the denylist is checked before any of
+       * this is consulted.
+       */
+      permissions: autoApprove
+        ? withoutPrompts(effectivePermissions(config, agent.id))
+        : effectivePermissions(config, agent.id),
       sessionId: session.id,
       environmentId: session.environmentId,
       cwd: session.cwd,
@@ -590,6 +599,7 @@ export async function runTurn(input: TurnInput): Promise<string> {
           agentId,
           model: config.agent[agentId]?.model ?? session.model,
           savings,
+          autoApprove,
           parentSessionId: session.id
         })
         store.updateSession(child.id, { taskLabel: description })

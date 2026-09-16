@@ -519,6 +519,52 @@ async function run(): Promise<void> {
     useStore.setState({ config: before })
   }
 
+  section('asking, or not')
+  {
+    const chipIn = (host: HTMLElement): HTMLElement | undefined =>
+      [...host.querySelectorAll('button')].find((button) =>
+        /^(Asks first|Auto-approve)$/.test(button.textContent ?? '')
+      ) as HTMLElement | undefined
+
+    const asks = mount(<Composer session={session} />, 900)
+    await settle()
+    check(
+      'a session says that it asks first',
+      chipIn(asks)?.textContent === 'Asks first',
+      chipIn(asks)?.textContent
+    )
+    check('calmly', !asks.innerHTML.includes('text-warn'))
+
+    const auto = mount(<Composer session={{ ...session, autoApprove: true }} />, 900)
+    await settle()
+    check(
+      'and one that does not says that instead',
+      chipIn(auto)?.textContent === 'Auto-approve',
+      chipIn(auto)?.textContent
+    )
+    check(
+      'in the colour of something worth noticing',
+(chipIn(auto)?.className ?? '').includes('text-warn'),
+      chipIn(auto)?.className
+    )
+    check(
+      'and says what it still will not do',
+      (chipIn(auto)?.getAttribute('title') ?? '').includes('denylist'),
+      chipIn(auto)?.getAttribute('title')
+    )
+
+    // The app-wide default carries when the session has no say of its own.
+    const before = useStore.getState().config!
+    useStore.setState({ config: { ...before, autoApprove: true } })
+    const inherited = mount(<Composer session={session} />, 900)
+    await settle()
+    check(
+      'a session with no preference follows the default',
+      chipIn(inherited)?.textContent === 'Auto-approve'
+    )
+    useStore.setState({ config: before })
+  }
+
   section('the remote folder picker')
   {
     const remote = { ...session, id: 's-remote', environmentId: 'wk', cwd: '/home/user/w/sec' }

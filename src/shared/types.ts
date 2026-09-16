@@ -187,6 +187,8 @@ export interface AppConfig {
   savings?: Partial<Savings>
   /** The single mode this used to be. Read for compatibility, never written. */
   mode?: LegacyMode
+  /** Whether a new session starts without approval prompts. */
+  autoApprove?: boolean
   /**
    * What shunt delegates reading to, as `provider/model`. Unset, the cheapest
    * model that clears the capability floor is chosen for each job.
@@ -290,6 +292,11 @@ export interface Session {
   savings?: Partial<Savings>
   /** What a session stored before there were two switches. Read, never written. */
   mode?: LegacyMode
+  /**
+   * Run without asking: every `ask` becomes `allow` for this session. The
+   * denylist and anything set to `deny` are unaffected.
+   */
+  autoApprove?: boolean
   status: SessionStatus
   createdAt: number
   updatedAt: number

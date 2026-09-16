@@ -89,6 +89,7 @@ export function createSession(input: {
   agentId: string
   model: string
   savings?: Partial<Savings>
+  autoApprove?: boolean
   parentSessionId?: string
 }): Session {
   const now = Date.now()
@@ -100,6 +101,7 @@ export function createSession(input: {
     agentId: input.agentId,
     model: input.model,
     savings: input.savings,
+    autoApprove: input.autoApprove,
     status: 'idle',
     createdAt: now,
     updatedAt: now,

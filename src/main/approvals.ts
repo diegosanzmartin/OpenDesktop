@@ -131,6 +131,29 @@ export function deniedSegment(permissions: Permissions, command: string): string
   return splitCommand(command).find((segment) => matchesAny(segment, permissions.denylist)) ?? null
 }
 
+/**
+ * The same permissions, minus the questions.
+ *
+ * Auto-approve lifts `ask` to `allow` and does nothing else. It is not a
+ * blanket "run anything": a tool the user set to `deny` stays denied, and the
+ * denylist is checked before any mode is consulted, so a command nobody should
+ * ever run still cannot run. What it removes is the prompt, not the policy —
+ * which is also why it is a property of one session rather than an edit to the
+ * config: a standing policy should not be changed by wanting to be left alone
+ * for an afternoon.
+ */
+export function withoutPrompts(permissions: Permissions): Permissions {
+  const lift = (mode: PermissionMode): PermissionMode => (mode === 'ask' ? 'allow' : mode)
+  return {
+    ...permissions,
+    bash: lift(permissions.bash),
+    edit: lift(permissions.edit),
+    write: lift(permissions.write),
+    read: lift(permissions.read),
+    fetch: lift(permissions.fetch)
+  }
+}
+
 export interface PermissionDecision {
   mode: PermissionMode
   /** True when an allowlist entry short-circuits the prompt. */
