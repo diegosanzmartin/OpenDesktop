@@ -651,6 +651,77 @@ async function run(): Promise<void> {
     useStore.setState({ folderPicker: null, sessions: [session], activeSessionId: session.id })
   }
 
+  section('a notice too long for one line')
+  {
+    // The regression: the label was shrink-0, so a notice of more than a few
+    // words made the row wider than the chat and ran off the side of the
+    // window. Measured rather than eyeballed.
+    // The notice that actually ran off the window, first paragraph and all:
+    // one long sentence is the case the old markup could not hold.
+    const long =
+      'This session is set to filter command output through rtk, but rtk cannot be used on ' +
+      'wkstation: rtk is not on the PATH of this execution target. Install it with ' +
+      '`brew install rtk`, then reopen this session.\n\n' +
+      'Commands are running unfiltered.'
+    useStore.setState({
+      messages: {
+        [session.id]: [
+          {
+            id: 'm-notice',
+            sessionId: session.id,
+            role: 'system',
+            parts: [{ type: 'text', text: long }],
+            createdAt: Date.now()
+          }
+        ]
+      },
+      activeSessionId: session.id
+    })
+
+    const host = mount(<ChatView session={session} />, 900)
+    await settle()
+    /*
+     * Measured on the transcript's own scroller, not on the host: the scroller
+     * clips what overflows it, so the page around it stays the right width
+     * while the message itself sits off the side. scrollWidth > clientWidth
+     * there is exactly the symptom — a horizontal scrollbar in the chat.
+     */
+    const scroller = (): HTMLElement =>
+      [...host.querySelectorAll('div')].find((node) =>
+        getComputedStyle(node).overflowY === 'auto'
+      ) as HTMLElement
+    check(
+      'the notice stays inside the chat',
+      scroller().scrollWidth <= scroller().clientWidth + 1,
+      { scroll: scroller().scrollWidth, client: scroller().clientWidth }
+    )
+    check(
+      'and the rest is held back rather than shown in full',
+      !(host.textContent ?? '').includes('Commands are running unfiltered'),
+      host.textContent
+    )
+
+    const opener = [...host.querySelectorAll('button')].find((button) =>
+      (button.getAttribute('title') ?? '').startsWith('Read all of it')
+    ) as HTMLButtonElement | undefined
+    check('with a way to read all of it', Boolean(opener))
+    opener?.click()
+    await settle()
+    check(
+      'which shows the whole thing, first line included',
+      (host.textContent ?? '').includes('Commands are running unfiltered') &&
+        (host.textContent ?? '').includes('is set to filter command output'),
+      host.textContent
+    )
+    check(
+      'and still does not overflow when open',
+      scroller().scrollWidth <= scroller().clientWidth + 1,
+      { scroll: scroller().scrollWidth, client: scroller().clientWidth }
+    )
+
+    useStore.setState({ messages: {} })
+  }
+
   section('what a message offers once it is said')
   {
     const said: Message[] = [

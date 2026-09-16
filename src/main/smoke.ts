@@ -2869,13 +2869,13 @@ async function main(): Promise<void> {
       .join('\n')
     check(
       'a switch that cannot be honoured is said out loud',
-      /rtk cannot be used/.test(said),
+      /rtk is not available on/.test(said),
       said.slice(0, 200)
     )
     check('and the turn still happens', (store.listBlocks(brokenSession.id)[0]?.output ?? '').includes('unfiltered'))
     check(
       'and it is said once, not at every turn',
-      !/rtk cannot be used[\s\S]*rtk cannot be used/.test(said)
+      !/rtk is not available on[\s\S]*rtk is not available on/.test(said)
     )
 
     /*

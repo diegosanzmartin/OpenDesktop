@@ -195,25 +195,39 @@ function Notice({ message }: { message: Message }): ReactNode {
   const text = message.parts.map((part) => part.text ?? '').join('')
   const [headline, ...rest] = text.split('\n\n')
   const body = rest.join('\n\n')
+  // Openable when there is more to read *or* when the first line will not fit
+  // in the two the divider gives it. Without the second case a long notice
+  // with no body was clamped with no way to see the rest of it.
+  const more = body.length > 0 || headline.length > 90
 
   return (
-    <div className="my-2">
-      <div className="flex items-center gap-2">
-        <span className="bg-ink-800 h-px flex-1" />
+    <div className="my-2 min-w-0">
+      <div className="flex w-full items-center gap-2">
+        {/* min-w-0 on the label and a cap on its width: the label used to be
+            shrink-0, so a notice of more than a few words made the whole row
+            wider than the chat and ran off the side of the window. */}
+        <span className="bg-ink-800 h-px min-w-[12px] flex-1" />
         <button
           type="button"
-          onClick={() => setOpen(!open)}
-          className="text-ink-600 hover:text-ink-400 shrink-0 text-[11.5px]"
-          title={body ? 'Show what was kept' : undefined}
+          onClick={() => (more ? setOpen(!open) : undefined)}
+          className={clsx(
+            'text-ink-600 min-w-0 max-w-[75%] text-center text-[11.5px] leading-snug',
+            more && 'hover:text-ink-400'
+          )}
+          title={more ? (open ? 'Hide' : 'Read all of it') : undefined}
         >
-          {headline}
-          {body ? (open ? ' ▲' : ' ▾') : null}
+          <span className={clsx('break-words', !open && 'line-clamp-2')}>
+            {headline}
+            {more ? (open ? ' ▲' : ' ▾') : null}
+          </span>
         </button>
-        <span className="bg-ink-800 h-px flex-1" />
+        <span className="bg-ink-800 h-px min-w-[12px] flex-1" />
       </div>
-      {open && body ? (
-        <div className="border-ink-800 text-ink-400 mt-2 rounded-lg border px-3 py-2 text-[12.5px]">
-          <Markdown text={body} />
+      {open && more ? (
+        /* The whole notice, not only the part after the first paragraph:
+           whatever the divider clamped has to be reachable somewhere. */
+        <div className="border-ink-800 text-ink-400 mt-2 min-w-0 rounded-lg border px-3 py-2 text-[12.5px]">
+          <Markdown text={text} />
         </div>
       ) : null}
     </div>

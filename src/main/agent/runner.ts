@@ -462,9 +462,12 @@ async function announceSavingsProblems(input: {
       sayOnce(
         input.sessionId,
         `${input.sessionId}:${input.environmentId}:${status.state}`,
-        `This session is set to filter command output through rtk, but rtk cannot be used on ` +
-          `${runtime.label}: ${status.message ?? 'it is not available'}\n\n` +
-          `Commands are running unfiltered.`
+        // The point first: a notice is a divider in the chat, and only its
+        // first line is read at a glance.
+        `rtk is not available on ${runtime.label} — commands are running unfiltered.\n\n` +
+          `${status.message ?? 'It could not be used on this execution target.'}\n\n` +
+          `Until then the session behaves as if the switch were off; turn it off from the ` +
+          `composer if you would rather not be reminded.`
       )
     }
   }
@@ -476,9 +479,9 @@ async function announceSavingsProblems(input: {
     sayOnce(
       input.sessionId,
       `${input.sessionId}:shunt:same-model`,
-      `This session delegates reading to ${input.modelRef} — its own model, because no ` +
-        `cheaper one is declared. Large files still stay out of the conversation, which is ` +
-        `where most of the saving is, but the reading is charged at full price.\n\n` +
+      `Delegated reading is going to ${input.modelRef}, this session's own model.\n\n` +
+        `No cheaper one is declared, so large files still stay out of the conversation — ` +
+        `which is where most of the saving is — but the reading is charged at full price.\n\n` +
         `Give another model a lower cost under Settings → Models → Cost, or name one ` +
         `directly under Savings.`
     )
