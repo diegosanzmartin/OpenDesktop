@@ -169,6 +169,14 @@ export interface AppConfig {
   /** How many messages stay verbatim after a summary. */
   keepRecentMessages?: number
   /**
+   * Tool output older than this many turns stops being resent, replaced by a
+   * note naming the call that produced it. Free, and usually a bigger saving
+   * than summarising.
+   */
+  dehydrateAfterTurns?: number
+  /** Outputs smaller than this are left alone; the saving would not pay. */
+  dehydrateOverChars?: number
+  /**
    * Milliseconds between words when re-chunking the model's text for display.
    * 0 disables the smoothing and shows provider chunks as they arrive.
    */

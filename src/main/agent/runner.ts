@@ -212,6 +212,34 @@ function mentionDirective(config: AppConfig, text: string): string {
  * Done after the turn rather than before: the user has their answer, and the
  * cost of the summary is paid out of sight instead of in front of them.
  */
+/**
+ * Shrinks what the next turn will resend, cheapest thing first.
+ *
+ * Dropping the body of old tool results costs nothing and often saves more than
+ * a summary would, so it runs first and the summariser is only asked if the
+ * transcript is still over budget afterwards. The measured token count came
+ * from the prefix *as it was sent*, so what the free pass just removed is
+ * subtracted before deciding — otherwise a session would pay for a summary it
+ * no longer needs.
+ */
+async function tighten(
+  config: AppConfig,
+  sessionId: string,
+  modelRef: string,
+  measuredTokens: number
+): Promise<void> {
+  const freed = history.dehydrateHistory(sessionId, {
+    afterTurns: config.dehydrateAfterTurns,
+    overChars: config.dehydrateOverChars
+  })
+  await compactIfNeeded(
+    config,
+    sessionId,
+    modelRef,
+    Math.max(0, measuredTokens - freed.freedTokens)
+  )
+}
+
 async function compactIfNeeded(
   config: AppConfig,
   sessionId: string,
@@ -508,7 +536,7 @@ export async function runTurn(input: TurnInput): Promise<string> {
 
     const responseMessages = await result.responseMessages
     history.appendHistory(session.id, responseMessages as ModelMessage[])
-    await compactIfNeeded(config, session.id, agent.model ?? session.model, lastStepInput)
+    await tighten(config, session.id, agent.model ?? session.model, lastStepInput)
 
     const usage = await result.totalUsage
     const inputTokens = usage.inputTokens ?? 0

@@ -86,6 +86,8 @@ export function defaultConfig(): AppConfig {
     maxConcurrentTasks: 2,
     compactAtFraction: 0.7,
     keepRecentMessages: 8,
+    dehydrateAfterTurns: 2,
+    dehydrateOverChars: 800,
     smoothStreamMs: 10,
     theme: 'dark'
   }

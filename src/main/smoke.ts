@@ -36,7 +36,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as store from './store'
 import * as history from './history'
-import { estimateTokens, safeBoundary, shouldCompact } from './history'
+import { dehydrate, estimateTokens, safeBoundary, shouldCompact } from './history'
 import { bus } from './bus'
 import { runTurn } from './agent/runner'
 import { resolveApproval } from './approvals'
@@ -935,6 +935,140 @@ async function main(): Promise<void> {
       ],
       2
     ) === 2)
+  }
+
+  section('dropping tool output that stopped mattering')
+  {
+    const result = (id: string, text: string): ModelMessage =>
+      ({
+        role: 'tool',
+        content: [
+          { type: 'tool-result', toolCallId: id, toolName: 'bash', output: { type: 'text', value: text } }
+        ]
+      }) as ModelMessage
+    const callFor = (id: string, command: string): ModelMessage =>
+      ({
+        role: 'assistant',
+        content: [{ type: 'tool-call', toolCallId: id, toolName: 'bash', input: { command } }]
+      }) as ModelMessage
+
+    const big = 'L'.repeat(30_000)
+    const transcript: ModelMessage[] = [
+      { role: 'user', content: 'turn one' },
+      callFor('c1', 'rg TODO'),
+      result('c1', big),
+      { role: 'assistant', content: 'found them' },
+      { role: 'user', content: 'turn two' },
+      callFor('c2', 'npm test'),
+      result('c2', big),
+      { role: 'assistant', content: 'passing' },
+      { role: 'user', content: 'turn three' },
+      callFor('c3', 'git diff'),
+      result('c3', big),
+      { role: 'assistant', content: 'reviewed' }
+    ]
+
+    const bodyOf = (list: ModelMessage[], index: number): string => {
+      const part = (list[index].content as unknown as { output?: { value?: string } }[])[0]
+      return String(part.output?.value ?? '')
+    }
+
+    const once = dehydrate(transcript, { afterTurns: 2 })
+    check('the old output goes', once.dropped === 1, once.dropped)
+    check('and frees about what it weighed', once.freedTokens > 7_000, once.freedTokens)
+    check('the oldest result is replaced', bodyOf(once.history, 2).startsWith('[dropped'), bodyOf(once.history, 2).slice(0, 40))
+    check(
+      'and says which call to run to get it back',
+      bodyOf(once.history, 2).includes('rg TODO'),
+      bodyOf(once.history, 2)
+    )
+    check('the two most recent turns are untouched', bodyOf(once.history, 6) === big && bodyOf(once.history, 10) === big)
+
+    const again = dehydrate(once.history, { afterTurns: 2 })
+    check('running it twice changes nothing', again.dropped === 0)
+
+    check(
+      'a small output is left alone',
+      dehydrate(
+        [
+          { role: 'user', content: 'a' },
+          callFor('s', 'echo hi'),
+          result('s', 'hi'),
+          { role: 'user', content: 'b' },
+          { role: 'user', content: 'c' }
+        ],
+        { afterTurns: 2, overChars: 800 }
+      ).dropped === 0
+    )
+    check(
+      'a young session is left alone entirely',
+      dehydrate(transcript.slice(0, 4), { afterTurns: 2 }).dropped === 0
+    )
+
+    /* Image bytes are the single largest thing in a transcript. */
+    const withImage: ModelMessage[] = [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'look at this' },
+          { type: 'image', image: Buffer.from(new Uint8Array(400_000)), mediaType: 'image/png' }
+        ]
+      } as ModelMessage,
+      { role: 'assistant', content: 'seen' },
+      { role: 'user', content: 'next' },
+      { role: 'assistant', content: 'ok' },
+      { role: 'user', content: 'and next' }
+    ]
+    const stripped = dehydrate(withImage, { afterTurns: 2 })
+    check('an old image stops being resent', stripped.dropped === 1, stripped.dropped)
+    check(
+      'and the saving is the bytes it was costing',
+      stripped.freedTokens > 100_000,
+      stripped.freedTokens
+    )
+    check(
+      'replaced by a note saying what was there',
+      JSON.stringify(stripped.history[0].content).includes('image/png')
+    )
+    check(
+      'and no bytes remain in the transcript',
+      !JSON.stringify(stripped.history).includes('"Buffer"')
+    )
+    check(
+      'an image in a recent turn is kept',
+      dehydrate(withImage, { afterTurns: 4 }).dropped === 0
+    )
+    check(
+      'and it can be turned off',
+      dehydrate(withImage, { afterTurns: 2, images: false }).dropped === 0
+    )
+
+    /*
+     * The point of doing this first: a session that would have paid for a
+     * summary no longer needs one. This is the interaction with the token
+     * budget — the saving only shows up because the budget is measured in
+     * tokens rather than characters.
+     */
+    const heavy: ModelMessage[] = []
+    for (let i = 0; i < 12; i++) {
+      heavy.push({ role: 'user', content: `step ${i}` })
+      heavy.push(callFor(`h${i}`, `rg pattern-${i}`))
+      heavy.push(result(`h${i}`, 'X'.repeat(30_000)))
+      heavy.push({ role: 'assistant', content: `done ${i}` })
+    }
+    const budget = 100_000
+    const before = estimateTokens(heavy)
+    const pruned = dehydrate(heavy, { afterTurns: 2 })
+    const after = estimateTokens(pruned.history)
+    console.log(`  (${before.toLocaleString('en-GB')} tokens -> ${after.toLocaleString('en-GB')}, ${Math.round((1 - after / before) * 100)}% smaller)`)
+
+    check('such a session is over budget as it stands', shouldCompact(heavy, { budgetTokens: budget, measuredTokens: before }))
+    check(
+      'and inside it after pruning, with no model call made',
+      !shouldCompact(pruned.history, { budgetTokens: budget, measuredTokens: before - pruned.freedTokens }),
+      { before, freed: pruned.freedTokens }
+    )
+    check('most of the weight was old tool output', after < before / 4, { before, after })
   }
 
   section('measuring how full the window is')

@@ -97,6 +97,146 @@ export function safeBoundary(history: ModelMessage[], from: number): number {
   return index
 }
 
+/* ---------------- dropping what stopped mattering ---------------- */
+
+/** Marks an output this function has already replaced, so it is never re-wrapped. */
+const DEHYDRATED = '[dropped to save context]'
+
+export interface DehydrateOptions {
+  /** Tool output from turns older than this many stays; anything before it goes. */
+  afterTurns?: number
+  /** Outputs smaller than this are left alone: the saving would not pay for the loss. */
+  overChars?: number
+  /** Whether image bytes from older turns are dropped too. */
+  images?: boolean
+}
+
+export interface Dehydration {
+  /** Outputs and images replaced. */
+  dropped: number
+  /** Roughly how many tokens that freed. */
+  freedTokens: number
+}
+
+/**
+ * Replaces the body of old tool results with a note saying how to get them back.
+ *
+ * This is where a transcript's weight actually comes from. A 30k-character
+ * grep, a file read, a build log: each is truncated once when it is produced
+ * and then resent verbatim on every step of every later turn, long after the
+ * agent has moved on. Summarising only reaches it once the whole session is
+ * over budget, and costs a model call when it does. This costs nothing.
+ *
+ * The bargain is the one the summary note already strikes: the model is told
+ * exactly which call produced the output, so it can run it again if it turns
+ * out to matter. It is lossy — a build log is not always reproducible — which
+ * is why recent turns are kept whole and small outputs are left alone.
+ *
+ * Per invariant 5 the UI keeps the full output; this only shrinks the model's
+ * copy.
+ */
+export function dehydrate(
+  history: ModelMessage[],
+  options: DehydrateOptions = {}
+): { history: ModelMessage[]; dropped: number; freedTokens: number } {
+  const afterTurns = options.afterTurns ?? 2
+  const overChars = options.overChars ?? 800
+  const images = options.images ?? true
+
+  // A turn starts at a user message. Everything from the Nth-from-last onwards
+  // is recent and stays exactly as it is.
+  const userIndexes = history
+    .map((message, index) => (message.role === 'user' ? index : -1))
+    .filter((index) => index >= 0)
+  if (userIndexes.length <= afterTurns) return { history, dropped: 0, freedTokens: 0 }
+  const recentFrom = userIndexes[userIndexes.length - afterTurns]
+
+  // What each call was, so a dropped result can say how to get itself back.
+  const calls = new Map<string, { name: string; input: string }>()
+  for (const message of history) {
+    if (message.role !== 'assistant') continue
+    for (const part of parts(message)) {
+      const call = part as { type?: string; toolCallId?: string; toolName?: string; input?: unknown }
+      if (call.type === 'tool-call' && call.toolCallId) {
+        calls.set(call.toolCallId, {
+          name: call.toolName ?? 'a tool',
+          input: JSON.stringify(call.input ?? {}).slice(0, 300)
+        })
+      }
+    }
+  }
+
+  let dropped = 0
+  let freedChars = 0
+
+  const next = history.map((message, index) => {
+    if (index >= recentFrom) return message
+
+    if (message.role === 'tool') {
+      const content = parts(message) as unknown as {
+        type?: string
+        toolCallId?: string
+        output?: { type?: string; value?: unknown }
+      }[]
+      let touched = false
+      const rewritten = content.map((part) => {
+        if (part?.type !== 'tool-result') return part
+        const value = part.output?.value
+        const text = typeof value === 'string' ? value : JSON.stringify(value ?? '')
+        if (text.startsWith(DEHYDRATED) || text.length <= overChars) return part
+        const call = part.toolCallId ? calls.get(part.toolCallId) : undefined
+        touched = true
+        dropped++
+        freedChars += text.length
+        return {
+          ...part,
+          output: {
+            type: 'text',
+            value:
+              `${DEHYDRATED} ${text.length.toLocaleString('en-GB')} characters. ` +
+              `It came from ${call ? `${call.name}(${call.input})` : 'an earlier tool call'}. ` +
+              `Run it again if you need what it said.`
+          }
+        }
+      })
+      return touched ? ({ ...message, content: rewritten } as ModelMessage) : message
+    }
+
+    if (images && message.role === 'user' && Array.isArray(message.content)) {
+      const content = parts(message) as unknown as { type?: string; mediaType?: string }[]
+      if (!content.some((part) => part?.type === 'image' || part?.type === 'file')) return message
+      let touched = false
+      const rewritten = content.map((part) => {
+        if (part?.type !== 'image' && part?.type !== 'file') return part
+        touched = true
+        dropped++
+        // Bytes, not characters: an image is resent in full on every step, and
+        // the JSON it serialises to is the largest single thing in the file.
+        freedChars += JSON.stringify(part).length
+        return {
+          type: 'text',
+          text: `${DEHYDRATED} an attached ${part.mediaType ?? 'file'} from an earlier turn is no longer included.`
+        }
+      })
+      return touched ? ({ ...message, content: rewritten } as ModelMessage) : message
+    }
+
+    return message
+  })
+
+  if (dropped === 0) return { history, dropped: 0, freedTokens: 0 }
+  return { history: next, dropped, freedTokens: Math.ceil(freedChars / 4) }
+}
+
+/** Applies {@link dehydrate} to a stored session. */
+export function dehydrateHistory(sessionId: string, options: DehydrateOptions = {}): Dehydration {
+  const result = dehydrate(getHistory(sessionId), options)
+  if (result.dropped === 0) return { dropped: 0, freedTokens: 0 }
+  memory.set(sessionId, result.history)
+  persist(sessionId)
+  return { dropped: result.dropped, freedTokens: result.freedTokens }
+}
+
 /* ---------------- the budget ---------------- */
 
 const NOTE_TAG = 'earlier-in-this-session'

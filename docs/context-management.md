@@ -91,16 +91,22 @@ Facts, so nobody rediscovers them:
   (`history.ts:93-101`). Covered in `src/main/smoke.ts` ("compacting a long
   session").
 - Tool output is truncated head-and-tail at 30k characters *at the moment it is
-  produced* (`tools.ts:40-46`), and never shrinks after that.
+  produced* (`tools.ts:40-46`), and then **stops being resent** once it is more
+  than `dehydrateAfterTurns` turns old: `dehydrate` in `history.ts` replaces the
+  body with a note naming the call, so the agent can run it again. Image and
+  file bytes from old turns go the same way. No model call.
+- The two passes run **cheapest first**: `tighten` in `runner.ts` prunes, then
+  subtracts what it freed from the measured token count, and only then asks
+  whether a summary is needed.
 - Subagents are the strongest form of context isolation we have: `task` spawns a
   child session with its own history and only the report comes back
   (`runner.ts:333-351`).
 
-In the taxonomy of §2 that is **dynamic summarization** — family 3, now with
-both halves: state-triggered against the real budget, and incremental — plus a
-fixed truncation cap on tool output. Family 1 is what the summariser itself
-does; family 2 (pruning what stopped mattering, §5.D) is still not
-implemented, and is the largest remaining win.
+In the taxonomy of §2 that is all three families, in the shape each one takes
+for an agent client: **semantic compression** is what the summariser does,
+**dynamic summarization** is the trigger and the running merge, and
+**loss-aware pruning** is the coarse structural form — old tool output and old
+image bytes stop being resent, no scoring model required.
 
 ## 4. Invariants
 
@@ -123,6 +129,12 @@ anything below.
    is expendable before it is (see 5.B).
 8. **Budget in tokens, not characters, and never count image bytes as
    context.** (see 5.A)
+9. **Prune before summarising.** The free pass runs first and its saving is
+   subtracted from the measured count, so a session never pays for a summary it
+   no longer needs (see 5.D).
+10. **Dropping is recoverable; forgetting is not.** Anything removed from the
+    model's copy must say what it was and how to get it back. That is what
+    makes it a drop rather than a loss, and why it needs no notice in the chat.
 
 ## 5. Where the ideas apply, in priority order
 
@@ -215,7 +227,7 @@ five possible `keepRecent` boundaries, **two started with an orphaned `tool`
 message**. Smoke asserts both that the naive cut orphans a result and that
 every snapped boundary does not.
 
-### D. Stop resending tool output that stopped mattering
+### D. Stop resending tool output that stopped mattering — **done**
 
 *Family 2, in the form a client can actually implement.*
 
@@ -231,9 +243,29 @@ result is more than N turns old — or the file it read has since been read agai
 the information is recoverable by the agent on demand, which is exactly the
 bargain the `<earlier-in-this-session>` note already strikes.
 
-This is cheap and high-yield; expect it to push the first compaction of a long
-session much further out. Note the interaction with A: it only shows up in the
-budget if the budget is measured in tokens.
+Done, and it is the largest single saving in the file. Measured on a synthetic
+twelve-turn session of 30k-character searches: **90,786 estimated tokens →
+16,121, 82% smaller**, and a session that was over a 100k budget is inside it
+afterwards with no model call made. Smoke asserts exactly that pair, which is
+the interaction with A — the saving is only visible because the budget is
+counted in tokens.
+
+`dehydrate(history, { afterTurns, overChars, images })` is pure and idempotent:
+the replacement carries a `[dropped to save context]` sentinel so a second pass
+skips it. Recent turns are kept whole, outputs under `overChars` are left alone
+because the saving would not pay for the loss, and a session with fewer than
+`afterTurns` turns is untouched.
+
+Images were folded in here rather than left as separate work, since it is the
+same idea and the same pass: an attached screenshot is the largest single item
+in a transcript and was being resent on every step for the rest of the session.
+
+**No notice in the chat for this one**, unlike compaction. Invariant 1 is about
+forgetting, and this does not forget: the UI keeps the full output, the model is
+told which call produced what is missing, and it can run it again. A line in the
+chat every time a grep from three turns ago is dropped would be noise. What it
+*is* lossy about — a build log that will not reproduce — is why recent turns are
+kept verbatim.
 
 Per invariant 5, the UI keeps the full output. It is the model's copy that
 shrinks.
@@ -272,12 +304,12 @@ the parent's.
 The comment above `historySize` described the old dropping behaviour. It now
 says what the function does: measures, changes nothing.
 
-Still open from reading the code: image `Buffer`s are **persisted into the
-history file** and resent on every subsequent turn. A screenshot is ~2 MB of
-JSON on disk, rewritten on every append, and stays in the prefix for the rest
-of the session. Excluding it from the budget stopped it distorting the trigger;
-it does not stop it being sent. Dropping image bytes from turns older than N is
-the same idea as §5.D and belongs with it.
+Image `Buffer`s persisted into the history file and resent every turn — done as
+part of D, which drops them from turns older than `dehydrateAfterTurns`. A
+screenshot still costs ~2 MB of JSON on disk for the two turns it survives;
+shrinking that further would mean keeping attachments out of the history file
+and re-reading them from disk when a turn needs them, which is a larger change
+and not yet worth it.
 
 ## 6. What not to build
 
