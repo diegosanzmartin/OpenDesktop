@@ -25,7 +25,9 @@
       "buildResources": "build"
     },
     "files": [
-      "out/**/*",
+      "out/main/**/*",
+      "out/preload/**/*",
+      "out/renderer/**/*",
       "package.json"
     ],
     "mac": {
