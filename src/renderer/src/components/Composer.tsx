@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ArrowUp, ChevronDown, FileText, FolderOpen, ImageIcon, Paperclip, Square, X } from 'lucide-react'
 import type { Attachment, Session, Skill } from '@shared/types'
 import { isManager } from '@shared/types'
+import { DEFAULT_MODE, MODES, modeInfo, type SessionMode } from '@shared/modes'
 import { mentionToken } from '@shared/mentions'
 import { useStore } from '../state/store'
 import { folderName, shortenPath } from '../lib/format'
@@ -34,6 +35,58 @@ function Picker({
       </select>
       <ChevronDown className="text-ink-600 pointer-events-none absolute right-0 h-3 w-3" />
     </div>
+  )
+}
+
+/**
+ * How much of what a tool produces reaches the model, per session.
+ *
+ * Next to the environment rather than the model, because that is what it is
+ * about: the same model reading a filtered version of the same machine. A mode
+ * that cannot work says so here — the alternative is a session labelled `rtk`
+ * behaving exactly like `Direct` with nothing to show for it.
+ */
+function ModePicker({ session }: { session: Session }): ReactNode {
+  const mode = session.mode ?? DEFAULT_MODE
+  const [rtk, setRtk] = useState<{ state: string; version?: string; message?: string } | null>(null)
+
+  useEffect(() => {
+    if (mode !== 'rtk') {
+      setRtk(null)
+      return
+    }
+    let live = true
+    void window.opendesktop.rtk.status(session.environmentId, true).then((status) => {
+      if (live) setRtk(status ?? null)
+    })
+    return () => {
+      live = false
+    }
+  }, [mode, session.environmentId])
+
+  const info = modeInfo(mode)
+  const broken = rtk && (rtk.state === 'missing' || rtk.state === 'too-old')
+
+  return (
+    <>
+      <Picker
+        title={`Mode — ${info.blurb}`}
+        value={mode}
+        onChange={(next) => {
+          void window.opendesktop.sessions.update(session.id, { mode: next as SessionMode })
+        }}
+        options={MODES.map((entry) => ({ value: entry.id, label: entry.label }))}
+      />
+      {broken ? (
+        <span className="text-warn shrink-0 text-[11.5px]" title={rtk?.message}>
+          rtk not installed here
+        </span>
+      ) : rtk?.state === 'ready' && rtk.version ? (
+        <span className="text-ink-600 hidden shrink-0 text-[11.5px] @[620px]:inline">
+          rtk {rtk.version}
+        </span>
+      ) : null}
+    </>
   )
 }
 
@@ -493,6 +546,8 @@ export function Composer({ session }: { session: Session }): ReactNode {
             }}
             options={environments.map((e) => ({ value: e.id, label: e.name }))}
           />
+
+          <ModePicker session={session} />
 
           <div className="ml-auto flex min-w-0 items-center gap-3">
             <Picker

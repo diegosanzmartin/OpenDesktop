@@ -14,6 +14,7 @@ import type {
   Session,
   Skill
 } from '@shared/types'
+import type { SessionMode } from '@shared/modes'
 
 const api = {
   config: {
@@ -61,6 +62,13 @@ const api = {
     list: (): Promise<{ ref: string; label: string; provider: string }[]> =>
       ipcRenderer.invoke('models:list')
   },
+  rtk: {
+    status: (
+      environmentId: string,
+      probe?: boolean
+    ): Promise<{ state: 'ready' | 'missing' | 'too-old' | 'unknown'; version?: string; message?: string }> =>
+      ipcRenderer.invoke('rtk:status', environmentId, probe)
+  },
   env: {
     test: (id: string): Promise<{ ok: boolean; message: string }> => ipcRenderer.invoke('env:test', id),
     home: (id: string): Promise<string> => ipcRenderer.invoke('env:home', id),
@@ -76,6 +84,7 @@ const api = {
       agentId?: string
       model?: string
       title?: string
+      mode?: SessionMode
     }): Promise<Session> => ipcRenderer.invoke('session:create', input),
     update: (id: string, patch: Partial<Session>): Promise<Session | undefined> =>
       ipcRenderer.invoke('session:update', id, patch),

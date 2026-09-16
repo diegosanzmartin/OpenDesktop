@@ -1,5 +1,7 @@
 /** Shared types between the main process, the preload bridge and the renderer. */
 
+import type { SessionMode } from './modes'
+
 export type BlockStatus = 'pending' | 'awaiting-approval' | 'running' | 'success' | 'error' | 'canceled'
 
 /**
@@ -162,6 +164,15 @@ export interface AppConfig {
   agent: Record<string, AgentConfig>
   permissions: Permissions
   maxSteps: number
+  /** The mode a new session starts in. */
+  mode?: SessionMode
+  /**
+   * What `shunt` delegates to, as `provider/model`. Falls back to smallModel,
+   * then to the session's own model — which works, but saves nothing.
+   */
+  shuntModel?: string
+  /** Reads longer than this many lines are refused in shunt mode. */
+  shuntMinLines?: number
   /** How many board tasks the scheduler will run at once. */
   maxConcurrentTasks?: number
   /** Share of a model's usable window at which the transcript is summarised. */
@@ -249,6 +260,11 @@ export interface Session {
   environmentId: string
   agentId: string
   model: string
+  /**
+   * How much of what a tool produces reaches the model. Absent means the
+   * app's default, which is `direct`.
+   */
+  mode?: SessionMode
   status: SessionStatus
   createdAt: number
   updatedAt: number

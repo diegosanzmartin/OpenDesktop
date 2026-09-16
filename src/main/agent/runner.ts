@@ -14,6 +14,7 @@ import {
   type Attachment,
   type Message
 } from '@shared/types'
+import { DEFAULT_MODE, type SessionMode } from '@shared/modes'
 import { mentionToken, mentionedAgents } from '@shared/mentions'
 import { costOf } from '@shared/cost'
 import { budgetFor } from '@shared/context'
@@ -22,6 +23,7 @@ import { bus } from '../bus'
 import { cancelSessionApprovals } from '../approvals'
 import { resolveModel } from '../providers'
 import { getRuntime } from '../runtime'
+import { rtkStatus } from '../rtk'
 import * as store from '../store'
 import * as history from '../history'
 import { createTools, type ToolContext } from './tools'
@@ -122,6 +124,32 @@ function systemPrompt(agent: AgentConfig, input: {
   collapsible block, so one command per idea reads far better than a chained script.
 - When you are done, summarize what changed in a few lines. Do not pad the answer.
 - All user-facing text you write must be in English.`
+}
+
+/**
+ * What the agent needs to know about the mode it is running in.
+ *
+ * Only added when the mode is actually in force. An agent told that its output
+ * is being filtered when it is not will second-guess perfectly complete output
+ * — and the first thing it does about it is run the command again with more
+ * flags, which costs exactly what the mode exists to save.
+ */
+function modeGuidance(mode: SessionMode): string {
+  if (mode === 'rtk') {
+    return `
+
+# rtk
+Shell commands on this target run through rtk, which filters their output
+before you read it: a tree with counts instead of one line per file, failing
+tests instead of a whole run, \`ok abc1234\` instead of git's progress report.
+Directory listings and searches are filtered the same way.
+
+What comes back is meant to be enough to act on. Do not re-run a command with
+more flags to see "the real output", and do not conclude a command printed
+nothing because it printed little. A file's contents are never filtered: when
+you need exact text — before an edit, always — use \`read\`.`
+  }
+  return ''
 }
 
 async function describeTarget(environmentId: string): Promise<{ platform: string }> {
@@ -342,6 +370,50 @@ export async function compactNow(sessionId: string): Promise<boolean> {
   return done
 }
 
+/**
+ * Sessions already told that their mode cannot be honoured, so the transcript
+ * says it once instead of at every turn.
+ */
+const modeWarned = new Set<string>()
+
+/**
+ * Says so in the chat when a mode is selected but not available.
+ *
+ * The alternative is a session that quietly behaves like `direct` while the
+ * picker says `rtk` — the user would be reading the token counts of one mode
+ * and the label of another.
+ */
+async function announceModeProblems(
+  sessionId: string,
+  environmentId: string,
+  cwd: string,
+  mode: SessionMode
+): Promise<boolean> {
+  if (mode !== 'rtk') return true
+  const runtime = getRuntime(environmentId)
+  const status = await rtkStatus(environmentId, runtime, cwd)
+  if (status.state === 'ready') return true
+
+  const key = `${sessionId}:${environmentId}:${status.state}`
+  if (!modeWarned.has(key)) {
+    modeWarned.add(key)
+    store.addMessage({
+      sessionId,
+      role: 'system',
+      parts: [
+        {
+          type: 'text',
+          text:
+            `This session is in rtk mode, but rtk cannot be used on ` +
+            `${runtime.label}: ${status.message ?? 'it is not available'}\n\n` +
+            `Commands are running unfiltered, exactly as in Direct mode.`
+        }
+      ]
+    })
+  }
+  return false
+}
+
 interface TurnInput {
   sessionId: string
   userText: string
@@ -399,6 +471,14 @@ export async function runTurn(input: TurnInput): Promise<string> {
     const { platform } = await describeTarget(session.environmentId)
     const resolved = await resolveModel(config, agent.model ?? session.model)
 
+    const mode = session.mode ?? config.mode ?? DEFAULT_MODE
+    const modeWorks = await announceModeProblems(
+      session.id,
+      session.environmentId,
+      session.cwd,
+      mode
+    )
+
     const ctx: ToolContext = {
       config,
       agent,
@@ -408,6 +488,7 @@ export async function runTurn(input: TurnInput): Promise<string> {
       cwd: session.cwd,
       runtime,
       signal: controller.signal,
+      mode,
       currentMessageId: () => assistant.id,
       depth: input.depth ?? 0,
       parentBlockId: input.parentBlockId,
@@ -418,6 +499,7 @@ export async function runTurn(input: TurnInput): Promise<string> {
           environmentId: session.environmentId,
           agentId,
           model: config.agent[agentId]?.model ?? session.model,
+          mode,
           parentSessionId: session.id
         })
         store.updateSession(child.id, { taskLabel: description })
@@ -452,7 +534,9 @@ export async function runTurn(input: TurnInput): Promise<string> {
           environmentKind: runtime.kind,
           platform,
           date: new Date().toISOString().slice(0, 10)
-        }) + (input.coordinationNote ?? ''),
+        }) +
+        (modeWorks ? modeGuidance(mode) : '') +
+        (input.coordinationNote ?? ''),
       messages,
       tools,
       temperature: agent.temperature,

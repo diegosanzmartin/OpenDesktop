@@ -2,6 +2,7 @@ import clsx from 'clsx'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Check, CircleAlert, Eye, EyeOff, Plus, Trash2 } from 'lucide-react'
 import type { AppConfig, ProviderConfig } from '@shared/types'
+import { DEFAULT_MODE, MODES, modeInfo, type SessionMode } from '@shared/modes'
 import { useStore } from '../state/store'
 import { Hint, IconButton, Row, RowInput, RowSelect, Section } from './settings-ui'
 
@@ -494,6 +495,19 @@ export function ModelsTab(): ReactNode {
               <Trash2 className="h-4 w-4" />
             </IconButton>
           ) : null}
+        </Row>
+      </Section>
+
+      <Section
+        title="Mode"
+        description="How much of what a tool produces reaches the model. Set per session in the composer; this is what a new one starts as."
+      >
+        <Row label="New sessions start in" description={modeInfo(draft.mode).blurb}>
+          <RowSelect
+            value={draft.mode ?? DEFAULT_MODE}
+            onChange={(event) => setDraft({ ...draft, mode: event.target.value as SessionMode })}
+            options={MODES.map((entry) => ({ value: entry.id, label: entry.label }))}
+          />
         </Row>
       </Section>
 

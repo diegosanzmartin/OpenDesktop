@@ -2,6 +2,7 @@ import { tool, type ToolSet } from 'ai'
 import { z } from 'zod'
 import { basename, relative } from 'node:path'
 import type { AgentConfig, AppConfig, Block, Permissions } from '@shared/types'
+import { type SessionMode } from '@shared/modes'
 import { PermissionDenied, decide, hasSessionGrant, requestApproval } from '../approvals'
 import { diffStats, renderDiff } from '../diff'
 import { shellQuote, type Runtime } from '../runtime'
@@ -14,6 +15,7 @@ import {
 } from '../background'
 import * as store from '../store'
 import { recordWrite, writeWarning } from '../coordination'
+import { rewriteThroughRtk, rtkListingCommand, rtkStatus } from '../rtk'
 
 export interface ToolContext {
   config: AppConfig
@@ -24,6 +26,8 @@ export interface ToolContext {
   cwd: string
   runtime: Runtime
   signal: AbortSignal
+  /** How much of what a tool produces reaches the model. */
+  mode: SessionMode
   /** The assistant message currently being streamed; blocks attach to it. */
   currentMessageId: () => string
   parentBlockId?: string
@@ -70,6 +74,8 @@ async function withBlock(
       command?: string
       detail: string
       preview?: string
+      /** Ask even if the allowlist would have covered it. */
+      forceAsk?: boolean
     }
   },
   run: (block: Block) => Promise<{ output: string; exitCode?: number }>
@@ -104,7 +110,7 @@ async function withBlock(
       }
       const needsAsk =
         decision.mode === 'ask' &&
-        !decision.preapproved &&
+        (!decision.preapproved || spec.permission.forceAsk === true) &&
         !hasSessionGrant(ctx.sessionId, spec.tool)
 
       if (needsAsk) {
@@ -162,6 +168,16 @@ async function withBlock(
 
 function enabled(ctx: ToolContext, name: string): boolean {
   return ctx.agent.tools?.[name] !== false
+}
+
+/**
+ * Whether rtk is both asked for and actually there. Cached after the first
+ * call, so every tool can ask without paying for it.
+ */
+async function rtkUsable(ctx: ToolContext): Promise<boolean> {
+  if (ctx.mode !== 'rtk') return false
+  const status = await rtkStatus(ctx.environmentId, ctx.runtime, ctx.cwd)
+  return status.state === 'ready'
 }
 
 export function createTools(ctx: ToolContext): ToolSet {
@@ -227,17 +243,47 @@ export function createTools(ctx: ToolContext): ToolSet {
             }
           )
         }
+        /*
+         * In rtk mode the command is handed to rtk before it runs, and the
+         * decision to run it is still made about what the model asked for —
+         * that is what the approval card shows and what the allowlist is
+         * written against. `forceAsk` is rtk saying it wants a person
+         * consulted, which can only ever add a prompt, never remove one.
+         */
+        const rewrite =
+          ctx.mode === 'rtk'
+            ? await rewriteThroughRtk({
+                environmentId: ctx.environmentId,
+                runtime: ctx.runtime,
+                cwd: ctx.cwd,
+                command,
+                permissions: ctx.permissions,
+                signal: ctx.signal
+              })
+            : null
+
         return withBlock(
           ctx,
           {
             tool: 'bash',
             title: command,
             subtitle: description,
-            input: { command, description, timeout },
-            permission: { key: 'bash', command, detail: command, preview: command }
+            input: {
+              command,
+              description,
+              timeout,
+              ...(rewrite?.rewritten ? { ranAs: rewrite.command } : {})
+            },
+            permission: {
+              key: 'bash',
+              command,
+              detail: command,
+              preview: command,
+              forceAsk: rewrite?.forceAsk
+            }
           },
           async (block) => {
-            const res = await ctx.runtime.exec(command, {
+            const res = await ctx.runtime.exec(rewrite?.command ?? command, {
               cwd: ctx.cwd,
               timeoutMs: timeout ?? 180_000,
               signal: ctx.signal,
@@ -468,24 +514,31 @@ export function createTools(ctx: ToolContext): ToolSet {
         const limit = max_results ?? 200
         const globArg = glob ? `--glob ${shellQuote(glob)}` : ''
         const grepInclude = glob ? `--include=${shellQuote(glob)}` : ''
-        const command =
+        const own =
           `if command -v rg >/dev/null 2>&1; then ` +
           `rg --line-number --no-heading --color never --max-count 20 ${globArg} -e ${shellQuote(pattern)} ${shellQuote(target)} 2>/dev/null | head -n ${limit}; ` +
           `else grep -rnI --color=never ${grepInclude} -e ${shellQuote(pattern)} ${shellQuote(target)} 2>/dev/null | head -n ${limit}; fi`
+        // rtk groups matches by file and truncates long lines. Only when no
+        // glob was asked for: rtk grep takes no include filter, and quietly
+        // searching more than was asked is worse than not saving the tokens.
+        const viaRtk = !glob && (await rtkUsable(ctx))
+        const command = viaRtk ? (rtkListingCommand('grep', { pattern, path: target }) ?? own) : own
         return withBlock(
           ctx,
           {
             tool: 'grep',
             title: pattern,
             subtitle: `in ${shortPath(ctx.cwd, target)}${glob ? ` · ${glob}` : ''}`,
-            input: { pattern, path: target, glob }
+            input: { pattern, path: target, glob, ...(viaRtk ? { ranAs: command } : {}) }
           },
           async (block) => {
             const res = await ctx.runtime.exec(command, { cwd: ctx.cwd, timeoutMs: 60_000, signal: ctx.signal })
             const body = res.stdout.trim()
             store.appendBlockOutput(ctx.sessionId, block.id, body || 'no matches')
-            const count = body ? body.split('\n').length : 0
-            return { output: body ? `${count} matching lines:\n${body}` : 'No matches.' }
+            if (!body) return { output: 'No matches.' }
+            if (viaRtk) return { output: body }
+            const count = body.split('\n').length
+            return { output: `${count} matching lines:\n${body}` }
           }
         )
       }
@@ -505,12 +558,19 @@ export function createTools(ctx: ToolContext): ToolSet {
         const matcher = normalized.includes('/')
           ? `-path ${shellQuote(`*${normalized}`)}`
           : `-name ${shellQuote(normalized)}`
-        const command =
+        const own =
           `find ${shellQuote(target)} -type d \\( -name node_modules -o -name .git -o -name dist -o -name out \\) -prune -o ` +
           `-type f ${matcher} -print 2>/dev/null | head -n 300`
+        const viaRtk = await rtkUsable(ctx)
+        const command = viaRtk ? (rtkListingCommand('glob', { pattern, path: target }) ?? own) : own
         return withBlock(
           ctx,
-          { tool: 'glob', title: pattern, subtitle: `in ${shortPath(ctx.cwd, target)}`, input: { pattern, path: target } },
+          {
+            tool: 'glob',
+            title: pattern,
+            subtitle: `in ${shortPath(ctx.cwd, target)}`,
+            input: { pattern, path: target, ...(viaRtk ? { ranAs: command } : {}) }
+          },
           async (block) => {
             const res = await ctx.runtime.exec(command, { cwd: ctx.cwd, timeoutMs: 60_000, signal: ctx.signal })
             const body = res.stdout.trim()
@@ -528,10 +588,31 @@ export function createTools(ctx: ToolContext): ToolSet {
       inputSchema: z.object({ path: z.string().optional() }),
       execute: async ({ path }) => {
         const target = ctx.runtime.resolve(ctx.cwd, path ?? '.')
+        // rtk ls is a tree with counts instead of one line per entry, which is
+        // most of the saving on a directory anyone would call large.
+        const viaRtk = await rtkUsable(ctx)
+        const command = viaRtk ? rtkListingCommand('list', { path: target }) : null
         return withBlock(
           ctx,
-          { tool: 'list', title: shortPath(ctx.cwd, target) || '.', input: { path: target } },
+          {
+            tool: 'list',
+            title: shortPath(ctx.cwd, target) || '.',
+            input: { path: target, ...(command ? { ranAs: command } : {}) }
+          },
           async (block) => {
+            if (command) {
+              const res = await ctx.runtime.exec(command, {
+                cwd: ctx.cwd,
+                timeoutMs: 60_000,
+                signal: ctx.signal
+              })
+              const listing = res.stdout.trim()
+              if (listing) {
+                store.appendBlockOutput(ctx.sessionId, block.id, listing)
+                return { output: listing }
+              }
+              // rtk had nothing to say about it; the real listing still does.
+            }
             const entries = await ctx.runtime.list(target)
             const body = entries
               .map((e) => `${e.directory ? 'dir ' : 'file'}  ${e.name}${e.directory ? '/' : ''}`)

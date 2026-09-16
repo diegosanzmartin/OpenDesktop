@@ -320,6 +320,87 @@ async function run(): Promise<void> {
     }
   }
 
+  section('the mode picker')
+  {
+    const pickerIn = (host: HTMLElement): HTMLSelectElement | undefined =>
+      [...host.querySelectorAll('select')].find((select) =>
+        (select.getAttribute('title') ?? '').startsWith('Mode')
+      ) as HTMLSelectElement | undefined
+
+    const direct = mount(<Composer session={session} />, 900)
+    await settle()
+    const picker = pickerIn(direct)
+    check('the composer offers a mode', Boolean(picker))
+    check(
+      'all three are on it',
+      [...(picker?.options ?? [])].map((o) => o.value).join(',') === 'direct,rtk,shunt',
+      [...(picker?.options ?? [])].map((o) => o.value)
+    )
+    check('and a session with none set reads as Direct', picker?.value === 'direct', picker?.value)
+    check(
+      'and a direct session is not told about rtk — the options name it, nothing else does',
+      !(direct.textContent ?? '').includes('not installed') &&
+        !/rtk \d/.test(direct.textContent ?? ''),
+      direct.textContent
+    )
+
+    // rtk mode, with the bridge answering the way each case would.
+    const saved = REPLIES.status
+    REPLIES.status = { state: 'missing', message: 'not on the PATH' }
+    const broken = mount(<Composer session={{ ...session, mode: 'rtk' }} />, 900)
+    await settle()
+    check('the picker follows the session', pickerIn(broken)?.value === 'rtk')
+    check(
+      'a missing rtk is admitted to, not hidden',
+      (broken.textContent ?? '').includes('rtk not installed here'),
+      broken.textContent
+    )
+    check('and it is a warning, not a note', broken.innerHTML.includes('text-warn'))
+
+    REPLIES.status = { state: 'ready', version: '0.28.2' }
+    const ready = mount(<Composer session={{ ...session, mode: 'rtk' }} />, 900)
+    await settle()
+    check(
+      'a working rtk shows which one is working',
+      (ready.textContent ?? '').includes('rtk 0.28.2'),
+      ready.textContent
+    )
+    check('and says nothing alarming', !ready.innerHTML.includes('text-warn'))
+    REPLIES.status = saved
+  }
+
+  section('a command a mode rewrote')
+  {
+    const rewritten: Block = block({
+      id: 'b-rtk',
+      title: 'git status',
+      subtitle: 'check the repo',
+      input: { command: 'git status', ranAs: 'rtk git status' },
+      output: 'M src/main/rtk.ts'
+    })
+    const host = mount(<BlockCard block={rewritten} />)
+    await settle()
+    check(
+      'the row says the output was filtered',
+      (host.textContent ?? '').includes('rtk'),
+      host.textContent
+    )
+    check(
+      'but the heading is still what the agent asked for',
+      (host.textContent ?? '').includes('check the repo')
+    )
+
+    useStore.setState({ expanded: { 'b-rtk': true } })
+    const open = mount(<BlockCard block={rewritten} />)
+    await settle()
+    check(
+      'and opening it shows what actually ran',
+      (open.textContent ?? '').includes('# ran as: rtk git status'),
+      open.textContent
+    )
+    useStore.setState({ expanded: {} })
+  }
+
   console.log(`\n${checks - failures.length}/${checks} checks passed`)
   if (failures.length > 0) {
     console.log(`\nfailed:\n${failures.map((f) => `  - ${f}`).join('\n')}`)

@@ -42,6 +42,16 @@ import { runTurn } from './agent/runner'
 import { resolveApproval } from './approvals'
 import * as providers from './providers'
 import { getRuntime } from './runtime'
+import type { ExecOptions, ExecResult, Runtime } from './runtime'
+import {
+  acceptRewrite,
+  cachedRtkStatus,
+  forgetRtkStatus,
+  parseRtkVersion,
+  rewriteThroughRtk,
+  rtkListingCommand,
+  rtkStatus
+} from './rtk'
 import { diffLines, renderDiff } from './diff'
 import { decide, deniedSegment, matchesAny, splitCommand } from './approvals'
 import { parseGcloudCommand } from '@shared/gcloud'
@@ -221,6 +231,46 @@ function replyingModel(text: string): LanguageModel {
       })
     })
   }) as unknown as LanguageModel
+}
+
+/**
+ * A runtime that answers commands from a table instead of running them.
+ *
+ * Used to test the rtk protocol without rtk: the exit codes are the contract,
+ * and the contract is what a fake can honour exactly.
+ */
+function fakeRuntime(answer: (command: string) => { stdout?: string; exitCode?: number }): {
+  runtime: Runtime
+  commands: string[]
+} {
+  const commands: string[] = []
+  const runtime = {
+    id: 'fake',
+    kind: 'local' as const,
+    label: 'Fake',
+    connect: async () => undefined,
+    exec: async (command: string, _options: ExecOptions): Promise<ExecResult> => {
+      commands.push(command)
+      const reply = answer(command)
+      return {
+        stdout: reply.stdout ?? '',
+        stderr: '',
+        exitCode: reply.exitCode ?? 0,
+        truncated: false
+      }
+    },
+    readFile: async () => '',
+    readFileBuffer: async () => Buffer.alloc(0),
+    writeFile: async () => undefined,
+    exists: async () => true,
+    isDirectory: async () => false,
+    list: async () => [],
+    stat: async () => null,
+    homeDir: async () => '/home/fake',
+    resolve: (cwd: string, path: string) => (path.startsWith('/') ? path : `${cwd}/${path}`),
+    dispose: async () => undefined
+  } as unknown as Runtime
+  return { runtime, commands }
 }
 
 async function main(): Promise<void> {
@@ -2389,6 +2439,353 @@ async function main(): Promise<void> {
       store.deleteSession(id)
       history.clearHistory(id)
     }
+  }
+
+  section('rtk mode: what may run in place of what was asked for')
+  {
+    // rtk's own rewrite suite, as the shapes this gate has to let through.
+    const allowed: [string, string][] = [
+      ['git status', 'rtk git status'],
+      ['git log --oneline -10', 'rtk git log --oneline -10'],
+      ['cat package.json', 'rtk read package.json'],
+      ['rg pattern src/', 'rtk grep pattern src/'],
+      ['npx playwright test', 'rtk playwright test'],
+      ['LANG=C ls -la', 'LANG=C rtk ls -la'],
+      ['NODE_ENV=test CI=1 npx vitest', 'NODE_ENV=test CI=1 rtk vitest']
+    ]
+    for (const [original, candidate] of allowed) {
+      check(
+        `${original} may become ${candidate}`,
+        acceptRewrite(original, candidate).ok,
+        acceptRewrite(original, candidate).reason
+      )
+    }
+
+    const refused: [string, string, string][] = [
+      ['ls', 'ls; rm -rf ~', 'a second command'],
+      ['ls', 'rm -rf ~', 'something that is not rtk'],
+      ['echo hi', 'rtk read x > ~/.zshrc', 'a redirect'],
+      ['echo hi', 'rtk read $(whoami)', 'a substitution'],
+      ['NODE_ENV=test npm run x', 'EVIL=1 rtk npm run x', 'a different environment'],
+      ['git status', '', 'nothing at all'],
+      ['git status', 'git status', 'no change']
+    ]
+    for (const [original, candidate, why] of refused) {
+      check(`and never ${why}`, !acceptRewrite(original, candidate).ok, { original, candidate })
+    }
+
+    check('a version string is read out of rtk --version', parseRtkVersion('rtk 0.28.2') === '0.28.2')
+    check('and nothing is invented when it says something else', parseRtkVersion('who?') === null)
+  }
+
+  section('rtk mode: asking rtk what to run')
+  {
+    const permissions = defaultConfig().permissions
+
+    forgetRtkStatus()
+    const missing = fakeRuntime(() => ({ exitCode: 127, stdout: 'command not found' }))
+    const noRtk = await rtkStatus('fake-missing', missing.runtime, '/tmp')
+    check('no rtk on the target is reported, not guessed at', noRtk.state === 'missing', noRtk)
+    check('and the message says how to get it', /brew install rtk/.test(noRtk.message ?? ''))
+
+    forgetRtkStatus()
+    const old = fakeRuntime(() => ({ stdout: 'rtk 0.22.0' }))
+    const tooOld = await rtkStatus('fake-old', old.runtime, '/tmp')
+    check('a binary without `rtk rewrite` is refused by version', tooOld.state === 'too-old', tooOld)
+
+    forgetRtkStatus()
+    const ready = fakeRuntime((command) => {
+      if (command === 'rtk --version') return { stdout: 'rtk 0.28.2' }
+      if (command.startsWith('rtk rewrite')) return { stdout: 'rtk git status\n', exitCode: 0 }
+      return { stdout: '' }
+    })
+    const first = await rtkStatus('fake-ready', ready.runtime, '/tmp')
+    await rtkStatus('fake-ready', ready.runtime, '/tmp')
+    check('a usable rtk is ready, with its version', first.state === 'ready' && first.version === '0.28.2', first)
+    check(
+      'and the question is asked once, not once per command',
+      ready.commands.filter((c) => c === 'rtk --version').length === 1,
+      ready.commands
+    )
+    check('the cache can be read without probing again', cachedRtkStatus('fake-ready').state === 'ready')
+
+    const accepted = await rewriteThroughRtk({
+      environmentId: 'fake-ready',
+      runtime: ready.runtime,
+      cwd: '/tmp',
+      command: 'git status',
+      permissions
+    })
+    check('exit 0 with a rewrite is used', accepted.command === 'rtk git status', accepted)
+    check('and is marked as a rewrite, so the transcript can say so', accepted.rewritten)
+    check('and does not force a prompt on its own', !accepted.forceAsk)
+
+    // 1: rtk has no equivalent. 2: rtk's own deny rules matched. Both mean the
+    // command runs as the model wrote it.
+    for (const [code, why] of [[1, 'rtk has nothing better'], [2, 'rtk denies it itself']] as const) {
+      forgetRtkStatus()
+      const quiet = fakeRuntime((command) =>
+        command === 'rtk --version' ? { stdout: 'rtk 0.28.2' } : { stdout: 'rtk git status', exitCode: code }
+      )
+      const result = await rewriteThroughRtk({
+        environmentId: `fake-${code}`,
+        runtime: quiet.runtime,
+        cwd: '/tmp',
+        command: 'git status',
+        permissions
+      })
+      check(`the original runs when ${why}`, result.command === 'git status' && !result.rewritten, result)
+    }
+
+    forgetRtkStatus()
+    const asks = fakeRuntime((command) =>
+      command === 'rtk --version' ? { stdout: 'rtk 0.28.2' } : { stdout: 'rtk git status', exitCode: 3 }
+    )
+    const asked = await rewriteThroughRtk({
+      environmentId: 'fake-ask',
+      runtime: asks.runtime,
+      cwd: '/tmp',
+      command: 'git status',
+      permissions
+    })
+    check('exit 3 rewrites and still wants a person asked', asked.rewritten && asked.forceAsk, asked)
+
+    forgetRtkStatus()
+    const nasty = fakeRuntime((command) =>
+      command === 'rtk --version' ? { stdout: 'rtk 0.28.2' } : { stdout: 'rm -rf /tmp/x', exitCode: 0 }
+    )
+    const blocked = await rewriteThroughRtk({
+      environmentId: 'fake-nasty',
+      runtime: nasty.runtime,
+      cwd: '/tmp',
+      command: 'ls',
+      permissions: { ...permissions, denylist: [...permissions.denylist, 'rm -rf /tmp/x'] }
+    })
+    check(
+      'a rewrite that is not an rtk command is left on the floor',
+      blocked.command === 'ls' && !blocked.rewritten,
+      blocked
+    )
+
+    check(
+      'listings have rtk equivalents',
+      rtkListingCommand('list', { path: '/tmp/x' }) === "rtk ls '/tmp/x'",
+      rtkListingCommand('list', { path: '/tmp/x' })
+    )
+    check(
+      'and searches do too',
+      rtkListingCommand('grep', { pattern: 'foo', path: '/tmp' }) === "rtk grep 'foo' '/tmp'"
+    )
+    check(
+      'but a file is never handed over in place of its contents',
+      rtkListingCommand('grep', { path: '/tmp' }) === null
+    )
+    forgetRtkStatus()
+  }
+
+  section('rtk mode: a real turn, with rtk stood in for')
+  {
+    /*
+     * A stand-in on the PATH rather than a stub in the code: the point of this
+     * mode is that an external binary decides, and the parts worth testing are
+     * the ones between us and it — the probe, the protocol, the gate, and what
+     * the transcript ends up saying.
+     */
+    const bin = join(tmpdir(), 'opendesktop-fake-rtk')
+    mkdirSync(bin, { recursive: true })
+    writeFileSync(
+      join(bin, 'rtk'),
+      [
+        '#!/bin/sh',
+        'case "$1" in',
+        '  --version) echo "rtk 0.28.2" ;;',
+        '  rewrite) echo "rtk $2"; exit ${FAKE_RTK_EXIT:-0} ;;',
+        '  *) echo "compact($*)" ;;',
+        'esac'
+      ].join('\n'),
+      { mode: 0o755 }
+    )
+    const realPath = process.env.PATH
+    process.env.PATH = `${bin}:${realPath ?? ''}`
+    forgetRtkStatus()
+
+    let systemPrompt = ''
+    const capturing = (command: string): LanguageModel => {
+      const inner = scriptedModel(command)
+      const delegate = inner as unknown as {
+        doStream: (options: unknown) => Promise<never>
+      }
+      return new MockLanguageModelV4({
+        doStream: async (options) => {
+          const prompt = (options as { prompt?: { role: string; content: unknown }[] }).prompt
+          const system = prompt?.find((message) => message.role === 'system')
+          if (system && typeof system.content === 'string') systemPrompt = system.content
+          return delegate.doStream(options)
+        }
+      }) as unknown as LanguageModel
+    }
+
+    const rtkSession = store.createSession({
+      title: 'rtk',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: 'build',
+      model: 'mock/mock',
+      mode: 'rtk'
+    })
+    history.clearHistory(rtkSession.id)
+    check('the mode is a property of the session', store.getSession(rtkSession.id)?.mode === 'rtk')
+
+    providers.setModelResolverOverride(() => ({
+      providerId: 'mock',
+      modelId: 'mock',
+      label: 'Mock',
+      model: capturing('git status')
+    }))
+    const allow = bus.subscribe((event) => {
+      if (event.type === 'approval.requested') resolveApproval(event.request.id, 'once')
+    })
+    await runTurn({ sessionId: rtkSession.id, userText: 'check the repo' })
+    allow()
+    providers.setModelResolverOverride(null)
+
+    const rtkBlock = store.listBlocks(rtkSession.id)[0]
+    check('the block still says what the model asked for', rtkBlock?.title === 'git status', rtkBlock?.title)
+    check(
+      'and records what actually ran',
+      rtkBlock?.input.ranAs === 'rtk git status',
+      rtkBlock?.input.ranAs
+    )
+    check(
+      'and the output is the filtered one',
+      (rtkBlock?.output ?? '').includes('compact(git status)'),
+      rtkBlock?.output
+    )
+    check('the agent is told its output is filtered', /# rtk/.test(systemPrompt))
+    check(
+      'and told that file contents are not',
+      /never filtered/.test(systemPrompt),
+      systemPrompt.slice(-400)
+    )
+
+    // The same turn in the mode this app has always had.
+    const plainSession = store.createSession({
+      title: 'direct',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: 'build',
+      model: 'mock/mock'
+    })
+    history.clearHistory(plainSession.id)
+    systemPrompt = ''
+    providers.setModelResolverOverride(() => ({
+      providerId: 'mock',
+      modelId: 'mock',
+      label: 'Mock',
+      model: capturing('printf plain-ok')
+    }))
+    const allow2 = bus.subscribe((event) => {
+      if (event.type === 'approval.requested') resolveApproval(event.request.id, 'once')
+    })
+    await runTurn({ sessionId: plainSession.id, userText: 'check the repo' })
+    allow2()
+    providers.setModelResolverOverride(null)
+
+    const plainBlock = store.listBlocks(plainSession.id)[0]
+    check(
+      'a direct session runs the command itself',
+      plainBlock?.input.ranAs === undefined && (plainBlock?.output ?? '').includes('plain-ok'),
+      plainBlock?.output
+    )
+    check('and is told nothing about rtk', !/# rtk/.test(systemPrompt))
+
+    // A mode that cannot work says so in the chat rather than pretending.
+    process.env.PATH = realPath
+    forgetRtkStatus()
+    const brokenSession = store.createSession({
+      title: 'rtk-missing',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: 'build',
+      model: 'mock/mock',
+      mode: 'rtk'
+    })
+    history.clearHistory(brokenSession.id)
+    providers.setModelResolverOverride(() => ({
+      providerId: 'mock',
+      modelId: 'mock',
+      label: 'Mock',
+      model: capturing('printf unfiltered')
+    }))
+    const allow3 = bus.subscribe((event) => {
+      if (event.type === 'approval.requested') resolveApproval(event.request.id, 'once')
+    })
+    await runTurn({ sessionId: brokenSession.id, userText: 'check the repo' })
+    await runTurn({ sessionId: brokenSession.id, userText: 'and again' })
+    allow3()
+    providers.setModelResolverOverride(null)
+
+    const said = store
+      .listMessages(brokenSession.id)
+      .filter((m) => m.role === 'system')
+      .flatMap((m) => m.parts.map((p) => p.text ?? ''))
+      .join('\n')
+    check('a mode that cannot be honoured is said out loud', /rtk mode/.test(said), said.slice(0, 200))
+    check('and the turn still happens', (store.listBlocks(brokenSession.id)[0]?.output ?? '').includes('unfiltered'))
+    check(
+      'and it is said once, not at every turn',
+      !/rtk mode[\s\S]*rtk mode/.test(said)
+    )
+
+    /*
+     * rtk's exit 3 means it wants a person consulted. An allowlisted command
+     * skips the prompt in every other case, so this is the one thing a mode is
+     * allowed to do to the permission path: add a prompt, never remove one.
+     */
+    process.env.PATH = `${bin}:${realPath ?? ''}`
+    const askSessions: string[] = []
+    const asked: number[] = []
+    for (const exit of ['0', '3']) {
+      forgetRtkStatus()
+      process.env.FAKE_RTK_EXIT = exit
+      const s = store.createSession({
+        title: `rtk-exit-${exit}`,
+        cwd: process.cwd(),
+        environmentId: 'local',
+        agentId: 'build',
+        model: 'mock/mock',
+        mode: 'rtk'
+      })
+      askSessions.push(s.id)
+      history.clearHistory(s.id)
+      providers.setModelResolverOverride(() => ({
+        providerId: 'mock',
+        modelId: 'mock',
+        label: 'Mock',
+        // Allowlisted by the default config, so nothing should ask.
+        model: capturing('ls -la')
+      }))
+      let count = 0
+      const watch = bus.subscribe((event) => {
+        if (event.type !== 'approval.requested') return
+        count++
+        resolveApproval(event.request.id, 'once')
+      })
+      await runTurn({ sessionId: s.id, userText: 'list the folder' })
+      watch()
+      providers.setModelResolverOverride(null)
+      asked.push(count)
+    }
+    delete process.env.FAKE_RTK_EXIT
+    check('an allowlisted command still skips the prompt under rtk', asked[0] === 0, asked)
+    check('but rtk asking for a person is honoured', asked[1] === 1, asked)
+
+    for (const id of [rtkSession.id, plainSession.id, brokenSession.id, ...askSessions]) {
+      store.deleteSession(id)
+      history.clearHistory(id)
+    }
+    rmSync(bin, { recursive: true, force: true })
+    forgetRtkStatus()
   }
 
   // Leave no smoke sessions behind.

@@ -31,6 +31,10 @@ export function BlockCard({ block }: { block: Block; compact?: boolean }): React
   )
   const filePath = typeof block.input.path === 'string' ? block.input.path : null
   const command = typeof block.input.command === 'string' ? block.input.command : null
+  // What actually ran, when a mode changed it. rtk mode asks the model for
+  // `git status` and runs `rtk git status`, and a transcript that only shows
+  // the first is a transcript of something that did not happen.
+  const ranAs = typeof block.input.ranAs === 'string' ? block.input.ranAs : null
 
   // What the agent said it was doing reads better than the command it typed;
   // the command itself is one click away.
@@ -58,6 +62,8 @@ export function BlockCard({ block }: { block: Block; compact?: boolean }): React
           {heading}
         </span>
 
+        {ranAs ? <span className="text-ink-700 shrink-0 text-[10.5px]">rtk</span> : null}
+
         {block.status === 'running' || block.status === 'awaiting-approval' ? (
           <span className={clsx('shrink-0 text-[10.5px]', STATUS_COLOR[block.status])}>
             {STATUS_LABEL[block.status]}
@@ -80,6 +86,13 @@ export function BlockCard({ block }: { block: Block; compact?: boolean }): React
             <pre className="bg-ink-900 text-ink-200 mb-1.5 overflow-x-auto rounded-md px-2.5 py-1.5 font-mono text-[11.5px] leading-[1.55] whitespace-pre-wrap break-all">
               <span className="text-brand">$ </span>
               {command}
+              {ranAs ? (
+                <span className="text-ink-600">
+                  {'\n'}
+                  {'# ran as: '}
+                  {ranAs}
+                </span>
+              ) : null}
             </pre>
           ) : (
             <pre className="bg-ink-900 text-ink-400 mb-1.5 overflow-x-auto rounded-md px-2.5 py-1.5 font-mono text-[11px] leading-[1.55] whitespace-pre-wrap break-all">
