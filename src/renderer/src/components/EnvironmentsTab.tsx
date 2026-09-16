@@ -1,9 +1,10 @@
 import clsx from 'clsx'
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { CheckCircle2, CircleAlert, KeyRound, Plus, Plug, Save, Trash2, Wand2 } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Check, CheckCircle2, CircleAlert, Plus, Plug, Trash2, Wand2 } from 'lucide-react'
 import type { AppConfig, EnvironmentConfig } from '@shared/types'
 import { useStore } from '../state/store'
-import { Button, Label, Panel, Select } from './ui'
+import { Label, Panel, Select } from './ui'
+import { Hint, IconButton, Row, Section } from './settings-ui'
 import { parseGcloudCommand } from '@shared/gcloud'
 
 type SshAlias = { alias: string; host?: string; username?: string; port?: number; identityFile?: string }
@@ -100,21 +101,26 @@ function SecretField({
             }}
             className="border-ink-800 bg-ink-900 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 min-w-0 flex-1 rounded-md border px-2.5 py-1.5 font-mono text-[12.5px] outline-none"
           />
-          <Button size="sm" variant="primary" disabled={!draft.trim() || busy} onClick={() => void store()}>
-            Store
-          </Button>
+          <IconButton
+            title="Store in the keychain"
+            tone="accent"
+            disabled={!draft.trim() || busy}
+            onClick={() => void store()}
+          >
+            <Check className="h-4 w-4" />
+          </IconButton>
           {hint ? (
-            <Button
-              size="sm"
-              variant="danger"
+            <IconButton
+              title="Delete the stored value"
+              tone="danger"
               disabled={busy}
               onClick={async () => {
                 await window.opendesktop.secrets.remove(secretName)
                 await refreshSecrets()
               }}
             >
-              Remove
-            </Button>
+              <Trash2 className="h-4 w-4" />
+            </IconButton>
           ) : null}
         </div>
       ) : (
@@ -171,10 +177,14 @@ function WorkstationFields({
             }}
             className="border-ink-800 bg-ink-900 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 min-w-0 flex-1 resize-none rounded-md border px-2.5 py-1.5 font-mono text-[12px] outline-none"
           />
-          <Button variant="outline" disabled={!paste.trim()} onClick={applyPaste}>
-            <Wand2 className="h-3.5 w-3.5" />
-            Fill
-          </Button>
+          <IconButton
+            title="Fill the fields from this command"
+            tone="accent"
+            disabled={!paste.trim()}
+            onClick={applyPaste}
+          >
+            <Wand2 className="h-4 w-4" />
+          </IconButton>
         </div>
         {pasteStatus ? <span className="text-ink-500 text-[11px]">{pasteStatus}</span> : null}
       </div>
@@ -305,10 +315,11 @@ function EnvironmentCard({
           </span>
         ) : null}
         {env.id !== 'local' ? (
-          <Button size="sm" variant="danger" className="ml-auto" onClick={onRemove}>
-            <Trash2 className="h-3 w-3" />
-            Remove
-          </Button>
+          <span className="ml-auto">
+            <IconButton title={`Remove ${env.name || env.id}`} tone="danger" onClick={onRemove}>
+              <Trash2 className="h-4 w-4" />
+            </IconButton>
+          </span>
         ) : (
           <span className="text-ink-600 ml-auto text-[11px]">built in</span>
         )}
@@ -432,11 +443,14 @@ function EnvironmentCard({
       {isWorkstation ? <WorkstationFields env={env} onChange={onChange} /> : null}
 
       <div className="mt-2 flex items-center gap-2">
-        <Button size="sm" variant="outline" disabled={testing} onClick={() => void test()}>
-          <Plug className="h-3 w-3" />
-          {testing ? 'Testing…' : 'Test connection'}
-        </Button>
-        <span className="text-ink-600 text-[11px]">Save first — the test uses the saved config.</span>
+        <IconButton
+          title={testing ? 'Testing…' : 'Test the connection'}
+          disabled={testing}
+          onClick={() => void test()}
+        >
+          <Plug className={clsx('h-4 w-4', testing && 'animate-pulse')} />
+        </IconButton>
+        <Hint>Tests the saved configuration.</Hint>
       </div>
 
       {result ? (
@@ -466,8 +480,14 @@ export function EnvironmentsTab(): ReactNode {
   const [aliases, setAliases] = useState<SshAlias[]>([])
   const [status, setStatus] = useState<{ kind: 'ok' | 'error'; message: string } | null>(null)
   const [newId, setNewId] = useState('')
+  const [newKind, setNewKind] = useState<'ssh' | 'gcp-workstation' | 'local'>('ssh')
+
+  /** What we last wrote, so the echo from the store cannot undo live typing. */
+  const lastSaved = useRef<string | null>(null)
 
   useEffect(() => {
+    if (!config) return
+    if (lastSaved.current === JSON.stringify(config)) return
     setDraft(config)
   }, [config])
 
@@ -477,17 +497,26 @@ export function EnvironmentsTab(): ReactNode {
 
   const dirty = useMemo(() => JSON.stringify(draft) !== JSON.stringify(config), [draft, config])
 
-  if (!draft) return null
+  // Saved as you type, like the rest of settings. A connection test reads the
+  // saved config, so a host you had only half-applied used to test as broken.
+  useEffect(() => {
+    if (!draft || !dirty) return
+    const timer = setTimeout(() => {
+      const payload = JSON.stringify(draft)
+      void window.opendesktop.config
+        .save(draft)
+        .then(() => {
+          lastSaved.current = payload
+          setStatus({ kind: 'ok', message: 'Saved' })
+          setTimeout(() => setStatus(null), 1600)
+          return refreshConfig()
+        })
+        .catch((err: Error) => setStatus({ kind: 'error', message: err.message }))
+    }, 700)
+    return () => clearTimeout(timer)
+  }, [draft, dirty, refreshConfig])
 
-  const save = async (): Promise<void> => {
-    try {
-      await window.opendesktop.config.save(draft)
-      await refreshConfig()
-      setStatus({ kind: 'ok', message: 'Saved. Connections were reset and will reconnect on next use.' })
-    } catch (err) {
-      setStatus({ kind: 'error', message: (err as Error).message })
-    }
-  }
+  if (!draft) return null
 
   const add = (kind: 'ssh' | 'local' | 'gcp-workstation'): void => {
     const id = newId.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-')
@@ -514,29 +543,12 @@ export function EnvironmentsTab(): ReactNode {
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2">
-      <div className="flex items-center gap-2">
-        <span className="text-ink-500 text-[11px]">
-          The model is always called from this machine — a remote host only runs the tools.
-        </span>
-        <Button variant="primary" className="ml-auto" disabled={!dirty} onClick={() => void save()}>
-          <Save className="h-3 w-3" />
-          {dirty ? 'Save changes' : 'Saved'}
-        </Button>
-      </div>
-
-      {status ? (
-        <div
-          className={clsx(
-            'rounded-md border px-2.5 py-1.5 text-[11px]',
-            status.kind === 'ok' ? 'border-ok/40 bg-ok/10 text-ok' : 'border-bad/40 bg-bad/10 text-bad'
-          )}
-        >
-          {status.message}
-        </div>
-      ) : null}
-
-      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+    <>
+      <Section
+        title="Remote hosts"
+        description="Where the tools run. The model is always called from this machine — a remote host only runs commands and touches files."
+        action={status ? <Hint tone={status.kind === 'ok' ? 'ok' : 'bad'}>{status.message}</Hint> : null}
+      >
         {Object.values(draft.environment).map((env) => (
           <EnvironmentCard
             key={env.id}
@@ -553,38 +565,37 @@ export function EnvironmentsTab(): ReactNode {
           />
         ))}
 
-        <Panel className="flex flex-wrap items-end gap-2 px-3 py-3">
-          <label className="flex flex-col gap-1">
-            <Label>New environment id</Label>
-            <input
-              value={newId}
-              spellCheck={false}
-              placeholder="build-box"
-              onChange={(event) => setNewId(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') add('ssh')
-              }}
-              className="border-ink-800 bg-ink-900 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 w-48 rounded-md border px-2.5 py-1.5 font-mono text-[12.5px] outline-none"
-            />
-          </label>
-          <Button variant="primary" onClick={() => add('ssh')}>
-            <Plus className="h-3 w-3" />
-            Add remote host
-          </Button>
-          <Button variant="outline" onClick={() => add('gcp-workstation')}>
-            <Plus className="h-3 w-3" />
-            Add Cloud Workstation
-          </Button>
-          <Button variant="outline" onClick={() => add('local')}>
-            <Plus className="h-3 w-3" />
-            Add local folder
-          </Button>
-          <span className="text-ink-600 flex items-center gap-1 pb-1 text-[11px]">
-            <KeyRound className="h-3 w-3" />
-            Passwords and passphrases go to the keychain
-          </span>
-        </Panel>
-      </div>
-    </div>
+      </Section>
+
+      <Section
+        title="Add a host"
+        description="Passwords and passphrases go to the keychain, never to the config file."
+      >
+        <Row label="Environment id" description="Lowercase; how sessions refer to this host.">
+          <input
+            value={newId}
+            spellCheck={false}
+            placeholder="build-box"
+            onChange={(event) => setNewId(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') add(newKind)
+            }}
+            className="border-ink-800 bg-ink-850 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 w-[160px] rounded-lg border px-2.5 py-1.5 font-mono text-[12.5px] outline-none"
+          />
+          <Select
+            value={newKind}
+            onChange={(event) => setNewKind(event.target.value as typeof newKind)}
+            options={[
+              { value: 'ssh', label: 'SSH host' },
+              { value: 'gcp-workstation', label: 'Cloud Workstation' },
+              { value: 'local', label: 'Local folder' }
+            ]}
+          />
+          <IconButton title="Add host" tone="accent" onClick={() => add(newKind)}>
+            <Plus className="h-4 w-4" />
+          </IconButton>
+        </Row>
+      </Section>
+    </>
   )
 }

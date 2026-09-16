@@ -1,9 +1,10 @@
 import clsx from 'clsx'
 import { useEffect, useState, type ReactNode } from 'react'
-import { Download, FileCode2, FolderOpen, Plus, Save, Trash2 } from 'lucide-react'
+import { ChevronDown, Download, FolderOpen, Plus, Save, Trash2 } from 'lucide-react'
 import type { AgentConfig, AgentMode } from '@shared/types'
 import { useStore } from '../state/store'
-import { Button, Label, Panel, Select } from './ui'
+import { Label, Select } from './ui'
+import { Hint, IconButton, Row, Section } from './settings-ui'
 
 const TOOLS = ['bash', 'read', 'write', 'edit', 'grep', 'glob', 'list', 'fetch', 'task']
 
@@ -42,7 +43,7 @@ function AgentCard({
   }
 
   return (
-    <Panel className="px-3 py-3">
+    <div className="border-ink-800/70 border-b py-3">
       <div className="flex items-center gap-2">
         <span
           className="h-2.5 w-2.5 shrink-0 rounded-full"
@@ -56,12 +57,15 @@ function AgentCard({
         <span className="border-ink-700 text-ink-500 shrink-0 rounded-full border px-1.5 text-[10.5px]">
           {draft.mode}
         </span>
-        <Button size="sm" onClick={() => void window.opendesktop.agents.reveal(agent.id)} title="Reveal file">
-          <FolderOpen className="h-3 w-3" />
-        </Button>
-        <Button size="sm" onClick={() => setOpen(!open)}>
-          {open ? 'Close' : 'Edit'}
-        </Button>
+        <IconButton
+          title="Reveal the file"
+          onClick={() => void window.opendesktop.agents.reveal(agent.id)}
+        >
+          <FolderOpen className="h-4 w-4" />
+        </IconButton>
+        <IconButton title={open ? 'Close' : 'Edit'} onClick={() => setOpen(!open)}>
+          <ChevronDown className={clsx('h-4 w-4 transition-transform', open && 'rotate-180')} />
+        </IconButton>
       </div>
 
       {open ? (
@@ -149,26 +153,30 @@ function AgentCard({
             />
           </label>
 
-          <div className="flex items-center gap-2">
-            <Button variant="primary" disabled={!dirty || busy} onClick={() => void save()}>
-              <Save className="h-3 w-3" />
-              {dirty ? 'Save' : 'Saved'}
-            </Button>
-            <Button
-              variant="danger"
-              className="ml-auto"
+          <div className="flex items-center gap-1">
+            {dirty ? <Hint tone="warn">unsaved</Hint> : <Hint tone="ok">saved</Hint>}
+            <IconButton
+              title="Save"
+              tone="accent"
+              disabled={!dirty || busy}
+              onClick={() => void save()}
+            >
+              <Save className="h-4 w-4" />
+            </IconButton>
+            <IconButton
+              title={`Delete ${draft.name || draft.id}`}
+              tone="danger"
               onClick={async () => {
                 await window.opendesktop.agents.remove(agent.id)
                 onDeleted()
               }}
             >
-              <Trash2 className="h-3 w-3" />
-              Delete
-            </Button>
+              <Trash2 className="h-4 w-4" />
+            </IconButton>
           </div>
         </div>
       ) : null}
-    </Panel>
+    </div>
   )
 }
 
@@ -207,21 +215,18 @@ export function AgentsTab(): ReactNode {
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2">
-      <div className="flex items-center gap-2">
-        <span className="text-ink-500 font-mono text-[11.5px]">{dir}</span>
-        <span className="text-ink-600 text-[11.5px]">
-          — one markdown file per agent, frontmatter plus prompt
-        </span>
-      </div>
-
-      {status ? (
-        <div className="border-bad/40 bg-bad/10 text-bad rounded-md border px-2.5 py-1.5 text-[12px]">
-          {status}
-        </div>
-      ) : null}
-
-      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+    <>
+      <Section
+        title="Agents"
+        description={
+          <>
+            The manager hands work to these, and you can name one in a message with{' '}
+            <span className="font-mono">@</span>. One markdown file per agent in{' '}
+            <span className="font-mono">{dir}</span>.
+          </>
+        }
+        action={status ? <Hint tone="bad">{status}</Hint> : null}
+      >
         {agents.map((agent) => (
           <AgentCard
             key={agent.id}
@@ -230,56 +235,50 @@ export function AgentsTab(): ReactNode {
             onDeleted={() => void refreshConfig()}
           />
         ))}
+        <Row label="New agent" description="Lowercase id; it becomes the file name.">
+          <input
+            value={newId}
+            spellCheck={false}
+            placeholder="terraform"
+            onChange={(event) => setNewId(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') void create()
+            }}
+            className="border-ink-800 bg-ink-850 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 w-[180px] rounded-lg border px-2.5 py-1.5 font-mono text-[12.5px] outline-none"
+          />
+          <IconButton title="Create agent" tone="accent" onClick={() => void create()}>
+            <Plus className="h-4 w-4" />
+          </IconButton>
+        </Row>
+      </Section>
 
-        <Panel className="flex flex-wrap items-end gap-2 px-3 py-3">
-          <label className="flex flex-col gap-1">
-            <Label>New agent id</Label>
-            <input
-              value={newId}
-              spellCheck={false}
-              placeholder="terraform"
-              onChange={(event) => setNewId(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') void create()
-              }}
-              className="border-ink-800 bg-ink-900 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 w-48 rounded-md border px-2.5 py-1.5 font-mono text-[12.5px] outline-none"
-            />
-          </label>
-          <Button variant="primary" onClick={() => void create()}>
-            <Plus className="h-3 w-3" />
-            Create agent
-          </Button>
-        </Panel>
-
-        <Panel className="px-3 py-3">
-          <div className="mb-2 flex items-center gap-2">
-            <FileCode2 className="text-ink-500 h-3.5 w-3.5" />
-            <span className="text-ink-200 text-[13px]">Import from ~/.claude/agents</span>
-            <Button
-              size="sm"
-              variant="outline"
-              className="ml-auto"
-              disabled={picked.size === 0}
-              onClick={async () => {
-                const count = await window.opendesktop.agents.importFrom([...picked])
-                setPicked(new Set())
-                await refreshConfig()
-                setStatus(count > 0 ? null : 'Nothing was imported.')
-              }}
-            >
-              <Download className="h-3 w-3" />
-              Import {picked.size > 0 ? picked.size : ''}
-            </Button>
-          </div>
-          {importable.length === 0 ? (
-            <span className="text-ink-600 text-[11.5px]">
-              No agents found there. The format is the same, so any file you drop into either
-              directory works in both.
-            </span>
-          ) : (
-            <div className="space-y-1">
-              {importable.map((agent) => (
-                <label key={agent.id} className="flex cursor-pointer items-start gap-2">
+      <Section
+        title="Import"
+        description="From ~/.claude/agents — the format is the same, so a file dropped into either directory works in both."
+        action={
+          <IconButton
+            title={picked.size > 0 ? `Import ${picked.size}` : 'Select some to import'}
+            tone="accent"
+            disabled={picked.size === 0}
+            onClick={async () => {
+              const count = await window.opendesktop.agents.importFrom([...picked])
+              setPicked(new Set())
+              await refreshConfig()
+              setStatus(count > 0 ? null : 'Nothing was imported.')
+            }}
+          >
+            <Download className="h-4 w-4" />
+          </IconButton>
+        }
+      >
+        {importable.length === 0 ? (
+          <Row label={<Hint>No agents found there.</Hint>} />
+        ) : (
+          importable.map((agent) => (
+            <Row
+              key={agent.id}
+              label={
+                <span className="flex items-center gap-2">
                   <input
                     type="checkbox"
                     checked={picked.has(agent.id)}
@@ -289,20 +288,16 @@ export function AgentsTab(): ReactNode {
                       else next.delete(agent.id)
                       setPicked(next)
                     }}
-                    className="accent-brand mt-[3px]"
+                    className="accent-brand shrink-0"
                   />
-                  <span className="min-w-0">
-                    <span className="text-ink-200 font-mono text-[12px]">{agent.id}</span>
-                    {agent.description ? (
-                      <span className="text-ink-600 ml-2 text-[11.5px]">{agent.description}</span>
-                    ) : null}
-                  </span>
-                </label>
-              ))}
-            </div>
-          )}
-        </Panel>
-      </div>
-    </div>
+                  <span className="text-ink-200 font-mono text-[12.5px]">{agent.id}</span>
+                </span>
+              }
+              description={agent.description}
+            />
+          ))
+        )}
+      </Section>
+    </>
   )
 }

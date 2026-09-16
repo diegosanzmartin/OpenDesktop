@@ -55,17 +55,17 @@ function SettingsOverlay(): ReactNode {
 
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/50 p-8">
-      <div className="border-ink-700 bg-ink-900 flex h-full max-h-[860px] w-full max-w-[1000px] flex-col overflow-hidden rounded-xl border shadow-2xl">
-        <div className="border-ink-800 flex h-11 shrink-0 items-center border-b px-4">
-          <span className="text-ink-100 text-[13.5px] font-medium">Settings</span>
-          <button
-            type="button"
-            onClick={() => setOpen(false)}
-            className="text-ink-500 hover:bg-ink-800 hover:text-ink-100 ml-auto rounded-md p-1.5"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
+      {/* No title bar: the sidebar says where you are, so the only chrome is a
+          way out, floated over the content rather than replacing it. */}
+      <div className="border-ink-700 bg-ink-900 relative flex h-full max-h-[880px] w-full max-w-[1040px] flex-col overflow-hidden rounded-xl border shadow-2xl">
+        <button
+          type="button"
+          title="Close"
+          onClick={() => setOpen(false)}
+          className="text-ink-500 hover:bg-ink-800 hover:text-ink-100 absolute right-3 top-3 z-10 rounded-md p-1.5"
+        >
+          <X className="h-4 w-4" />
+        </button>
         <SettingsPane />
       </div>
     </div>
