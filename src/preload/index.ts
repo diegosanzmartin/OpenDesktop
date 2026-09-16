@@ -89,6 +89,13 @@ const api = {
     blocks: (id: string): Promise<Block[]> => ipcRenderer.invoke('session:blocks', id),
     running: (id: string): Promise<boolean> => ipcRenderer.invoke('session:running', id)
   },
+  shell: {
+    run: (
+      sessionId: string,
+      command: string
+    ): Promise<{ stdout: string; stderr: string; exitCode: number }> =>
+      ipcRenderer.invoke('shell:run', sessionId, command)
+  },
   boards: {
     list: (): Promise<Board[]> => ipcRenderer.invoke('board:list'),
     create: (input: { name?: string; cwd?: string; environmentId?: string }): Promise<Board> =>

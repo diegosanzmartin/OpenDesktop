@@ -1,8 +1,15 @@
 import clsx from 'clsx'
 import { useState, type ReactNode } from 'react'
-import { Check, Copy, Play, SquareTerminal } from 'lucide-react'
+import { Check, Copy, Loader2, Play, SquareTerminal, X } from 'lucide-react'
 import { highlight, isShell, type TokenKind } from '@shared/highlight'
+import { stripAnsi } from '../lib/format'
 import { useStore } from '../state/store'
+
+interface Result {
+  stdout: string
+  stderr: string
+  exitCode: number
+}
 
 const COLOUR: Record<TokenKind, string> = {
   plain: 'text-ink-200',
@@ -44,10 +51,26 @@ function Action({
  */
 export function CodeBlock({ code, lang }: { code: string; lang?: string }): ReactNode {
   const sendToTerminal = useStore((s) => s.sendToTerminal)
+  const sessionId = useStore((s) => s.activeSessionId)
   const [copied, setCopied] = useState(false)
+  const [running, setRunning] = useState(false)
+  const [result, setResult] = useState<Result | null>(null)
 
   const spans = highlight(code, lang)
   const runnable = isShell(code, lang)
+
+  const run = async (): Promise<void> => {
+    if (!sessionId || running) return
+    setRunning(true)
+    setResult(null)
+    try {
+      setResult(await window.opendesktop.shell.run(sessionId, code))
+    } catch (err) {
+      setResult({ stdout: '', stderr: (err as Error).message, exitCode: 1 })
+    } finally {
+      setRunning(false)
+    }
+  }
 
   const copy = async (): Promise<void> => {
     try {
@@ -81,8 +104,12 @@ export function CodeBlock({ code, lang }: { code: string; lang?: string }): Reac
       >
         {runnable ? (
           <>
-            <Action title="Run this in the terminal" onClick={() => sendToTerminal(code, true)}>
-              <Play className="h-3.5 w-3.5" />
+            <Action title="Run it and show the output here" onClick={() => void run()}>
+              {running ? (
+                <Loader2 className="text-info h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Play className="h-3.5 w-3.5" />
+              )}
             </Action>
             <Action
               title="Put it in the terminal without running it"
@@ -96,6 +123,63 @@ export function CodeBlock({ code, lang }: { code: string; lang?: string }): Reac
           {copied ? <Check className="text-ok h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
         </Action>
       </div>
+
+      {running || result ? <Output running={running} result={result} onClear={() => setResult(null)} /> : null}
+    </div>
+  )
+}
+
+/**
+ * What the command printed, under the command that printed it.
+ *
+ * Kept in the transcript rather than sent to the terminal pane, because the
+ * reason to run a block from here is to see whether the thing the model just
+ * told you actually holds — and that answer belongs next to the claim.
+ */
+function Output({
+  running,
+  result,
+  onClear
+}: {
+  running: boolean
+  result: Result | null
+  onClear: () => void
+}): ReactNode {
+  const text = result ? stripAnsi([result.stdout, result.stderr].filter(Boolean).join('\n')) : ''
+  const failed = (result?.exitCode ?? 0) !== 0
+
+  return (
+    <div
+      className={clsx(
+        'border-ink-800 bg-ink-900 mt-1 overflow-hidden rounded-lg border',
+        failed && 'border-bad/40'
+      )}
+    >
+      <div className="flex items-start gap-2 px-3 py-2">
+        <pre
+          className={clsx(
+            'min-w-0 flex-1 overflow-x-auto font-mono text-[12px] leading-[1.6] whitespace-pre-wrap',
+            failed ? 'text-bad' : 'text-ink-300'
+          )}
+        >
+          {running ? 'running…' : text || '(no output)'}
+        </pre>
+        {running ? null : (
+          <button
+            type="button"
+            title="Clear"
+            onClick={onClear}
+            className="text-ink-600 hover:text-ink-200 shrink-0 rounded p-0.5"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        )}
+      </div>
+      {failed ? (
+        <div className="border-ink-800 text-ink-500 border-t px-3 py-1 text-[10.5px]">
+          exited with code {result?.exitCode}
+        </div>
+      ) : null}
     </div>
   )
 }

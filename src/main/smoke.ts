@@ -40,7 +40,7 @@ import { parseGcloudCommand } from '@shared/gcloud'
 import { filterSessions, groupSessions, nestSubtasks, sortSessions, splitPinned } from '@shared/sessions'
 import { activityOf, duration, tokenRate } from '@shared/progress'
 import { approvalDetail, approvalQuestion } from '@shared/approvals'
-import { familyOf, highlight, isShell, terminalPayload } from '@shared/highlight'
+import { familyOf, highlight, isShell, looksLikePath, terminalPayload } from '@shared/highlight'
 import type { ApprovalRequest, Block, Board, Message, Session, SessionQuery } from '@shared/types'
 import {
   columnForStatus,
@@ -914,6 +914,25 @@ async function main(): Promise<void> {
       'a trailing newline does not become an extra return',
       terminalPayload('ls\n', false) === 'ls'
     )
+
+    /* which inline chips become links to a file */
+    check(
+      'a filename or a path is one',
+      looksLikePath('shuffle_text.py') &&
+        looksLikePath('src/shared/highlight.ts') &&
+        looksLikePath('/etc/hosts')
+    )
+    check(
+      'a call, a flag or a command is not',
+      !looksLikePath('random.Random(seed)') &&
+        !looksLikePath('npm install') &&
+        !looksLikePath('--seed 42') &&
+        !looksLikePath('git status')
+    )
+    check('nor is a url', !looksLikePath('https://example.com/a'))
+    check('nor a directory on its own', !looksLikePath('src/'))
+    check('nor anything with shell punctuation in it', !looksLikePath('cat a.ts | wc -l'))
+    check('nor an empty chip', !looksLikePath('   '))
   }
 
   section('approval wording')

@@ -161,3 +161,22 @@ export function terminalPayload(text: string, run: boolean): string {
   const wrapped = multiline ? `\u001b[200~${body}\u001b[201~` : body
   return run ? `${wrapped}\r` : wrapped
 }
+
+/* ---------------- is this a file? ---------------- */
+
+const FILE_EXTENSION =
+  /\.(ts|tsx|js|jsx|mjs|cjs|py|rb|go|rs|java|kt|swift|c|h|cpp|cs|php|sh|bash|zsh|sql|json|ya?ml|toml|ini|env|md|txt|csv|html|css|scss|tf|tfvars|dockerfile|lock)$/i
+
+/**
+ * Whether inline code in the prose names a file, and so should open one.
+ *
+ * Deliberately narrow. `npm install` and `random.Random(seed)` must not become
+ * links: a chip that opens nothing is worse than a chip that never offered.
+ */
+export function looksLikePath(text: string): boolean {
+  const value = text.trim()
+  if (!value || value.length > 200 || /\s/.test(value)) return false
+  if (/[()[\]{}<>|&;*?$"'`]/.test(value)) return false
+  if (FILE_EXTENSION.test(value)) return true
+  return value.includes('/') && !value.endsWith('/') && !/^https?:/i.test(value)
+}

@@ -236,6 +236,10 @@ export function MessageParts({
   const blocks = useStore((s) => s.blocks)
   const chunks = chunkParts(message.parts, blocks)
 
+  // Collected across the whole message, rendered where the first one sits.
+  const thoughts = message.parts.filter((part) => part.type === 'reasoning' && part.text?.trim())
+  const firstThought = thoughts[0]
+
   return (
     <>
       {chunks.map((chunk, index) =>
@@ -245,7 +249,12 @@ export function MessageParts({
           <div key={index} className={nested ? 'space-y-1' : 'space-y-2 py-1'}>
             {chunk.parts.map((part, partIndex) => {
               if (part.type === 'reasoning') {
-                return part.text?.trim() ? <Reasoning key={partIndex} text={part.text} /> : null
+                return part === firstThought ? (
+                  <Reasoning
+                    key={partIndex}
+                    thoughts={thoughts.map((thought) => thought.text ?? '')}
+                  />
+                ) : null
               }
               if (part.type === 'error') {
                 return (
@@ -273,8 +282,19 @@ export function MessageParts({
   )
 }
 
-export function Reasoning({ text }: { text: string }): ReactNode {
+/**
+ * Every thought in one turn, behind one line.
+ *
+ * A turn that uses three tools thinks three times, and a separate "Thought for
+ * a moment" between each step buried the work itself in labels for work that
+ * is hidden anyway. They are gathered into one entry at the point of the first
+ * one: nothing is dropped, they stay in order, and the transcript reads as what
+ * the model did rather than as a list of times it paused.
+ */
+export function Reasoning({ thoughts }: { thoughts: string[] }): ReactNode {
   const [open, setOpen] = useState(false)
+  if (thoughts.length === 0) return null
+
   return (
     <div className="my-1">
       <button
@@ -284,14 +304,22 @@ export function Reasoning({ text }: { text: string }): ReactNode {
       >
         <span className="text-ink-500 group-hover:text-ink-300 text-[13.5px] italic">
           Thought for a moment
+          {thoughts.length > 1 ? ` · ${thoughts.length} times` : ''}
         </span>
         <ChevronRight
           className={clsx('text-ink-600 h-3.5 w-3.5 transition-transform', open && 'rotate-90')}
         />
       </button>
       {open ? (
-        <div className="border-ink-800 text-ink-400 mt-1 border-l pl-3 text-[13px] leading-[1.65] whitespace-pre-wrap italic">
-          {text}
+        <div className="border-ink-800 mt-1 space-y-2 border-l pl-3">
+          {thoughts.map((thought, index) => (
+            <div
+              key={index}
+              className="text-ink-400 text-[13px] leading-[1.65] whitespace-pre-wrap italic"
+            >
+              {thought}
+            </div>
+          ))}
         </div>
       ) : null}
     </div>

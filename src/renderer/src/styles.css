@@ -107,8 +107,8 @@ textarea {
 .code-chip {
   font-family: var(--font-mono);
   font-size: 0.86em;
-  color: #e08b6d;
-  background: rgba(217, 119, 87, 0.09);
+  color: var(--color-ink-200);
+  background: rgba(255, 255, 255, 0.06);
   border-radius: 4px;
   padding: 0.1em 0.35em;
 }

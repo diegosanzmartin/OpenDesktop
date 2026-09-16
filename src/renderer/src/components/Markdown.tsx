@@ -2,6 +2,9 @@ import clsx from 'clsx'
 import { CodeBlock } from './CodeBlock'
 import { Fragment, useMemo, type ReactNode } from 'react'
 import { marked, type Token, type Tokens } from 'marked'
+import { looksLikePath } from '@shared/highlight'
+import { useStore } from '../state/store'
+import { usePreviewOpener } from './BlockCard'
 
 /**
  * Renders the assistant's markdown.
@@ -36,12 +39,18 @@ function Inline({ tokens }: { tokens: Token[] | undefined }): ReactNode {
                 <Inline tokens={(token as Tokens.Em).tokens} />
               </em>
             )
-          case 'codespan':
-            return (
+          case 'codespan': {
+            const text = (token as Tokens.Codespan).text
+            // A path in the prose is nearly always something you want to look
+            // at; the chip already says "this is a file", so make it open one.
+            return looksLikePath(text) ? (
+              <FileChip key={index} path={text} />
+            ) : (
               <code key={index} className="code-chip">
-                {(token as Tokens.Codespan).text}
+                {text}
               </code>
             )
+          }
           case 'del':
             return (
               <del key={index} className="text-ink-500">
@@ -305,5 +314,27 @@ export function Markdown({ text, streaming }: { text: string; streaming?: boolea
     <div className="prose-body">
       <Blocks tokens={tokens} caretAt={caretAt} />
     </div>
+  )
+}
+
+/* ---------------- file paths in prose ---------------- */
+
+function FileChip({ path }: { path: string }): ReactNode {
+  const session = useStore((s) => s.sessions.find((x) => x.id === s.activeSessionId))
+  const open = usePreviewOpener()
+
+  return (
+    <button
+      type="button"
+      title={`Open ${path}`}
+      onClick={() => {
+        if (!session) return
+        const full = path.startsWith('/') ? path : `${session.cwd.replace(/\/+$/, '')}/${path}`
+        void open(session.environmentId, full)
+      }}
+      className="code-chip text-ink-100 underline decoration-dotted underline-offset-2 hover:decoration-solid"
+    >
+      {path}
+    </button>
   )
 }

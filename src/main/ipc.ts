@@ -333,6 +333,30 @@ export function registerIpc(): void {
     store.updateSession(sessionId, { boardId: undefined, columnId: undefined, queuedPrompt: undefined })
   )
 
+  /**
+   * A command the user ran themselves, from a code block in the transcript.
+   *
+   * No approval: clicking the button is the approval, and no agent is involved
+   * — this is a person running a command they can read, on the session's own
+   * host and folder, which is exactly what the terminal beside it would do.
+   */
+  ipcMain.handle('shell:run', async (_e, sessionId: string, command: string) => {
+    const session = store.getSession(sessionId)
+    if (!session) return { stdout: '', stderr: 'unknown session', exitCode: 1 }
+    try {
+      const runtime = getRuntime(session.environmentId)
+      await runtime.connect()
+      const res = await runtime.exec(command, {
+        cwd: session.cwd,
+        timeoutMs: 120_000,
+        maxBytes: 200_000
+      })
+      return { stdout: res.stdout, stderr: res.stderr, exitCode: res.exitCode }
+    } catch (err) {
+      return { stdout: '', stderr: (err as Error).message, exitCode: 1 }
+    }
+  })
+
   /* ---------- attachments ---------- */
   ipcMain.handle('attachments:pick', async (_e, sessionId: string) => {
     const result = await dialog.showOpenDialog({
