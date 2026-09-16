@@ -45,6 +45,8 @@ import * as providers from './providers'
 import { getRuntime } from './runtime'
 import { browse, dirIndex, forgetDirIndex, normalizePath, searchRoot } from './browse'
 import { fuzzyFilter, fuzzyMatch, highlightRuns } from '@shared/fuzzy'
+import { describeError, isAbort, scrubSecrets } from '@shared/errors'
+import { logError, logLine, logPath } from './log'
 import type { ExecOptions, ExecResult, Runtime } from './runtime'
 import {
   BULK_READER_INSTRUCTIONS,
@@ -3821,6 +3823,190 @@ async function main(): Promise<void> {
 
     forgetDirIndex()
     rmSync(root, { recursive: true, force: true })
+  }
+
+  section('saying what actually went wrong')
+  {
+    /*
+     * The shape that started this: the AI SDK wraps whatever went wrong while
+     * reading a 200 response, and the wrapper on its own is a sentence about
+     * nothing.
+     */
+    const inner = new Error('Empty response body')
+    const wrapper = Object.assign(new Error('Failed to process successful response'), {
+      cause: inner,
+      statusCode: 200,
+      url: 'https://api.helmcode.com/v1/chat/completions'
+    })
+    const described = describeError(wrapper)
+    check('the wrapper is still named', described.includes('Failed to process successful response'))
+    check('and so is the cause underneath it', described.includes('Empty response body'), described)
+    check('with the status code', described.includes('HTTP 200'))
+    check('and where it was talking to', described.includes('api.helmcode.com/v1/chat/completions'))
+
+    const deep = new Error('one')
+    ;(deep as { cause?: unknown }).cause = Object.assign(new Error('two'), {
+      cause: new Error('three')
+    })
+    check('a chain is followed all the way down', describeError(deep) === 'one ← two ← three', describeError(deep))
+
+    const looping = new Error('round')
+    ;(looping as { cause?: unknown }).cause = looping
+    check('and a loop does not hang it', describeError(looping) === 'round')
+
+    const repeated = Object.assign(new Error('same'), { cause: new Error('same') })
+    check('a cause repeating its parent is not said twice', describeError(repeated) === 'same')
+
+    const withBody = Object.assign(new Error('bad request'), {
+      statusCode: 400,
+      responseBody: '{"error":{"message":"model not enabled for this key"}}'
+    })
+    check(
+      "the provider's own words come through",
+      describeError(withBody).includes('model not enabled for this key'),
+      describeError(withBody)
+    )
+
+    // A key must not travel from a provider's error body into a window.
+    const leaky = Object.assign(new Error('unauthorized'), {
+      statusCode: 401,
+      responseBody: '{"request":{"headers":{"authorization":"Bearer sk-abcd1234efgh5678"}}}'
+    })
+    const safe = describeError(leaky)
+    check('nothing shaped like a key survives', !safe.includes('sk-abcd1234efgh5678'), safe)
+    check('but it still says what happened', safe.includes('HTTP 401'))
+    check(
+      'a key on its own is redacted too',
+      !scrubSecrets('token is sk-livekey1234567890').includes('livekey1234567890')
+    )
+    check(
+      'and a query string is never quoted back',
+      !describeError(Object.assign(new Error('x'), { url: 'https://h/v1/c?api_key=sk-secret' })).includes(
+        'sk-secret'
+      )
+    )
+
+    const long = Object.assign(new Error('x'.repeat(2000)), {})
+    check('the description stays readable', describeError(long).length <= 701, describeError(long).length)
+    check('a plain string is an error too', describeError('just a string') === 'just a string')
+    check('and so is nothing at all', describeError(undefined) === 'unknown error')
+
+    check('an aborted call is not a failure', isAbort(new Error('The operation was aborted'), false))
+    check('nor is one the user stopped', isAbort(new Error('anything'), true))
+    check('but a real failure is', !isAbort(wrapper, false))
+  }
+
+  section('writing failures down')
+  {
+    const before = existsSync(logPath()) ? readFileSync(logPath(), 'utf8') : ''
+    const described = logError(
+      'turn abc',
+      Object.assign(new Error('Failed to process successful response'), {
+        cause: new Error('Empty response body'),
+        statusCode: 200
+      })
+    )
+    const after = readFileSync(logPath(), 'utf8')
+    check('the log grows', after.length > before.length)
+    check('what it wrote is what the caller shows', after.includes(described), described)
+    check('the cause is in the file', after.includes('Empty response body'))
+    check('and it says which turn', after.includes('turn abc'))
+    check('with a timestamp and a level', /^\d{4}-\d\d-\d\dT[\d:.]+Z error /m.test(after))
+
+    logLine('info', 'a key must not reach the file: sk-abcdef123456789')
+    check(
+      'a secret never reaches the file either',
+      !readFileSync(logPath(), 'utf8').includes('abcdef123456789')
+    )
+  }
+
+  section('a turn that breaks halfway')
+  {
+    /*
+     * Their failure, reproduced: a step completes and reports its usage, the
+     * next one throws the wrapper with the real reason underneath. What went
+     * wrong has to reach the transcript, and the tokens already spent have to
+     * reach the session — 180,000 of them went unrecorded because a failed
+     * turn credited nothing.
+     */
+    const broken = store.createSession({
+      title: 'broke',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: 'build',
+      model: 'mock/mock'
+    })
+    history.clearHistory(broken.id)
+
+    let step = 0
+    providers.setModelResolverOverride(() => ({
+      providerId: 'mock',
+      modelId: 'mock',
+      label: 'Mock',
+      model: new MockLanguageModelV4({
+        doStream: async () => {
+          step++
+          if (step > 1) {
+            throw Object.assign(new Error('Failed to process successful response'), {
+              cause: new Error('Empty response body'),
+              statusCode: 200,
+              url: 'https://api.helmcode.com/v1/chat/completions'
+            })
+          }
+          const input = JSON.stringify({ command: 'printf hi', description: 'say hi' })
+          return {
+            stream: new ReadableStream({
+              start(controller) {
+                controller.enqueue({ type: 'stream-start', warnings: [] })
+                controller.enqueue({ type: 'response-metadata', id: 'e1', modelId: 'mock' })
+                controller.enqueue({ type: 'tool-input-start', id: 'x1', toolName: 'bash' })
+                controller.enqueue({ type: 'tool-input-delta', id: 'x1', delta: input })
+                controller.enqueue({ type: 'tool-input-end', id: 'x1' })
+                controller.enqueue({ type: 'tool-call', toolCallId: 'x1', toolName: 'bash', input })
+                controller.enqueue(finish('tool-calls', 12_000, 40))
+                controller.close()
+              }
+            })
+          }
+        }
+      }) as unknown as LanguageModel
+    }))
+    const toasts: string[] = []
+    const watch = bus.subscribe((event) => {
+      if (event.type === 'approval.requested') resolveApproval(event.request.id, 'once')
+      if (event.type === 'toast') toasts.push(event.message)
+    })
+    await runTurn({ sessionId: broken.id, userText: 'do something' })
+    watch()
+    providers.setModelResolverOverride(null)
+
+    const errors = store
+      .listMessages(broken.id)
+      .flatMap((message) => message.parts)
+      .filter((part) => part.type === 'error')
+      .map((part) => part.text ?? '')
+    check('the failure reaches the transcript', errors.length > 0, errors)
+    check(
+      'and it is the cause, not just the wrapper',
+      errors.some((text) => text.includes('Empty response body')),
+      errors
+    )
+    check(
+      'the toast says the same thing the transcript does',
+      toasts.some((text) => text.includes('Empty response body')),
+      toasts
+    )
+    check('the session is left in error, not running', store.getSession(broken.id)?.status === 'error')
+
+    const spent = store.getSession(broken.id)?.usage
+    check(
+      'and what it spent before breaking is still charged',
+      (spent?.input ?? 0) === 12_000 && (spent?.output ?? 0) === 40,
+      spent
+    )
+
+    store.deleteSession(broken.id)
+    history.clearHistory(broken.id)
   }
 
   // Leave no smoke sessions behind.

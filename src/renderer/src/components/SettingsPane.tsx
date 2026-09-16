@@ -148,6 +148,34 @@ function ConfigEditor(): ReactNode {
   )
 }
 
+/**
+ * Where the failures are written down.
+ *
+ * Here rather than anywhere cleverer because this is the page about what this
+ * installation keeps on disk, and because the first thing anyone wants after
+ * something breaks is the file that says what broke.
+ */
+function LogFile(): ReactNode {
+  const [path, setPath] = useState('')
+  useEffect(() => {
+    void window.opendesktop.host.logPath().then((value) => setPath(value ?? ''))
+  }, [])
+
+  return (
+    <Section
+      title="Log"
+      description="Failures, with the whole cause chain, and what a turn had spent when it broke. Appended to, rotated once at 2MB, and never containing anything shaped like a key."
+      action={
+        <IconButton title="Reveal in Finder" onClick={() => void window.opendesktop.host.revealLog()}>
+          <FolderOpen className="h-4 w-4" />
+        </IconButton>
+      }
+    >
+      <Row label={<span className="font-mono text-[12px]">{path}</span>} />
+    </Section>
+  )
+}
+
 export function SettingsPane(): ReactNode {
   const [page, setPage] = useState<Page>('providers')
   const [search, setSearch] = useState('')
@@ -206,7 +234,12 @@ export function SettingsPane(): ReactNode {
 
       <div className="min-h-0 flex-1 overflow-y-auto px-8 py-6">
         <div className="mx-auto max-w-[760px]">
-          {page === 'config' ? <ConfigEditor /> : null}
+          {page === 'config' ? (
+            <>
+              <ConfigEditor />
+              <LogFile />
+            </>
+          ) : null}
           {page === 'agents' ? <AgentsTab /> : null}
           {page === 'skills' ? <SkillsTab /> : null}
           {page === 'environments' ? <EnvironmentsTab /> : null}

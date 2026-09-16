@@ -250,6 +250,8 @@ const api = {
   },
   host: {
     pickFolder: (): Promise<string | null> => ipcRenderer.invoke('host:pickFolder'),
+    logPath: (): Promise<string> => ipcRenderer.invoke('host:logPath'),
+    revealLog: (): Promise<void> => ipcRenderer.invoke('host:revealLog'),
     openExternal: (url: string): Promise<void> => ipcRenderer.invoke('host:openExternal', url),
     openPath: (path: string): Promise<string> => ipcRenderer.invoke('host:openPath', path)
   },

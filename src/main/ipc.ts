@@ -16,6 +16,7 @@ import { getRuntime, resetRuntimes, testEnvironment } from './runtime'
 import { cachedRtkStatus, forgetRtkStatus, rtkStatus } from './rtk'
 import { browse, dirIndex, forgetDirIndex, searchRoot } from './browse'
 import { meterSnapshot, resetMeter } from './meter'
+import { logPath } from './log'
 import { listSshAliases } from './runtime/ssh'
 import * as store from './store'
 import * as history from './history'
@@ -577,6 +578,8 @@ export function registerIpc(): void {
     })
     return result.canceled ? null : result.filePaths[0]
   })
+  ipcMain.handle('host:logPath', () => logPath())
+  ipcMain.handle('host:revealLog', () => shell.showItemInFolder(logPath()))
   ipcMain.handle('host:openExternal', (_e, url: string) => shell.openExternal(url))
   ipcMain.handle('host:openPath', (_e, path: string) => shell.openPath(path))
   ipcMain.handle('host:resolvedConfigCheck', () => {

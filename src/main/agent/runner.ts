@@ -18,6 +18,7 @@ import { savingsOf, type Savings } from '@shared/savings'
 import { pickModel } from '@shared/routing'
 import { mentionToken, mentionedAgents } from '@shared/mentions'
 import { costOf } from '@shared/cost'
+import { isAbort } from '@shared/errors'
 import { budgetFor } from '@shared/context'
 import { effectivePermissions, resolvedConfig } from '../config'
 import { bus } from '../bus'
@@ -27,6 +28,7 @@ import { getRuntime } from '../runtime'
 import { rtkStatus } from '../rtk'
 import { workerIsTheSameModel } from '../shunt'
 import { record as meterRecord, spentLookup } from '../meter'
+import { logError, logLine } from '../log'
 import * as store from '../store'
 import * as history from '../history'
 import { createTools, type ToolContext } from './tools'
@@ -535,6 +537,15 @@ export async function runTurn(input: TurnInput): Promise<string> {
   })
 
   let finalText = ''
+  /*
+   * Outside the try, because a turn that fails has still spent everything it
+   * spent up to the point it failed. Two agents died mid-turn having used
+   * 180,000 input tokens between them, and the session recorded zero.
+   */
+  let usedInput = 0
+  let usedOutput = 0
+  /** Set when the provider failed mid-stream, which is not the same as a throw. */
+  let streamFailure: string | null = null
 
   try {
     const runtime = getRuntime(session.environmentId)
@@ -634,10 +645,12 @@ export async function runTurn(input: TurnInput): Promise<string> {
         : {}),
       abortSignal: controller.signal,
       onError: ({ error }) => {
-        store.pushPart(session.id, assistant.id, {
-          type: 'error',
-          text: (error as Error)?.message ?? String(error)
-        })
+        // streamText does not reject for a provider failure mid-stream: it
+        // reports it here and ends the stream. Without remembering it, the
+        // turn looked successful — an idle session, a red line in the
+        // transcript nobody was told about, and no toast.
+        streamFailure = logError(`stream ${session.id}`, error)
+        store.pushPart(session.id, assistant.id, { type: 'error', text: streamFailure })
       }
     })
 
@@ -647,8 +660,6 @@ export async function runTurn(input: TurnInput): Promise<string> {
     // count while the turn is still going rather than an estimate from
     // characters. Input is summed across steps because every step resends the
     // conversation, which is what the turn actually costs.
-    let usedInput = 0
-    let usedOutput = 0
     // The last step's input is the size of the assembled prefix. The sum across
     // steps is what the turn cost; it is not how full the window is.
     let lastStepInput = 0
@@ -695,10 +706,8 @@ export async function runTurn(input: TurnInput): Promise<string> {
           reasoningPartIndex = -1
           break
         case 'error': {
-          store.pushPart(session.id, assistant.id, {
-            type: 'error',
-            text: (part.error as Error)?.message ?? String(part.error)
-          })
+          streamFailure = logError(`stream ${session.id}`, part.error)
+          store.pushPart(session.id, assistant.id, { type: 'error', text: streamFailure })
           break
         }
         default:
@@ -711,8 +720,14 @@ export async function runTurn(input: TurnInput): Promise<string> {
     await tighten(config, session.id, agent.model ?? session.model, lastStepInput)
 
     const usage = await result.totalUsage
-    const inputTokens = usage.inputTokens ?? 0
-    const outputTokens = usage.outputTokens ?? 0
+    /*
+     * The per-step counts win when they are larger. A turn that broke halfway
+     * reports a total of zero even though ten thousand tokens went out the
+     * door, and a turn that is recorded as free is the one somebody is trying
+     * to account for.
+     */
+    const inputTokens = Math.max(usage.inputTokens ?? 0, usedInput)
+    const outputTokens = Math.max(usage.outputTokens ?? 0, usedOutput)
     // Worked out now and kept on the message: a price edited next week must not
     // change what this turn is recorded as having cost.
     const turnCost = costOf(config, modelRef, { input: inputTokens, output: outputTokens })
@@ -735,22 +750,53 @@ export async function runTurn(input: TurnInput): Promise<string> {
     // rather than a copy, but this does not depend on that.
     const before = ended?.usage ?? session.usage
     store.updateSession(session.id, {
-      status: ended?.status === 'blocked' ? 'blocked' : 'idle',
+      status:
+        ended?.status === 'blocked' ? 'blocked' : streamFailure !== null ? 'error' : 'idle',
       usage: {
         input: before.input + inputTokens,
         output: before.output + outputTokens,
         cost: before.cost + (turnCost ?? 0)
       }
     })
+    /*
+     * Told, not left to be noticed. A provider that fails mid-stream used to
+     * end the turn quietly: the session went idle, the answer simply stopped,
+     * and the only trace was a line in the transcript that scrolls away.
+     */
+    if (streamFailure !== null) {
+      logLine('warn', `turn ${session.id} ended on a stream failure after ${inputTokens} in / ${outputTokens} out`)
+      bus.emit({ type: 'toast', level: 'error', message: streamFailure })
+    }
   } catch (err) {
-    const message = (err as Error).message ?? String(err)
-    const aborted = controller.signal.aborted || /abort/i.test(message)
-    store.pushPart(session.id, assistant.id, {
-      type: 'error',
-      text: aborted ? 'Stopped by the user.' : message
-    })
+    const aborted = isAbort(err, controller.signal.aborted)
+    // The whole chain, not the outermost wrapper: "Failed to process
+    // successful response" is a sentence about nothing on its own.
+    const message = aborted ? 'Stopped by the user.' : logError(`turn ${session.id}`, err)
+    store.pushPart(session.id, assistant.id, { type: 'error', text: message })
     store.updateMessage(session.id, assistant.id, { completedAt: Date.now() })
     store.setSessionStatus(session.id, aborted ? 'idle' : 'error')
+
+    // Charged for what it used before it broke. The tokens were spent whether
+    // or not an answer came back, and a turn that fails is exactly when
+    // somebody is trying to work out what it cost.
+    if (usedInput > 0 || usedOutput > 0) {
+      const spentCost = costOf(config, agent.model ?? session.model, {
+        input: usedInput,
+        output: usedOutput
+      })
+      store.creditUsage(session.id, {
+        input: usedInput,
+        output: usedOutput,
+        cost: spentCost ?? 0
+      })
+      meterRecord(agent.model ?? session.model, { input: usedInput, output: usedOutput })
+      logLine(
+        'warn',
+        `turn ${session.id} failed after ${usedInput} in / ${usedOutput} out on ${
+          agent.model ?? session.model
+        }`
+      )
+    }
     if (!aborted) bus.emit({ type: 'toast', level: 'error', message })
   } finally {
     controllers.delete(session.id)
