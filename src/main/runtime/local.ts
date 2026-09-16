@@ -113,6 +113,15 @@ export class LocalRuntime implements Runtime {
     }
   }
 
+  async stat(path: string): Promise<{ size: number; modifiedAt: number } | null> {
+    try {
+      const s = await stat(path)
+      return { size: s.size, modifiedAt: s.mtimeMs }
+    } catch {
+      return null
+    }
+  }
+
   async list(path: string): Promise<FileEntry[]> {
     const entries = await readdir(path, { withFileTypes: true })
     const out: FileEntry[] = []

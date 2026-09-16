@@ -28,6 +28,8 @@ export interface Runtime {
   exists(path: string): Promise<boolean>
   isDirectory(path: string): Promise<boolean>
   list(path: string): Promise<FileEntry[]>
+  /** Size and mtime of one file, or null when it is not there. */
+  stat(path: string): Promise<{ size: number; modifiedAt: number } | null>
   homeDir(): Promise<string>
   resolve(cwd: string, path: string): string
   dispose(): Promise<void>

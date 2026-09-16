@@ -333,6 +333,16 @@ export class SshRuntime implements Runtime {
     return res.stdout.trim() === 'yes'
   }
 
+  async stat(path: string): Promise<{ size: number; modifiedAt: number } | null> {
+    const sftp = await this.sftp()
+    return new Promise((resolveStat) => {
+      sftp.stat(path, (err, attrs) => {
+        if (err || !attrs) return resolveStat(null)
+        resolveStat({ size: attrs.size, modifiedAt: attrs.mtime * 1000 })
+      })
+    })
+  }
+
   async list(path: string): Promise<FileEntry[]> {
     const sftp = await this.sftp()
     return new Promise((resolveList, rejectList) => {

@@ -1,4 +1,5 @@
 import { createServer, type Server } from 'node:http'
+import { marked } from 'marked'
 import { randomBytes } from 'node:crypto'
 import { posix } from 'node:path'
 import mime from 'mime'
@@ -48,12 +49,53 @@ const PAGE_STYLE = `
   .empty { padding:24px 16px; color:#6b6862 }
 `
 
+/**
+ * A markdown document, rendered.
+ *
+ * Shown as source it is a wall of pipes and hashes — which is the one thing a
+ * report asked for in markdown should not be. The same lexer the transcript
+ * uses turns it into a page; the HTML it produces is the model's own text, so
+ * it is sanitised the only way that is actually safe here: tags are escaped
+ * before the lexer ever sees them, so nothing it emits can be markup the
+ * document invented.
+ */
+function markdownPage(path: string, body: string): string {
+  const html = marked.parse(escapeHtml(body), { async: false, gfm: true, breaks: false })
+  return `<!doctype html><meta charset="utf-8"><title>${escapeHtml(path)}</title>
+<style>${PAGE_STYLE}${PROSE_STYLE}</style>
+<header>${escapeHtml(path)}</header>
+<article>${html}</article>`
+}
+
 function sourcePage(path: string, body: string): string {
   return `<!doctype html><meta charset="utf-8"><title>${escapeHtml(path)}</title>
 <style>${PAGE_STYLE}</style>
 <header>${escapeHtml(path)}</header>
 ${body.trim() ? `<pre>${escapeHtml(body)}</pre>` : '<div class="empty">(empty file)</div>'}`
 }
+
+const PROSE_STYLE = `
+  article { max-width:78ch; margin:0 auto; padding:22px 20px 60px;
+            font:14px/1.7 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            color:#cfccc6 }
+  article h1 { font-size:24px; margin:1.2em 0 .5em; color:#ecebe8 }
+  article h2 { font-size:19px; margin:1.4em 0 .4em; color:#ecebe8 }
+  article h3 { font-size:16px; margin:1.3em 0 .3em; color:#ecebe8 }
+  article p, article li { margin:.5em 0 }
+  article code { font-family:var(--mono, ui-monospace, Menlo, monospace); font-size:.88em;
+                 background:rgba(255,255,255,.06); border-radius:4px; padding:.1em .35em }
+  article pre { background:#131211; border:1px solid #262523; border-radius:8px;
+                padding:12px 14px; overflow:auto; margin:.8em 0 }
+  article pre code { background:none; padding:0 }
+  article table { border-collapse:collapse; margin:.9em 0; font-size:13px; display:block;
+                  overflow-x:auto }
+  article th, article td { border:1px solid #2f2d2b; padding:6px 10px; text-align:left }
+  article th { background:#1f1e1d; color:#ecebe8 }
+  article blockquote { margin:.8em 0; padding:.1em 0 .1em 14px; border-left:2px solid #3d3a37;
+                       color:#8d8a84 }
+  article a { color:#d97757 }
+  article hr { border:none; border-top:1px solid #2f2d2b; margin:1.6em 0 }
+`
 
 function binaryPage(path: string, size: number): string {
   return `<!doctype html><meta charset="utf-8"><title>${escapeHtml(path)}</title>
@@ -131,6 +173,9 @@ export function startPreviewServer(): Promise<number> {
           return res.end(binaryPage(target, buffer.length))
         }
         res.setHeader('content-type', 'text/html; charset=utf-8')
+        if (/\.(md|markdown)$/i.test(target)) {
+          return res.end(markdownPage(target, buffer.toString('utf8')))
+        }
         return res.end(sourcePage(target, buffer.toString('utf8')))
       } catch (err) {
         res.statusCode = 500

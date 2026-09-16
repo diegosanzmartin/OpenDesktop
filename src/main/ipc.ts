@@ -460,6 +460,39 @@ export function registerIpc(): void {
     await runtime.connect()
     return runtime.readFile(path)
   })
+  ipcMain.handle('fs:stat', async (_e, environmentId: string, path: string) => {
+    try {
+      const runtime = getRuntime(environmentId)
+      await runtime.connect()
+      return await runtime.stat(path)
+    } catch {
+      return null
+    }
+  })
+
+  /**
+   * Saves a file the agent produced to wherever the user wants it.
+   *
+   * Goes through the runtime, so a document written on a remote host is
+   * fetched over the same connection that made it rather than needing the user
+   * to go and find it there.
+   */
+  ipcMain.handle('fs:download', async (_e, environmentId: string, path: string) => {
+    const name = path.split('/').filter(Boolean).pop() ?? 'download'
+    const result = await dialog.showSaveDialog({ defaultPath: name, title: `Save ${name}` })
+    if (result.canceled || !result.filePath) return { saved: false as const }
+    try {
+      const runtime = getRuntime(environmentId)
+      await runtime.connect()
+      const bytes = await runtime.readFileBuffer(path)
+      const { writeFile } = await import('node:fs/promises')
+      await writeFile(result.filePath, bytes)
+      return { saved: true as const, path: result.filePath }
+    } catch (err) {
+      return { saved: false as const, error: (err as Error).message }
+    }
+  })
+
   ipcMain.handle('preview:url', (_e, environmentId: string, path: string) =>
     previewUrl(environmentId, path)
   )

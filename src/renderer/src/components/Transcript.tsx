@@ -6,6 +6,8 @@ import { useStore } from '../state/store'
 import { mentionToken } from '@shared/mentions'
 import { duration } from '../lib/format'
 import { BlockCard } from './BlockCard'
+import { DocumentCard } from './DocumentCard'
+import { isDocument } from '@shared/documents'
 import { Markdown } from './Markdown'
 
 function basename(path: string): string {
@@ -340,17 +342,15 @@ export function Reasoning({ thoughts }: { thoughts: string[] }): ReactNode {
 /* ---------------- end-of-turn file summary ---------------- */
 
 export function EditedFiles({ blocks }: { blocks: Block[] }): ReactNode {
-  const openDock = useStore((s) => s.openDock)
-  const refreshChanges = useStore((s) => s.refreshChanges)
-
-  const files = useMemo(() => {
-    const map = new Map<string, { path: string; added: number; removed: number }>()
+  const written = useMemo(() => {
+    const map = new Map<string, { path: string; environmentId: string; added: number; removed: number }>()
     for (const block of blocks) {
       if (block.tool !== 'write' && block.tool !== 'edit') continue
       if (block.status !== 'success') continue
       const path = filePath(block)
       if (!path) continue
-      const entry = map.get(path) ?? { path, added: 0, removed: 0 }
+      const entry =
+        map.get(path) ?? { path, environmentId: block.environmentId, added: 0, removed: 0 }
       entry.added += block.added ?? 0
       entry.removed += block.removed ?? 0
       map.set(path, entry)
@@ -358,7 +358,33 @@ export function EditedFiles({ blocks }: { blocks: Block[] }): ReactNode {
     return [...map.values()]
   }, [blocks])
 
-  if (files.length === 0) return null
+  // A document is something to open; a source file is something to diff.
+  const documents = written.filter((file) => isDocument(file.path))
+  const files = written.filter((file) => !isDocument(file.path))
+
+  if (written.length === 0) return null
+
+  return (
+    <>
+      {documents.length > 0 ? (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {documents.map((file) => (
+            <DocumentCard key={file.path} path={file.path} environmentId={file.environmentId} />
+          ))}
+        </div>
+      ) : null}
+      {files.length > 0 ? <CodeFiles files={files} /> : null}
+    </>
+  )
+}
+
+function CodeFiles({
+  files
+}: {
+  files: { path: string; added: number; removed: number }[]
+}): ReactNode {
+  const openDock = useStore((s) => s.openDock)
+  const refreshChanges = useStore((s) => s.refreshChanges)
 
   return (
     <div className="border-ink-800 mt-3 overflow-hidden rounded-lg border">

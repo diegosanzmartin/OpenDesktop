@@ -41,6 +41,7 @@ import { filterSessions, groupSessions, nestSubtasks, sortSessions, splitPinned 
 import { activityOf, duration, tokenRate } from '@shared/progress'
 import { approvalDetail, approvalQuestion } from '@shared/approvals'
 import { mentionToken, mentionedAgents, splitMentions } from '@shared/mentions'
+import { extensionOf, fileSize, isDocument } from '@shared/documents'
 import { MANAGER_AGENT, isManager } from '@shared/types'
 import { familyOf, highlight, isShell, looksLikePath, terminalPayload } from '@shared/highlight'
 import type { ApprovalRequest, Block, Board, Message, Session, SessionQuery } from '@shared/types'
@@ -844,6 +845,32 @@ async function main(): Promise<void> {
       'every session lands in exactly one group',
       byFolder.reduce((sum, g) => sum + g.items.length, 0) === 5
     )
+  }
+
+  section('documents the agent produced')
+  {
+    check(
+      'a report, a sheet or a picture is a document',
+      ['report.md', 'notes.MARKDOWN', 'data.csv', 'deck.pptx', 'evidence.pdf', 'chart.png'].every(
+        isDocument
+      )
+    )
+    check(
+      'source code is not — it belongs in the diff',
+      !['runner.ts', 'main.tsx', 'app.py', 'style.css', 'index.html', 'Dockerfile'].some(isDocument)
+    )
+    check('nor is a file with no extension', !isDocument('LICENSE'))
+    check('nor a dotfile that only looks like one', !isDocument('.gitignore'))
+    check(
+      'the extension is read from the name, not the path',
+      extensionOf('/a.md/b/report.csv') === 'csv',
+      extensionOf('/a.md/b/report.csv')
+    )
+
+    check('bytes read as bytes', fileSize(512) === '512 B')
+    check('kilobytes keep one decimal while small', fileSize(9912) === '9.7 KB')
+    check('and lose it once they do not need it', fileSize(99123) === '97 KB')
+    check('megabytes the same way', fileSize(3_500_000) === '3.3 MB')
   }
 
   section('naming an agent with @')

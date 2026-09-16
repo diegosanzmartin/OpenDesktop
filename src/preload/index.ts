@@ -167,7 +167,17 @@ const api = {
     read: (environmentId: string, path: string): Promise<string> =>
       ipcRenderer.invoke('fs:read', environmentId, path),
     previewUrl: (environmentId: string, path: string): Promise<string> =>
-      ipcRenderer.invoke('preview:url', environmentId, path)
+      ipcRenderer.invoke('preview:url', environmentId, path),
+    stat: (
+      environmentId: string,
+      path: string
+    ): Promise<{ size: number; modifiedAt: number } | null> =>
+      ipcRenderer.invoke('fs:stat', environmentId, path),
+    download: (
+      environmentId: string,
+      path: string
+    ): Promise<{ saved: boolean; path?: string; error?: string }> =>
+      ipcRenderer.invoke('fs:download', environmentId, path)
   },
   terminal: {
     create: (input: {
