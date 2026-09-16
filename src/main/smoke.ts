@@ -75,8 +75,11 @@ import { queuedTasks, tick } from './scheduler'
 import {
   clearClaims,
   coordinationNote,
+  forgetJudgements,
+  judgementCount,
   keywords,
   recordWrite,
+  resetJudgementCount,
   setRelatednessJudge,
   shareSurface,
   writeWarning
@@ -860,6 +863,80 @@ async function main(): Promise<void> {
       'every session lands in exactly one group',
       byFolder.reduce((sum, g) => sum + g.items.length, 0) === 5
     )
+  }
+
+  section('compacting a long session')
+  {
+    const long = store.createSession({
+      title: 'long',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: 'auto',
+      model: 'test/mock'
+    })
+    history.clearHistory(long.id)
+
+    const filler = 'x'.repeat(2000)
+    for (let i = 0; i < 40; i++) {
+      history.appendHistory(long.id, [
+        { role: 'user', content: `question ${i} ${filler}` },
+        { role: 'assistant', content: `answer ${i} ${filler}` }
+      ])
+    }
+    const before = history.getHistory(long.id).length
+    check('a long transcript is built', before === 80, before)
+
+    const untouched = await history.compactHistory(long.id, async () => 'never called', {
+      maxChars: 10_000_000
+    })
+    check('nothing happens while it fits', untouched === null)
+    check('and the transcript is not touched', history.getHistory(long.id).length === before)
+
+    /* A failed summary must not take the conversation with it. */
+    const failed = await history.compactHistory(
+      long.id,
+      async () => {
+        throw new Error('model unreachable')
+      },
+      { maxChars: 1000 }
+    )
+    check('a failed summary changes nothing', failed === null)
+    check(
+      'and every message is still there',
+      history.getHistory(long.id).length === before,
+      history.getHistory(long.id).length
+    )
+
+    const empty = await history.compactHistory(long.id, async () => '   ', { maxChars: 1000 })
+    check('nor does an empty summary', empty === null && history.getHistory(long.id).length === before)
+
+    const done = await history.compactHistory(
+      long.id,
+      async (older) => `Summary of ${older.length} messages: decided to keep going.`,
+      { maxChars: 1000, keepRecent: 6 }
+    )
+    check('a summary replaces the older messages', done?.summarised === 74, done?.summarised)
+    check(
+      'leaving the summary plus what was kept',
+      history.getHistory(long.id).length === 7,
+      history.getHistory(long.id).length
+    )
+    check(
+      'the summary is handed to the model as established fact',
+      String(history.getHistory(long.id)[0]?.content).includes('Summary of 74 messages')
+    )
+    check(
+      'and the most recent exchanges survive verbatim',
+      String(history.getHistory(long.id).at(-1)?.content).includes('answer 39')
+    )
+    check(
+      'the transcript is meaningfully smaller',
+      history.historySize(long.id) < 20_000,
+      history.historySize(long.id)
+    )
+
+    store.deleteSession(long.id)
+    history.clearHistory(long.id)
   }
 
   section('what placeholders reach')
@@ -1866,6 +1943,31 @@ async function main(): Promise<void> {
       held.status
     )
     check('and the card says who it is waiting on', (held.relatedSessionIds ?? []).includes(a.id))
+
+    /*
+     * The same question is not asked twice. Cleared first, because the tick
+     * above already cached this pair — comparing two cached ticks would have
+     * compared nothing to nothing.
+     */
+    forgetJudgements(a.id)
+    forgetJudgements(b.id)
+    resetJudgementCount()
+    await tick()
+    const afterFirst = judgementCount()
+    check('a fresh pair is put to the model', afterFirst > 0, afterFirst)
+
+    await tick()
+    await tick()
+    check(
+      'and then not again, however many times the scheduler runs',
+      judgementCount() === afterFirst,
+      { afterFirst, now: judgementCount() }
+    )
+
+    forgetJudgements(a.id)
+    resetJudgementCount()
+    await tick()
+    check('until the task it was about is forgotten', judgementCount() > 0, judgementCount())
 
     setRelatednessJudge(null)
     store.updateSession(a.id, { status: 'idle' })

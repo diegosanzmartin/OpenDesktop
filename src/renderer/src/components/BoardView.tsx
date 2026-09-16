@@ -44,7 +44,7 @@ function StatusBadge({ session }: { session: Session }): ReactNode {
       return (
         <span className="text-ink-500 flex items-center gap-1 text-[10px]">
           <Clock className="h-2.5 w-2.5" />
-          Queued
+          {(session.heldBy ?? []).length > 0 ? 'Waiting its turn' : 'Queued'}
         </span>
       )
     case 'awaiting-approval':
@@ -99,9 +99,12 @@ function Card({ session, onDragStart }: { session: Session; onDragStart: () => v
   const sessions = useStore((s) => s.sessions)
   const openId = useStore((s) => s.boardTaskId)
   const agent = config?.agent[session.agentId]
-  const related = (session.relatedSessionIds ?? [])
-    .map((id) => sessions.find((other) => other.id === id))
-    .filter((other): other is Session => Boolean(other))
+  const byId = (ids: string[]): Session[] =>
+    ids
+      .map((id) => sessions.find((other) => other.id === id))
+      .filter((other): other is Session => Boolean(other))
+  const related = byId(session.relatedSessionIds ?? [])
+  const held = byId(session.heldBy ?? [])
 
   return (
     <div
@@ -131,7 +134,19 @@ function Card({ session, onDragStart }: { session: Session; onDragStart: () => v
           </div>
         ) : null}
 
-        {related.length > 0 ? (
+        {held.length > 0 ? (
+          // Why a card sits in To do while a slot is free: it would edit the
+          // same files as something already running.
+          <div
+            title={held.map((other) => other.title).join('\n')}
+            className="text-warn mt-1.5 flex items-center gap-1 text-[10px]"
+          >
+            <Clock className="h-2.5 w-2.5 shrink-0" />
+            <span className="truncate">
+              waiting for {held.length === 1 ? held[0].title : `${held.length} tasks`}
+            </span>
+          </div>
+        ) : related.length > 0 ? (
           <div
             title={related.map((other) => other.title).join('\n')}
             className="text-violet mt-1.5 flex items-center gap-1 text-[10px]"

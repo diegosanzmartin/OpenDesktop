@@ -55,14 +55,64 @@ export function clearHistory(sessionId: string): void {
  * Tool-heavy sessions grow fast, and a hard failure from the provider is worse
  * than losing early context.
  */
-export function trimHistory(sessionId: string, maxChars = 600_000): void {
+export function historySize(sessionId: string): number {
+  return JSON.stringify(getHistory(sessionId)).length
+}
+
+/**
+ * Turns the older part of a session into a summary, in place.
+ *
+ * The old behaviour was to splice messages off the front until the transcript
+ * fit under a cap — silently. A long session forgot its own beginning with no
+ * trace, which is the worst possible failure for work you are in the middle
+ * of: the model stops knowing what it decided an hour ago and nothing says so.
+ *
+ * The summariser is passed in rather than imported, so this module stays free
+ * of any provider and the headless test can drive the whole path.
+ *
+ * Returns what a person should be told, or null when nothing was needed.
+ */
+export async function compactHistory(
+  sessionId: string,
+  summarise: (messages: ModelMessage[]) => Promise<string>,
+  options: { maxChars?: number; keepRecent?: number } = {}
+): Promise<{ summarised: number; summary: string } | null> {
+  const maxChars = options.maxChars ?? 600_000
+  const keepRecent = options.keepRecent ?? 8
+
   const history = getHistory(sessionId)
-  let total = JSON.stringify(history).length
-  while (total > maxChars && history.length > 4) {
-    history.splice(0, 2)
-    total = JSON.stringify(history).length
+  if (JSON.stringify(history).length <= maxChars) return null
+  // Nothing to gain from summarising a handful of messages; if the transcript
+  // is over the cap with this few, they are individually enormous and cutting
+  // them would lose more than it saves.
+  if (history.length <= keepRecent + 2) return null
+
+  const older = history.slice(0, history.length - keepRecent)
+  const recent = history.slice(history.length - keepRecent)
+
+  let summary: string
+  try {
+    summary = (await summarise(older)).trim()
+  } catch {
+    // A failed summary must not take the conversation with it: leave the
+    // transcript alone and let the next turn try again.
+    return null
   }
+  if (!summary) return null
+
+  const note: ModelMessage = {
+    role: 'user',
+    content:
+      `<earlier-in-this-session count="${older.length}">\n${summary}\n` +
+      `</earlier-in-this-session>\n\n` +
+      `That is a summary of the ${older.length} messages before this point, which have been ` +
+      `dropped to stay inside the context window. Treat it as established fact. If you need a ` +
+      `detail it does not contain, read the files rather than guessing.`
+  }
+
+  memory.set(sessionId, [note, ...recent])
   persist(sessionId)
+  return { summarised: older.length, summary }
 }
 
 /** Copies one session's model transcript onto another, for a fork. */

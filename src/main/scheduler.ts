@@ -4,7 +4,12 @@ import * as store from './store'
 import { getBoard } from './boards'
 import { isRunning, runTurn } from './agent/runner'
 import { resolvedConfig } from './config'
-import { assessRelated, coordinationNote, type Relatedness } from './coordination'
+import {
+  assessRelated,
+  coordinationNote,
+  forgetJudgements,
+  type Relatedness
+} from './coordination'
 import { bus } from './bus'
 
 /**
@@ -41,12 +46,12 @@ export function queuedTasks(): Session[] {
 }
 
 /**
- * What is holding a slot. The runner's own map is the accurate answer, but a
- * session marked running or waiting on an approval is holding the same ground —
- * it has a turn in flight and may be part-way through writing files. Counting
- * both means the limit holds no matter which path started the work.
+ * Tasks with a turn in flight — anything that might be part-way through
+ * changing files. This is who the coordinator compares a new task against,
+ * because a task stopped at an approval prompt still holds whatever it has
+ * already written.
  */
-function liveTasks(): Session[] {
+function inFlight(): Session[] {
   return store
     .listSessions()
     .filter(
@@ -55,6 +60,18 @@ function liveTasks(): Session[] {
         session.status === 'running' ||
         session.status === 'awaiting-approval'
     )
+}
+
+/**
+ * Tasks actually working, which is what the concurrency limit is about.
+ *
+ * A task stopped at an approval prompt is not working — it is waiting for a
+ * person, possibly for hours. Counting it against the limit meant two
+ * unanswered prompts stalled the whole board with nothing to show why. The
+ * limit bounds how much runs at once; it is not a queue of human attention.
+ */
+function working(): Session[] {
+  return inFlight().filter((session) => session.status !== 'awaiting-approval')
 }
 
 /** Starts a queued task now, moving it to the board's in-progress column. */
@@ -66,7 +83,8 @@ function launch(session: Session, note: string): void {
   store.updateSession(session.id, {
     status: 'running',
     columnId: column?.id ?? session.columnId,
-    queuedPrompt: undefined
+    queuedPrompt: undefined,
+    heldBy: undefined
   })
 
   void runTurn({ sessionId: session.id, userText: prompt, coordinationNote: note }).catch(() => {
@@ -89,12 +107,11 @@ export async function tick(): Promise<void> {
     const limit = Math.max(1, config.maxConcurrentTasks ?? 2)
 
     for (const candidate of queuedTasks()) {
-      const live = liveTasks()
-      if (live.length >= limit) break
+      if (working().length >= limit) break
 
       let related: Relatedness[] = []
       try {
-        related = await assessRelated(config, candidate, live)
+        related = await assessRelated(config, candidate, inFlight())
       } catch {
         related = []
       }
@@ -103,7 +120,10 @@ export async function tick(): Promise<void> {
       const blocking = related.filter((entry) => entry.sameFiles)
       if (blocking.length > 0) {
         store.updateSession(candidate.id, {
-          relatedSessionIds: related.map((entry) => entry.sessionId)
+          relatedSessionIds: related.map((entry) => entry.sessionId),
+          // Named, so the card can say what it is waiting for instead of
+          // sitting at "Queued" with no explanation.
+          heldBy: blocking.map((entry) => entry.sessionId)
         })
         continue
       }
@@ -145,7 +165,14 @@ let timer: NodeJS.Timeout | null = null
  */
 export function startScheduler(): void {
   bus.subscribe((event) => {
-    if (event.type === 'session.updated' || event.type === 'session.created') void tick()
+    if (event.type === 'session.deleted') forgetJudgements(event.sessionId)
+    if (event.type === 'session.updated' || event.type === 'session.created') {
+      // A task that stopped running cannot be overlapping anything any more.
+      if (event.type === 'session.updated' && event.session.status === 'done') {
+        forgetJudgements(event.session.id)
+      }
+      void tick()
+    }
   })
   timer = setInterval(() => void tick(), 15_000)
   void tick()

@@ -134,7 +134,42 @@ export function setRelatednessJudge(judge: Judge | null): void {
   judgeOverride = judge
 }
 
+/**
+ * Answers already given, so the same question is asked once.
+ *
+ * The scheduler re-runs on every session change and on a 15-second heartbeat.
+ * A task held back by an overlap stays queued, so without this the same pair
+ * was sent to the model every 15 seconds for as long as the overlap lasted —
+ * hundreds of identical calls, all paid for.
+ *
+ * Keyed by the pair and by what was asked about it: if either task's wording
+ * changes, that is a different question and gets asked again.
+ */
+const answers = new Map<string, Relatedness | null>()
+const ANSWER_CAP = 500
+
+function answerKey(candidate: string, other: string, asked: string): string {
+  return `${candidate}|${other}|${asked.length}|${asked.slice(0, 120)}`
+}
+
+/** Called when a session ends or is deleted: its verdicts are now meaningless. */
+export function forgetJudgements(sessionId: string): void {
+  for (const key of [...answers.keys()]) {
+    if (key.startsWith(`${sessionId}|`) || key.includes(`|${sessionId}|`)) answers.delete(key)
+  }
+}
+
+/** For the tests: how many questions have actually been asked. */
+let asked = 0
+export function judgementCount(): number {
+  return asked
+}
+export function resetJudgementCount(): void {
+  asked = 0
+}
+
 async function judge(config: AppConfig, input: { candidate: string; other: string; cwd: string }) {
+  asked++
   if (judgeOverride) return judgeOverride(input)
 
   const resolved = await resolveModel(config, config.model)
@@ -180,24 +215,42 @@ export async function assessRelated(
 
   const out: Relatedness[] = []
   for (const other of peers) {
-    if (!shareSurface(describe(candidate), describe(other))) continue
+    const candidateText = describe(candidate)
+    const otherText = describe(other)
+    if (!shareSurface(candidateText, otherText)) continue
+
+    const key = answerKey(candidate.id, other.id, candidateText + otherText)
+    if (answers.has(key)) {
+      const cached = answers.get(key)
+      if (cached) out.push(cached)
+      continue
+    }
+
     try {
       const verdict = await judge(config, {
-        candidate: describe(candidate),
-        other: describe(other),
+        candidate: candidateText,
+        other: otherText,
         cwd: candidate.cwd
       })
-      if (!verdict.related && !verdict.same_files) continue
-      out.push({
+      if (!verdict.related && !verdict.same_files) {
+        // Remembered too: "these are unrelated" is just as expensive to ask.
+        remember(key, null)
+        continue
+      }
+      const answer: Relatedness = {
         sessionId: other.id,
         sameFiles: verdict.same_files,
         sameTopic: verdict.related,
         why: verdict.reason
-      })
+      }
+      remember(key, answer)
+      out.push(answer)
     } catch {
       // The judgement is an optimisation, not a gate. If the model is
       // unreachable the keyword overlap already told us they share a surface,
       // so say so and let both run rather than stalling the queue.
+      // Not remembered: the model being unreachable is a passing condition, and
+      // caching it would keep this guess long after it could be checked.
       out.push({
         sessionId: other.id,
         sameFiles: false,
@@ -207,6 +260,15 @@ export async function assessRelated(
     }
   }
   return out
+}
+
+function remember(key: string, answer: Relatedness | null): void {
+  if (answers.size >= ANSWER_CAP) {
+    // Oldest first; insertion order is what Map iteration gives us.
+    const oldest = answers.keys().next().value
+    if (oldest !== undefined) answers.delete(oldest)
+  }
+  answers.set(key, answer)
 }
 
 /**

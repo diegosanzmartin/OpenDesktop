@@ -10,6 +10,7 @@ import { ApprovalCard } from './ApprovalCard'
 import { Composer } from './Composer'
 import { Mentions } from './Markdown'
 import { EditedFiles, MessageParts } from './Transcript'
+import { Markdown } from './Markdown'
 import { usePreviewOpener } from './BlockCard'
 
 const EMPTY_MESSAGES: Message[] = []
@@ -79,6 +80,8 @@ function MessageRow({ message }: { message: Message }): ReactNode {
     )
   }
 
+  if (message.role === 'system') return <Notice message={message} />
+
   const allBlocks = message.parts
     .filter((p) => p.type === 'block' && p.blockId)
     .map((p) => blocks[p.blockId!])
@@ -91,6 +94,44 @@ function MessageRow({ message }: { message: Message }): ReactNode {
       <EditedFiles blocks={allBlocks} />
 
       <StatusLine message={message} blocks={allBlocks} agentColor={agent?.color} agentName={agent?.name} />
+    </div>
+  )
+}
+
+/**
+ * Something the app did to the conversation, said out loud.
+ *
+ * Compaction is the case that matters: the model's memory of the early part of
+ * a session gets replaced by a summary, and a session that silently forgets
+ * what it decided is worse than one that says so. The summary is there to read
+ * if you want to check what was kept.
+ */
+function Notice({ message }: { message: Message }): ReactNode {
+  const [open, setOpen] = useState(false)
+  const text = message.parts.map((part) => part.text ?? '').join('')
+  const [headline, ...rest] = text.split('\n\n')
+  const body = rest.join('\n\n')
+
+  return (
+    <div className="my-2">
+      <div className="flex items-center gap-2">
+        <span className="bg-ink-800 h-px flex-1" />
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          className="text-ink-600 hover:text-ink-400 shrink-0 text-[11.5px]"
+          title={body ? 'Show what was kept' : undefined}
+        >
+          {headline}
+          {body ? (open ? ' ▲' : ' ▾') : null}
+        </button>
+        <span className="bg-ink-800 h-px flex-1" />
+      </div>
+      {open && body ? (
+        <div className="border-ink-800 text-ink-400 mt-2 rounded-lg border px-3 py-2 text-[12.5px]">
+          <Markdown text={body} />
+        </div>
+      ) : null}
     </div>
   )
 }

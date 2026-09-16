@@ -1,4 +1,11 @@
-import { smoothStream, stepCountIs, streamText, type ModelMessage, type UserContent } from 'ai'
+import {
+  generateText,
+  smoothStream,
+  stepCountIs,
+  streamText,
+  type ModelMessage,
+  type UserContent
+} from 'ai'
 import {
   MANAGER_AGENT,
   isManager,
@@ -197,6 +204,62 @@ function mentionDirective(config: AppConfig, text: string): string {
   )
 }
 
+/**
+ * Summarises the older half of a session's transcript once it outgrows the
+ * context window, and leaves a line in the chat saying so.
+ *
+ * Done after the turn rather than before: the user has their answer, and the
+ * cost of the summary is paid out of sight instead of in front of them.
+ */
+async function compactIfNeeded(
+  config: AppConfig,
+  sessionId: string,
+  modelRef: string
+): Promise<void> {
+  // The smaller model if one is configured: this is a summary, not the work.
+  const ref = config.smallModel ?? modelRef
+
+  const result = await history.compactHistory(sessionId, async (older) => {
+    const resolved = await resolveModel(config, ref)
+    const answer = await generateText({
+      model: resolved.model,
+      system:
+        'You are compressing the earlier part of a working session so it can replace those ' +
+        'messages in the model\'s context. Write it for whoever picks the work up next. Keep: ' +
+        'decisions and why, files created or changed with their paths, commands whose result ' +
+        'mattered, facts established about the system, and anything still open. Drop: greetings, ' +
+        'restatements, and tool output that no longer matters. Use short sections, name things ' +
+        'exactly, and never invent a detail that is not there.',
+      prompt: older
+        .map((message) => {
+          const content =
+            typeof message.content === 'string'
+              ? message.content
+              : JSON.stringify(message.content)
+          return `[${message.role}] ${content.slice(0, 4000)}`
+        })
+        .join('\n\n')
+    })
+    return answer.text
+  })
+
+  if (!result) return
+
+  // Said out loud in the transcript, at the point it happened.
+  store.addMessage({
+    sessionId,
+    role: 'system',
+    parts: [
+      {
+        type: 'text',
+        text:
+          `The ${result.summarised} messages before this were summarised to stay inside the ` +
+          `context window.\n\n${result.summary}`
+      }
+    ]
+  })
+}
+
 interface TurnInput {
   sessionId: string
   userText: string
@@ -388,7 +451,7 @@ export async function runTurn(input: TurnInput): Promise<string> {
 
     const responseMessages = await result.responseMessages
     history.appendHistory(session.id, responseMessages as ModelMessage[])
-    history.trimHistory(session.id)
+    await compactIfNeeded(config, session.id, agent.model ?? session.model)
 
     const usage = await result.totalUsage
     const inputTokens = usage.inputTokens ?? 0

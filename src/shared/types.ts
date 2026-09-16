@@ -253,6 +253,12 @@ export interface Session {
    * coordinator, shown on the card, and named in the agent's prompt.
    */
   relatedSessionIds?: string[]
+  /**
+   * Tasks this one is queued behind because they would edit the same files.
+   * Cleared when it starts; it is why a card can sit in To do while a slot
+   * is free.
+   */
+  heldBy?: string[]
 }
 
 export interface ApprovalRequest {
