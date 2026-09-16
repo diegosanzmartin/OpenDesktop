@@ -2,12 +2,13 @@ import clsx from 'clsx'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { FileText } from 'lucide-react'
 import type { Attachment, Block, Message, Session } from '@shared/types'
-import { AUTO_AGENT } from '@shared/types'
+import { isManager } from '@shared/types'
 import { useStore } from '../state/store'
 import { tokens } from '../lib/format'
 import { activityOf, duration, tokenRate } from '@shared/progress'
 import { ApprovalCard } from './ApprovalCard'
 import { Composer } from './Composer'
+import { Mentions } from './Markdown'
 import { EditedFiles, MessageParts } from './Transcript'
 import { usePreviewOpener } from './BlockCard'
 
@@ -54,7 +55,7 @@ function MessageRow({ message }: { message: Message }): ReactNode {
   const blocks = useStore((s) => s.blocks)
   const config = useStore((s) => s.config)
   const agent =
-    message.agentId && message.agentId !== AUTO_AGENT ? config?.agent[message.agentId] : undefined
+    message.agentId && !isManager(message.agentId) ? config?.agent[message.agentId] : undefined
 
   if (message.role === 'user') {
     const text = message.parts.map((p) => p.text ?? '').join('')
@@ -69,7 +70,9 @@ function MessageRow({ message }: { message: Message }): ReactNode {
         ) : null}
         {text ? (
           <div className="bg-ink-800 text-ink-100 max-w-[80%] rounded-2xl px-3.5 py-2 text-[14px] leading-[1.6] whitespace-pre-wrap">
-            {text}
+            {/* Not markdown — what the user typed, shown as typed — but an
+                agent they named should read as the agent, here too. */}
+            <Mentions text={text} />
           </div>
         ) : null}
       </div>
@@ -137,7 +140,7 @@ function StatusLine({
       <span>{duration(seconds)}</span>
       {total > 0 ? <span>· {tokens(total)} tokens</span> : null}
       {rate !== null ? <span>· {rate} tok/s</span> : null}
-      <span>· {done ? (agentName ?? 'Auto') : activityOf(message, blocks)}</span>
+      <span>· {done ? (agentName ?? 'Manager') : activityOf(message, blocks)}</span>
     </div>
   )
 }

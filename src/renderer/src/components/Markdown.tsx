@@ -3,6 +3,7 @@ import { CodeBlock } from './CodeBlock'
 import { Fragment, useMemo, type ReactNode } from 'react'
 import { marked, type Token, type Tokens } from 'marked'
 import { looksLikePath } from '@shared/highlight'
+import { splitMentions } from '@shared/mentions'
 import { useStore } from '../state/store'
 import { usePreviewOpener } from './BlockCard'
 
@@ -85,9 +86,46 @@ function Inline({ tokens }: { tokens: Token[] | undefined }): ReactNode {
             // Shown as written rather than interpreted.
             return <span key={index}>{(token as Tokens.HTML).raw}</span>
           default:
-            return <span key={index}>{(token as Tokens.Text).text ?? ''}</span>
+            return <Mentions key={index} text={(token as Tokens.Text).text ?? ''} />
         }
       })}
+    </>
+  )
+}
+
+/**
+ * Draws `@Name` as that agent's chip, in its own colour.
+ *
+ * Only names that resolve to a configured agent are marked. An `@word` that
+ * matches nothing is ordinary prose, and colouring it would claim an agent
+ * exists that does not.
+ */
+export function Mentions({ text }: { text: string }): ReactNode {
+  const config = useStore((s) => s.config)
+  const agents = useMemo(() => Object.values(config?.agent ?? {}), [config])
+  const parts = useMemo(() => splitMentions(text, agents), [text, agents])
+
+  if (parts.length === 1 && !parts[0].agentId) return <>{text}</>
+
+  return (
+    <>
+      {parts.map((part, index) =>
+        part.agentId ? (
+          <span
+            key={index}
+            title={config?.agent[part.agentId]?.description}
+            className="rounded px-[3px] py-[1px] text-[0.94em] font-medium"
+            style={{
+              color: config?.agent[part.agentId]?.color ?? 'var(--color-brand)',
+              background: 'rgba(255,255,255,0.06)'
+            }}
+          >
+            {part.text}
+          </span>
+        ) : (
+          <span key={index}>{part.text}</span>
+        )
+      )}
     </>
   )
 }
@@ -212,7 +250,7 @@ function Blocks({
             const text = token as Tokens.Text
             return (
               <span key={index}>
-                {text.tokens ? <Inline tokens={text.tokens} /> : text.text}
+                {text.tokens ? <Inline tokens={text.tokens} /> : <Mentions text={text.text} />}
                 {caret ? <Caret /> : null}
               </span>
             )

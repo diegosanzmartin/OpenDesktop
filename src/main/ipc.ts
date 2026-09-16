@@ -54,7 +54,7 @@ import {
   importableSkills,
   listSkills
 } from './skills'
-import { AUTO_AGENT, type AgentConfig, type Attachment } from '@shared/types'
+import { MANAGER_AGENT, type AgentConfig, type Attachment } from '@shared/types'
 import {
   addFromBytes,
   addFromPaths,
@@ -172,7 +172,7 @@ export function registerIpc(): void {
         title: input.title,
         cwd,
         environmentId,
-        agentId: input.agentId ?? AUTO_AGENT,
+        agentId: input.agentId ?? MANAGER_AGENT,
         model: input.model ?? config.model
       })
     }
@@ -266,7 +266,7 @@ export function registerIpc(): void {
         title: input.title?.trim() || 'New task',
         cwd: target.cwd,
         environmentId: target.environmentId,
-        agentId: input.agentId ?? AUTO_AGENT,
+        agentId: input.agentId ?? MANAGER_AGENT,
         model: input.model ?? config.model,
         parentSessionId: input.parentSessionId
       })

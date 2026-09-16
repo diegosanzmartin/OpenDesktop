@@ -2,7 +2,8 @@ import clsx from 'clsx'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ArrowUp, ChevronDown, FileText, FolderOpen, ImageIcon, Paperclip, Square, X } from 'lucide-react'
 import type { Attachment, Session, Skill } from '@shared/types'
-import { AUTO_AGENT } from '@shared/types'
+import { isManager } from '@shared/types'
+import { mentionToken } from '@shared/mentions'
 import { useStore } from '../state/store'
 import { folderName, shortenPath } from '../lib/format'
 
@@ -71,24 +72,32 @@ function ChangesBar({ session }: { session: Session }): ReactNode {
 }
 
 /** The `/` menu. Filters as you type and inserts the skill's id. */
-function SkillMenu({
-  skills,
+interface Suggestion {
+  key: string
+  label: string
+  description?: string
+  colour?: string
+}
+
+/** The list under the composer: `/` offers skills, `@` offers agents. */
+function MentionMenu({
+  items,
   query,
   active,
+  empty,
   onPick
 }: {
-  skills: Skill[]
+  items: Suggestion[]
   query: string
   active: number
-  onPick: (skill: Skill) => void
+  empty: string
+  onPick: (item: Suggestion) => void
 }): ReactNode {
-  if (skills.length === 0) {
+  if (items.length === 0) {
     return (
       <div className="border-ink-700 bg-ink-850 absolute bottom-full left-0 mb-2 w-full rounded-lg border px-3 py-2 shadow-2xl">
         <span className="text-ink-500 text-[12px]">
-          {query
-            ? `No skill matches “${query}”.`
-            : 'No skills yet — import them from Settings → Skills.'}
+          {query ? `Nothing matches “${query}”.` : empty}
         </span>
       </div>
     )
@@ -96,23 +105,28 @@ function SkillMenu({
 
   return (
     <div className="border-ink-700 bg-ink-850 absolute bottom-full left-0 mb-2 max-h-72 w-full overflow-y-auto rounded-lg border p-1 shadow-2xl">
-      {skills.map((skill, index) => (
+      {items.map((item, index) => (
         <button
-          key={skill.id}
+          key={item.key}
           type="button"
           onMouseDown={(event) => {
             // mousedown, not click: the textarea must not lose focus first.
             event.preventDefault()
-            onPick(skill)
+            onPick(item)
           }}
           className={clsx(
             'flex w-full flex-col items-start gap-0.5 rounded-md px-2.5 py-1.5 text-left',
             index === active ? 'bg-ink-800' : 'hover:bg-ink-800/60'
           )}
         >
-          <span className="text-ink-100 font-mono text-[12.5px]">/{skill.id}</span>
-          {skill.description ? (
-            <span className="text-ink-500 line-clamp-2 text-[11.5px]">{skill.description}</span>
+          <span
+            className="font-mono text-[12.5px]"
+            style={{ color: item.colour ?? 'var(--color-ink-100)' }}
+          >
+            {item.label}
+          </span>
+          {item.description ? (
+            <span className="text-ink-500 line-clamp-2 text-[11.5px]">{item.description}</span>
           ) : null}
         </button>
       ))}
@@ -175,39 +189,66 @@ export function Composer({ session }: { session: Session }): ReactNode {
 
   const skills = useStore((s) => s.skills)
   const area = useRef<HTMLTextAreaElement>(null)
-  const [menuAt, setMenuAt] = useState<number | null>(null)
+  const [menu, setMenu] = useState<{ kind: 'skill' | 'agent'; at: number } | null>(null)
   const [active, setActive] = useState(0)
 
-  // The menu is open while the caret sits in a `/word` at the start of a line.
-  const query = menuAt === null ? '' : text.slice(menuAt + 1).split(/\s/)[0] ?? ''
-  const matches = useMemo(() => {
-    if (menuAt === null) return []
+  const query = menu === null ? '' : text.slice(menu.at + 1).split(/\s/)[0] ?? ''
+
+  // Named agents, minus the manager: it is the one asking, so it cannot be
+  // handed the work.
+  const agents = useMemo(
+    () =>
+      Object.values(config?.agent ?? {}).filter(
+        (agent) => !isManager(agent.id) && (agent.mode === 'subagent' || agent.mode === 'all')
+      ),
+    [config]
+  )
+
+  const matches = useMemo<Suggestion[]>(() => {
+    if (menu === null) return []
     const needle = query.toLowerCase()
+    const hit = (...fields: string[]): boolean =>
+      !needle || fields.some((field) => field.toLowerCase().includes(needle))
+
+    if (menu.kind === 'agent') {
+      return agents
+        .filter((agent) => hit(agent.id, agent.name))
+        .slice(0, 8)
+        .map((agent) => ({
+          key: agent.id,
+          label: mentionToken(agent),
+          description: agent.description,
+          colour: agent.color
+        }))
+    }
     return skills
-      .filter(
-        (skill) =>
-          !needle ||
-          skill.id.toLowerCase().includes(needle) ||
-          skill.name.toLowerCase().includes(needle)
-      )
+      .filter((skill) => hit(skill.id, skill.name))
       .slice(0, 8)
-  }, [skills, query, menuAt])
+      .map((skill) => ({ key: skill.id, label: `/${skill.id}`, description: skill.description }))
+  }, [skills, agents, query, menu])
 
   const syncMenu = (value: string, caret: number): void => {
     const before = value.slice(0, caret)
-    const match = /(^|\n)\/([\w-]*)$/.exec(before)
-    setMenuAt(match ? caret - match[2].length - 1 : null)
+    // A skill is a command, so it only starts a line. An agent is named
+    // mid-sentence — "ask @Infrastructure to check the module" — so it only
+    // needs to not be inside a word.
+    const skill = /(^|\n)\/([\w-]*)$/.exec(before)
+    const agent = /(^|[^\w@/])@([\w-]*)$/.exec(before)
+    if (skill) setMenu({ kind: 'skill', at: caret - skill[2].length - 1 })
+    else if (agent) setMenu({ kind: 'agent', at: caret - agent[2].length - 1 })
+    else setMenu(null)
     setActive(0)
   }
 
-  const insertSkill = (skill: Skill): void => {
-    if (menuAt === null) return
+  const insert = (item: Suggestion): void => {
+    if (menu === null) return
     const caret = area.current?.selectionStart ?? text.length
-    const next = `${text.slice(0, menuAt)}/${skill.id} ${text.slice(caret)}`
+    const token = menu.kind === 'agent' ? item.label : `/${item.key}`
+    const next = `${text.slice(0, menu.at)}${token} ${text.slice(caret)}`
     setText(next)
-    setMenuAt(null)
+    setMenu(null)
     queueMicrotask(() => {
-      const position = menuAt + skill.id.length + 2
+      const position = menu.at + token.length + 1
       area.current?.focus()
       area.current?.setSelectionRange(position, position)
     })
@@ -239,19 +280,16 @@ export function Composer({ session }: { session: Session }): ReactNode {
   }
 
   const busy = session.status === 'running' || session.status === 'awaiting-approval'
-  const primaryAgents = Object.values(config?.agent ?? {}).filter(
-    (a) => a.mode === 'primary' || a.mode === 'all'
-  )
   const environments = Object.values(config?.environment ?? {})
   const agent = config?.agent[session.agentId]
-  const isAuto = session.agentId === AUTO_AGENT
+  const managed = isManager(session.agentId)
   const model = models.find((m) => m.ref === session.model)
 
   const submit = (): void => {
     const value = text.trim()
     if ((!value && attachments.length === 0) || busy) return
     setText('')
-    setMenuAt(null)
+    setMenu(null)
     setAttachError(null)
     void send(value, attachments)
     setAttachments([])
@@ -333,8 +371,18 @@ export function Composer({ session }: { session: Session }): ReactNode {
           ) : null}
 
           <div className="flex items-end gap-2">
-          {menuAt !== null ? (
-            <SkillMenu skills={matches} query={query} active={active} onPick={insertSkill} />
+          {menu !== null ? (
+            <MentionMenu
+              items={matches}
+              query={query}
+              active={active}
+              empty={
+                menu.kind === 'agent'
+                  ? 'No agents yet — add them in Settings → Agents.'
+                  : 'No skills yet — import them from Settings → Skills.'
+              }
+              onPick={insert}
+            />
           ) : null}
           <textarea
             ref={area}
@@ -346,9 +394,9 @@ export function Composer({ session }: { session: Session }): ReactNode {
               syncMenu(event.target.value, event.target.selectionStart ?? 0)
             }}
             onClick={(event) => syncMenu(text, event.currentTarget.selectionStart ?? 0)}
-            onBlur={() => setMenuAt(null)}
+            onBlur={() => setMenu(null)}
             onKeyDown={(event) => {
-              if (menuAt !== null && matches.length > 0) {
+              if (menu !== null && matches.length > 0) {
                 if (event.key === 'ArrowDown') {
                   event.preventDefault()
                   return setActive((index) => (index + 1) % matches.length)
@@ -359,12 +407,12 @@ export function Composer({ session }: { session: Session }): ReactNode {
                 }
                 if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey)) {
                   event.preventDefault()
-                  return insertSkill(matches[active])
+                  return insert(matches[active])
                 }
               }
-              if (event.key === 'Escape' && menuAt !== null) {
+              if (event.key === 'Escape' && menu !== null) {
                 event.preventDefault()
-                return setMenuAt(null)
+                return setMenu(null)
               }
               if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault()
@@ -415,24 +463,20 @@ export function Composer({ session }: { session: Session }): ReactNode {
             <span className="truncate">{shortenPath(session.cwd, 26)}</span>
           </button>
 
-          <Picker
-            title="Agent"
-            value={session.agentId}
-            onChange={(agentId) => patch({ agentId })}
-            options={[
-              { value: AUTO_AGENT, label: 'Auto' },
-              ...primaryAgents.map((a) => ({ value: a.id, label: a.name }))
-            ]}
-          />
+          {/* No picker: the manager runs every session, and the way to put a
+              specialist on something is to name it with @ in the message. */}
+          <span className="text-ink-500 shrink-0 text-[12px]">
+            {managed ? 'Manager' : (agent?.name ?? session.agentId)}
+          </span>
           {attachments.some((a) => a.kind === 'image') && !acceptsImages ? (
             <span className="text-warn text-[11.5px]">
               this model is not set as vision-capable — images will not be sent
             </span>
-          ) : isAuto ? (
-            // Hidden below ~900px: in the board's side panel the pickers matter
-            // and the description does not.
+          ) : managed ? (
+            // Hidden below ~620px: in the board's side panel the pickers matter
+            // and the hint does not.
             <span className="text-ink-600 hidden text-[11.5px] @[620px]:inline">
-              splits the work across specialists
+              type @ to put a specialist on part of it
             </span>
           ) : agent?.description ? (
             <span className="text-ink-600 hidden max-w-[280px] truncate text-[11.5px] @[620px]:inline">

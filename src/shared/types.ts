@@ -133,10 +133,19 @@ export interface Skill {
 }
 
 /**
- * The session is not pinned to one agent: an orchestrator splits the request
- * into tasks and picks an agent for each.
+ * Every session runs the manager. It does the ordinary work itself and splits
+ * off the parts that are genuinely someone else's, so there is nothing to pick
+ * before starting — naming an agent is something you do mid-sentence, with @.
  */
+export const MANAGER_AGENT = 'manager'
+
+/** What the manager used to be called. Sessions on disk still say this. */
 export const AUTO_AGENT = 'auto'
+
+/** Whether an id means "the manager", including the name it used to have. */
+export function isManager(agentId: string | undefined): boolean {
+  return agentId === MANAGER_AGENT || agentId === AUTO_AGENT || !agentId
+}
 
 export interface AppConfig {
   $schema?: string

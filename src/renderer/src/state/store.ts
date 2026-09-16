@@ -15,7 +15,7 @@ import type {
   SessionQuery,
   Skill
 } from '@shared/types'
-import { AUTO_AGENT } from '@shared/types'
+import { MANAGER_AGENT } from '@shared/types'
 
 /** What the right-hand dock is showing. The centre column is always the chat. */
 export type DockTab = 'changes' | 'terminal' | 'browser' | 'files' | 'activity' | 'background'
@@ -407,7 +407,7 @@ export const useStore = create<State>((set, get) => ({
       environmentId: input?.environmentId ?? 'local',
       cwd: input?.cwd,
       // No agent pinned by default: the orchestrator decides per request.
-      agentId: input?.agentId ?? AUTO_AGENT,
+      agentId: input?.agentId ?? MANAGER_AGENT,
       model: input?.model ?? config?.model
     })
     await get().selectSession(session.id)

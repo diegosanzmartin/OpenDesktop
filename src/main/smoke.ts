@@ -40,6 +40,8 @@ import { parseGcloudCommand } from '@shared/gcloud'
 import { filterSessions, groupSessions, nestSubtasks, sortSessions, splitPinned } from '@shared/sessions'
 import { activityOf, duration, tokenRate } from '@shared/progress'
 import { approvalDetail, approvalQuestion } from '@shared/approvals'
+import { mentionToken, mentionedAgents, splitMentions } from '@shared/mentions'
+import { MANAGER_AGENT, isManager } from '@shared/types'
 import { familyOf, highlight, isShell, looksLikePath, terminalPayload } from '@shared/highlight'
 import type { ApprovalRequest, Block, Board, Message, Session, SessionQuery } from '@shared/types'
 import {
@@ -828,6 +830,62 @@ async function main(): Promise<void> {
     check(
       'every session lands in exactly one group',
       byFolder.reduce((sum, g) => sum + g.items.length, 0) === 5
+    )
+  }
+
+  section('naming an agent with @')
+  {
+    const roster = [
+      { id: 'infra', name: 'Infrastructure' },
+      { id: 'review', name: 'Review' },
+      { id: 'two words', name: 'Two Words' }
+    ]
+
+    check(
+      'the manager is the default, under either name it has had',
+      isManager(MANAGER_AGENT) && isManager('auto') && isManager(undefined) && !isManager('infra')
+    )
+    check('an agent is written by its name', mentionToken(roster[0]) === '@Infrastructure')
+    check(
+      'and by its id when the name would not survive a space',
+      mentionToken({ id: 'two-words', name: 'Two Words' }) === '@two-words'
+    )
+
+    check(
+      'a name in a sentence resolves to its id',
+      mentionedAgents('ask @Infrastructure to check the module', roster).join(',') === 'infra',
+      mentionedAgents('ask @Infrastructure to check the module', roster)
+    )
+    check('the id itself works too', mentionedAgents('@infra please', roster).join(',') === 'infra')
+    check('matching ignores case', mentionedAgents('@INFRASTRUCTURE', roster).join(',') === 'infra')
+    check(
+      'several agents come back in the order they were named, once each',
+      mentionedAgents('@review then @infra then @review again', roster).join(',') === 'review,infra'
+    )
+    check('a name nobody has is not invented', mentionedAgents('@nobody', roster).length === 0)
+    check(
+      'an email address is not a mention',
+      mentionedAgents('write to diego@infra about it', roster).length === 0
+    )
+    check(
+      'nor is a path that happens to contain one',
+      mentionedAgents('see src/@infra/thing.ts', roster).length === 0
+    )
+
+    const parts = splitMentions('ask @Infrastructure now', roster)
+    check(
+      'rendering splits the sentence around the name',
+      parts.map((part) => `${part.agentId ?? '-'}:${part.text}`).join('|') ===
+        '-:ask |infra:@Infrastructure|-: now',
+      parts
+    )
+    check(
+      'and leaves a sentence with no agent in it whole',
+      splitMentions('nothing here', roster).length === 1
+    )
+    check(
+      'an unmatched @word is left as prose, not drawn as an agent',
+      splitMentions('email @nobody today', roster).every((part) => !part.agentId)
     )
   }
 

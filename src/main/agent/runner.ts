@@ -1,5 +1,13 @@
 import { smoothStream, stepCountIs, streamText, type ModelMessage, type UserContent } from 'ai'
-import { AUTO_AGENT, type AgentConfig, type AppConfig, type Attachment, type Message } from '@shared/types'
+import {
+  MANAGER_AGENT,
+  isManager,
+  type AgentConfig,
+  type AppConfig,
+  type Attachment,
+  type Message
+} from '@shared/types'
+import { mentionToken, mentionedAgents } from '@shared/mentions'
 import { effectivePermissions, resolvedConfig } from '../config'
 import { bus } from '../bus'
 import { cancelSessionApprovals } from '../approvals'
@@ -25,27 +33,33 @@ export function stop(sessionId: string): void {
 }
 
 /**
- * The default when no agent is pinned. It does the work itself when the request
- * is one job, and splits it across specialists when it genuinely is several —
- * the distinction matters, because delegating a one-line change costs a round
- * trip and loses the conversation's context.
+ * The agent every session runs. It does the work itself when the request is one
+ * job, and splits it across specialists when it genuinely is several — the
+ * distinction matters, because delegating a one-line change costs a round trip
+ * and loses the conversation's context.
  */
 function orchestrator(config: AppConfig): AgentConfig {
   const roster = Object.values(config.agent)
     .filter((a) => a.mode === 'subagent' || a.mode === 'all')
-    .map((a) => `- ${a.id}: ${a.description || a.name}`)
+    .map((a) => `- ${mentionToken(a)} (id \`${a.id}\`): ${a.description || a.name}`)
     .join('\n')
 
   return {
-    id: AUTO_AGENT,
-    name: 'Auto',
-    description: 'Splits the request across specialist agents when that helps.',
+    id: MANAGER_AGENT,
+    name: 'Manager',
+    description: 'Does the ordinary work, and splits off what belongs to a specialist.',
     mode: 'primary',
     color: '#d97757',
     prompt: `You are the lead engineer on this session. You decide how the work gets done.
 
 # Specialists you can delegate to
 ${roster || '(none configured)'}
+
+# When the user names one with @
+\`@Name\` in the request names an agent from the list above. It is an
+instruction, not a mention in passing: give that part of the work to that agent
+with \`task\`, even when you could have done it yourself. If they name an agent
+that is not on the list, say so rather than picking a different one.
 
 # How to decide
 Start by sizing the request.
@@ -159,6 +173,30 @@ export function buildUserMessage(
   return { role: 'user', content: parts }
 }
 
+/**
+ * Resolves the `@names` in a message to agent ids for the model.
+ *
+ * The visible message keeps what the user typed. The model is handed the
+ * mapping as well, because a display name is not an id and guessing between
+ * "Infrastructure" and `infra` is exactly the kind of near-miss that ends with
+ * the wrong specialist doing the work.
+ */
+function mentionDirective(config: AppConfig, text: string): string {
+  const agents = Object.values(config.agent)
+  const ids = mentionedAgents(text, agents)
+  if (ids.length === 0) return ''
+
+  const lines = ids
+    .map((id) => `- ${mentionToken(config.agent[id])} is the agent with id \`${id}\``)
+    .join('\n')
+
+  return (
+    `\n\n<agents-the-user-named>\n${lines}\n` +
+    `Hand the work they named to these agents with \`task\`, using those ids.\n` +
+    `</agents-the-user-named>`
+  )
+}
+
 interface TurnInput {
   sessionId: string
   userText: string
@@ -178,7 +216,7 @@ export async function runTurn(input: TurnInput): Promise<string> {
 
   const config = resolvedConfig()
   const agent =
-    session.agentId === AUTO_AGENT || !config.agent[session.agentId]
+    isManager(session.agentId) || !config.agent[session.agentId]
       ? orchestrator(config)
       : config.agent[session.agentId]
   const controller = new AbortController()
@@ -251,7 +289,12 @@ export async function runTurn(input: TurnInput): Promise<string> {
 
     const tools = createTools(ctx)
 
-    const userMessage = buildUserMessage(config, session.model, expanded.prompt, input.attachments)
+    const userMessage = buildUserMessage(
+      config,
+      session.model,
+      expanded.prompt + mentionDirective(config, input.userText),
+      input.attachments
+    )
     const messages: ModelMessage[] = [...history.getHistory(session.id), userMessage]
     history.appendHistory(session.id, [userMessage])
 
