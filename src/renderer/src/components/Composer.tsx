@@ -665,22 +665,24 @@ export function Composer({ session }: { session: Session }): ReactNode {
             <span className="truncate">{shortenPath(session.cwd, 26)}</span>
           </button>
 
-          {/* No picker: the manager runs every session, and the way to put a
-              specialist on something is to name it with @ in the message. */}
-          <span className="text-ink-500 shrink-0 text-[12px]">
-            {managed ? 'Manager' : (agent?.name ?? session.agentId)}
-          </span>
+          {/* Nothing is said when the manager is running it, which is almost
+              always: naming the default on every chat is a label that never
+              changes, and the way to hand part of the work to a specialist is
+              to type @ in the message — which the mention menu already shows
+              the moment it is typed. A named agent still says which one it is,
+              because that is a chat where the answer is not obvious. */}
+          {managed ? null : (
+            <span className="text-ink-500 shrink-0 text-[12px]">
+              {agent?.name ?? session.agentId}
+            </span>
+          )}
           {attachments.some((a) => a.kind === 'image') && !acceptsImages ? (
             <span className="text-warn text-[11.5px]">
               this model is not set as vision-capable — images will not be sent
             </span>
-          ) : managed ? (
+          ) : !managed && agent?.description ? (
             // Hidden below ~620px: in the board's side panel the pickers matter
-            // and the hint does not.
-            <span className="text-ink-600 hidden text-[11.5px] @[620px]:inline">
-              type @ to put a specialist on part of it
-            </span>
-          ) : agent?.description ? (
+            // and the description does not.
             <span className="text-ink-600 hidden max-w-[280px] truncate text-[11.5px] @[620px]:inline">
               {agent.description}
             </span>

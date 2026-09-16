@@ -314,31 +314,41 @@ async function run(): Promise<void> {
   {
     // A container query, not a media query: what has room is a property of the
     // pane, and a viewport breakpoint here was wrong in exactly the way no
-    // screenshot on a wide monitor would reveal.
-    const wide = mount(<Composer session={session} />, 900)
-    const narrow = mount(<Composer session={session} />, 420)
+    // screenshot on a wide monitor would reveal. Probed with the one thing in
+    // the strip that is allowed to disappear — a named agent's description.
+    const named = { ...session, agentId: 'infra' }
+    const wide = mount(<Composer session={named} />, 900)
+    const narrow = mount(<Composer session={named} />, 420)
     await settle()
 
-    const hintIn = (host: HTMLElement): HTMLElement | undefined =>
-      [...host.querySelectorAll('span')].find((span) =>
-        (span.textContent ?? '').startsWith('type @ to put')
-      ) as HTMLElement | undefined
+    const noteIn = (host: HTMLElement): HTMLElement | undefined =>
+      [...host.querySelectorAll('span')].find((span) => span.textContent === 'IaC') as
+        | HTMLElement
+        | undefined
 
-    const wideHint = hintIn(wide)
-    const narrowHint = hintIn(narrow)
-    check('the hint is in the markup either way', Boolean(wideHint) && Boolean(narrowHint))
-    if (wideHint && narrowHint) {
+    const wideNote = noteIn(wide)
+    const narrowNote = noteIn(narrow)
+    check('the note is in the markup either way', Boolean(wideNote) && Boolean(narrowNote))
+    if (wideNote && narrowNote) {
       check(
         'shown when the pane is wide',
-        getComputedStyle(wideHint).display !== 'none',
-        getComputedStyle(wideHint).display
+        getComputedStyle(wideNote).display !== 'none',
+        getComputedStyle(wideNote).display
       )
       check(
         'and hidden when it is narrow',
-        getComputedStyle(narrowHint).display === 'none',
-        getComputedStyle(narrowHint).display
+        getComputedStyle(narrowNote).display === 'none',
+        getComputedStyle(narrowNote).display
       )
     }
+    check('a named agent says which one it is', (wide.textContent ?? '').includes('Infrastructure'))
+
+    // The manager runs almost every chat, so naming it said nothing.
+    const managed = mount(<Composer session={session} />, 900)
+    await settle()
+    const text = managed.textContent ?? ''
+    check('the default agent is not named at all', !text.includes('Manager'), text)
+    check('and nor is the way to reach the others', !text.includes('type @'), text)
   }
 
   section('the savings chip')
