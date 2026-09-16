@@ -73,6 +73,12 @@ interface State {
   boardTaskId: string | null
   /** The row whose title is being edited in place, from the session menu. */
   renamingSessionId: string | null
+  /**
+   * Text handed to the terminal pane from somewhere else — a code block's run
+   * button. The counter is what makes sending the same command twice register
+   * as two events rather than as no change at all.
+   */
+  terminalInject: { text: string; run: boolean; nonce: number } | null
   /** Null means the overview: every card from every board. */
   activeBoardId: string | null
   /** Block ids expanded in the transcript. */
@@ -102,6 +108,8 @@ interface State {
   selectBoard: (id: string | null) => void
   closeTask: () => void
   startRename: (id: string | null) => void
+  sendToTerminal: (text: string, run: boolean) => void
+  consumeTerminalInject: () => void
   refreshBoards: () => Promise<void>
   openTask: (sessionId: string) => Promise<void>
   setActivityQuery: (patch: Partial<ActivityQuery>) => void
@@ -173,6 +181,7 @@ export const useStore = create<State>((set, get) => ({
   boards: [],
   boardTaskId: null,
   renamingSessionId: null,
+  terminalInject: null,
   activeBoardId: null,
 
   async bootstrap() {
@@ -466,6 +475,18 @@ export const useStore = create<State>((set, get) => ({
 
   closeTask: () => set({ boardTaskId: null }),
   startRename: (renamingSessionId) => set({ renamingSessionId }),
+
+  sendToTerminal: (text, run) => {
+    set({
+      terminalInject: { text: text.trim(), run, nonce: Date.now() },
+      dock: { ...get().dock, open: true, tab: 'terminal' }
+    })
+  },
+
+  // Cleared once the terminal has taken it. A command is an act, not state: if
+  // it stayed here, remounting the pane — which happens the moment the dock
+  // opens — would run it a second time.
+  consumeTerminalInject: () => set({ terminalInject: null }),
 
   setActivityQuery: (patch) => set({ activityQuery: { ...get().activityQuery, ...patch } }),
   setBrowserUrl: (browserUrl) => set({ browserUrl }),

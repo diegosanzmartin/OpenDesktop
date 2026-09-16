@@ -1,4 +1,5 @@
 import clsx from 'clsx'
+import { CodeBlock } from './CodeBlock'
 import { Fragment, useMemo, type ReactNode } from 'react'
 import { marked, type Token, type Tokens } from 'marked'
 
@@ -212,9 +213,7 @@ function Blocks({
             const code = token as Tokens.Code
             return (
               <Fragment key={index}>
-                <pre className="bg-ink-850 border-ink-800 text-ink-200 my-2.5 overflow-x-auto rounded-lg border px-3 py-2.5 font-mono text-[12px] leading-[1.6]">
-                  {code.text}
-                </pre>
+                <CodeBlock code={code.text} lang={code.lang} />
                 {trailing ? <Caret /> : null}
               </Fragment>
             )

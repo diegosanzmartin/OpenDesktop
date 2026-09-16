@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { useStore } from '../state/store'
+import { terminalPayload } from '@shared/highlight'
 
 const THEME = {
   background: '#1a1918',
@@ -38,12 +39,42 @@ export function TerminalPane(): ReactNode {
   const idRef = useRef<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  /**
+   * A command sent from a code block. The pane is mounted the moment the dock
+   * opens, which is the same moment the command arrives, so the first one
+   * always gets here before the PTY exists — it is held and flushed once the
+   * terminal is up. The nonce is what stops a re-render replaying it.
+   */
+  const inject = useStore((s) => s.terminalInject)
+  const consume = useStore((s) => s.consumeTerminalInject)
+  const pending = useRef<{ text: string; run: boolean; nonce: number } | null>(null)
+  // The shell echoes the paste markers literally until it has started its line
+  // editor, so nothing is written before its first byte of output.
+  const ready = useRef(false)
+
+  const flush = (): void => {
+    const next = pending.current
+    if (!next || !idRef.current || !ready.current) return
+    pending.current = null
+    void window.opendesktop.terminal.write(idRef.current, terminalPayload(next.text, next.run))
+    term.current?.focus()
+    consume()
+  }
+
+  useEffect(() => {
+    if (!inject) return
+    pending.current = inject
+    flush()
+  }, [inject])
+
   const environmentId = session?.environmentId
   const cwd = session?.cwd
 
   useEffect(() => {
     if (!host.current || !environmentId || !cwd) return
     let disposed = false
+    // A different host or folder is a different shell, which has not started.
+    ready.current = false
 
     const terminal = new Terminal({
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
@@ -75,8 +106,13 @@ export function TerminalPane(): ReactNode {
           return
         }
         idRef.current = id
-        if (buffer) terminal.write(buffer)
+        if (buffer) {
+          terminal.write(buffer)
+          // A terminal that is being reattached is already up and running.
+          ready.current = true
+        }
         terminal.onData((data) => void window.opendesktop.terminal.write(id, data))
+        flush()
       })
       .catch((err: Error) => setError(err.message))
 
@@ -107,6 +143,11 @@ export function TerminalPane(): ReactNode {
     return window.opendesktop.onEvent((event) => {
       if (event.type === 'terminal.data' && event.terminalId === idRef.current) {
         term.current?.write(event.chunk)
+        // The shell has spoken, so it is listening.
+        if (!ready.current) {
+          ready.current = true
+          flush()
+        }
       }
       if (event.type === 'terminal.exit' && event.terminalId === idRef.current) {
         term.current?.write(`\r\n\x1b[38;5;242m[exited with code ${event.code}]\x1b[0m\r\n`)

@@ -40,6 +40,7 @@ import { parseGcloudCommand } from '@shared/gcloud'
 import { filterSessions, groupSessions, nestSubtasks, sortSessions, splitPinned } from '@shared/sessions'
 import { activityOf, duration, tokenRate } from '@shared/progress'
 import { approvalDetail, approvalQuestion } from '@shared/approvals'
+import { familyOf, highlight, isShell, terminalPayload } from '@shared/highlight'
 import type { ApprovalRequest, Block, Board, Message, Session, SessionQuery } from '@shared/types'
 import {
   columnForStatus,
@@ -827,6 +828,91 @@ async function main(): Promise<void> {
     check(
       'every session lands in exactly one group',
       byFolder.reduce((sum, g) => sum + g.items.length, 0) === 5
+    )
+  }
+
+  section('code blocks')
+  {
+    const kinds = (code: string, lang?: string): string =>
+      highlight(code, lang)
+        .filter((span) => span.kind !== 'plain')
+        .map((span) => `${span.kind}:${span.text}`)
+        .join(' ')
+
+    check(
+      'a python line is broken into its parts',
+      kinds('def shuffle(text):  # mix\n    return "".join(x)', 'python') ===
+        'keyword:def call:shuffle comment:# mix keyword:return string:"" call:join',
+      kinds('def shuffle(text):  # mix\n    return "".join(x)', 'python')
+    )
+    check(
+      'a comment runs to the end of its line and no further',
+      highlight('x = 1  # note\ny = 2', 'python').some(
+        (span) => span.kind === 'comment' && span.text === '# note'
+      )
+    )
+    check(
+      'a hash inside a string is not a comment',
+      highlight('echo "a # b"', 'bash').every((span) => span.kind !== 'comment')
+    )
+    check(
+      'a slash pair is a comment in js and not in shell',
+      highlight('// hi', 'ts').some((span) => span.kind === 'comment') &&
+        highlight('// hi', 'bash').every((span) => span.kind !== 'comment')
+    )
+    check(
+      'numbers are picked out',
+      highlight('--seed 42', 'bash').some((span) => span.kind === 'number' && span.text === '42')
+    )
+    check(
+      'an unknown language is left alone rather than guessed at',
+      highlight('anything at all', 'brainfuck').length === 1 &&
+        highlight('anything at all', 'brainfuck')[0].kind === 'plain'
+    )
+    check(
+      'nothing is lost or duplicated in the process',
+      (() => {
+        const source = 'def f(x):\n  # c\n  return "s" + 1'
+        return highlight(source, 'python').map((span) => span.text).join('') === source
+      })()
+    )
+    check('languages map onto families', familyOf('tsx') === 'js' && familyOf('zsh') === 'shell')
+
+    /* what may be offered a run button */
+    check('a declared shell block is runnable', isShell('whatever it says', 'bash'))
+    check(
+      'an undeclared block of commands is too',
+      isShell('cd /tmp && python3 shuffle.py "x" --seed 42\necho "your text" | python3 shuffle.py')
+    )
+    check('a declared non-shell block never is', !isShell('ls -la', 'python'))
+    check(
+      'and neither is prose or code that merely looks like a line',
+      !isShell('import random') &&
+        !isShell('const x = 1') &&
+        !isShell('def f(x):') &&
+        !isShell('Run the script yourself')
+    )
+    check('an empty block is not runnable', !isShell(''))
+    check('nor is a whole script pasted as one block', !isShell(Array(20).fill('ls').join('\n')))
+
+    /* what actually reaches the shell */
+    check(
+      'a single command goes as itself',
+      terminalPayload('ls -la', false) === 'ls -la'
+    )
+    check('and with a return when it is meant to run', terminalPayload('ls -la', true) === 'ls -la\r')
+    check(
+      'two lines are bracketed, so the newline between them is text and not a return',
+      terminalPayload('ls\necho hi', false) === '\u001b[200~ls\necho hi\u001b[201~',
+      terminalPayload('ls\necho hi', false)
+    )
+    check(
+      'and running them submits the whole block once, at the end',
+      terminalPayload('ls\necho hi', true) === '\u001b[200~ls\necho hi\u001b[201~\r'
+    )
+    check(
+      'a trailing newline does not become an extra return',
+      terminalPayload('ls\n', false) === 'ls'
     )
   }
 
