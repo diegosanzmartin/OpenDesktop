@@ -1,6 +1,7 @@
 /** Shared types between the main process, the preload bridge and the renderer. */
 
-import type { SessionMode } from './modes'
+import type { LegacyMode, Savings } from './savings'
+import type { Billing } from './routing'
 
 export type BlockStatus = 'pending' | 'awaiting-approval' | 'running' | 'success' | 'error' | 'canceled'
 
@@ -83,6 +84,24 @@ export interface ProviderModelConfig {
    * Absent means unknown, and unknown is shown as nothing rather than as zero.
    */
   price?: { input?: number; output?: number }
+  /**
+   * How this model is paid for. It changes what the next token costs, which is
+   * what the router balances: a flat-rate model is paid for whether it is used
+   * or not, so at the margin it is the cheapest thing there is.
+   */
+  billing?: Billing
+  /** What the subscription costs, for `flat`. Informational; nothing divides by it. */
+  monthlyCost?: number
+  /** The quota, for `allowance`, counted from what this app has spent. */
+  allowance?: { tokens?: number; period: 'day' | 'month' }
+  /**
+   * 1 (cheap) to 5 (expensive), relative to the other models declared here.
+   * Absent is read off the price, so a config written before this existed
+   * still routes sensibly.
+   */
+  cost?: number
+  /** 1 (modest) to 5 (strong): what the router means by capable. */
+  iq?: number
 }
 
 export interface ProviderConfig {
@@ -164,14 +183,18 @@ export interface AppConfig {
   agent: Record<string, AgentConfig>
   permissions: Permissions
   maxSteps: number
-  /** The mode a new session starts in. */
-  mode?: SessionMode
+  /** What a session starts with, unless it says otherwise. */
+  savings?: Partial<Savings>
+  /** The single mode this used to be. Read for compatibility, never written. */
+  mode?: LegacyMode
   /**
-   * What `shunt` delegates to, as `provider/model`. Falls back to smallModel,
-   * then to the session's own model — which works, but saves nothing.
+   * What shunt delegates reading to, as `provider/model`. Unset, the cheapest
+   * model that clears the capability floor is chosen for each job.
    */
   shuntModel?: string
-  /** Reads longer than this many lines are refused in shunt mode. */
+  /** Who is asked how to do something hard. Unset, the most capable declared. */
+  plannerModel?: string
+  /** Whole-file reads longer than this are refused while shunt is on. */
   shuntMinLines?: number
   /** How many board tasks the scheduler will run at once. */
   maxConcurrentTasks?: number
@@ -261,10 +284,12 @@ export interface Session {
   agentId: string
   model: string
   /**
-   * How much of what a tool produces reaches the model. Absent means the
-   * app's default, which is `direct`.
+   * This session's own switches. A key that is absent follows the app; that is
+   * not the same as `false`, which is this session saying no.
    */
-  mode?: SessionMode
+  savings?: Partial<Savings>
+  /** What a session stored before there were two switches. Read, never written. */
+  mode?: LegacyMode
   status: SessionStatus
   createdAt: number
   updatedAt: number

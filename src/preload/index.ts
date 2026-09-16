@@ -14,7 +14,7 @@ import type {
   Session,
   Skill
 } from '@shared/types'
-import type { SessionMode } from '@shared/modes'
+import type { Savings } from '@shared/savings'
 
 const api = {
   config: {
@@ -62,6 +62,12 @@ const api = {
     list: (): Promise<{ ref: string; label: string; provider: string }[]> =>
       ipcRenderer.invoke('models:list')
   },
+  meter: {
+    get: (): Promise<Record<string, { day: number; month: number }>> =>
+      ipcRenderer.invoke('meter:get'),
+    reset: (): Promise<Record<string, { day: number; month: number }>> =>
+      ipcRenderer.invoke('meter:reset')
+  },
   rtk: {
     status: (
       environmentId: string,
@@ -84,7 +90,7 @@ const api = {
       agentId?: string
       model?: string
       title?: string
-      mode?: SessionMode
+      savings?: Partial<Savings>
     }): Promise<Session> => ipcRenderer.invoke('session:create', input),
     update: (id: string, patch: Partial<Session>): Promise<Session | undefined> =>
       ipcRenderer.invoke('session:update', id, patch),

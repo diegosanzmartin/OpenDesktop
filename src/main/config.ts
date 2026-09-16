@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { DEFAULT_MODE, isSessionMode } from '@shared/modes'
+
 import type {
   AgentConfig,
   AppConfig,
@@ -85,7 +85,7 @@ export function defaultConfig(): AppConfig {
     permissions: DEFAULT_PERMISSIONS,
     maxSteps: 60,
     maxConcurrentTasks: 2,
-    mode: DEFAULT_MODE,
+    savings: { rtk: false, shunt: false },
     shuntMinLines: 350,
     compactAtFraction: 0.7,
     keepRecentMessages: 8,
@@ -142,9 +142,14 @@ export function normalizeConfig(raw: Record<string, unknown>): AppConfig {
     ...base,
     ...(raw as Partial<AppConfig>),
     permissions: { ...base.permissions, ...((raw.permissions as Partial<Permissions>) ?? {}) },
-    // A mode the app does not have is not a mode; fall back rather than run a
-    // session whose label means nothing.
-    mode: isSessionMode(raw.mode) ? raw.mode : base.mode,
+    // Only the two switches this app has, and only as booleans: a config is
+    // hand-editable, and `"rtk": "yes"` should not switch anything on.
+    savings: {
+      rtk: raw.savings ? (raw.savings as Record<string, unknown>).rtk === true : base.savings?.rtk,
+      shunt: raw.savings
+        ? (raw.savings as Record<string, unknown>).shunt === true
+        : base.savings?.shunt
+    },
     provider: {},
     environment: {},
     agent: {}

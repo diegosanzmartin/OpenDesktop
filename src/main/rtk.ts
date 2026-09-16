@@ -1,5 +1,5 @@
 /**
- * rtk mode: rtk-ai/rtk, used as itself rather than reimplemented.
+ * Filtered command output: rtk-ai/rtk, used as itself rather than reimplemented.
  *
  * rtk is a single Rust binary that filters the output of about a hundred
  * development commands before an agent reads it — a tree with counts instead of

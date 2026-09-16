@@ -209,6 +209,55 @@ export function Toggle({
   )
 }
 
+/**
+ * A coarse slider for a judgement.
+ *
+ * Five steps and both ends labelled, because that is the resolution the thing
+ * being set actually has: nobody can say one model is 0.72 as capable as
+ * another, and a 0–100 slider would invite them to try.
+ */
+export function RowSlider({
+  value,
+  onChange,
+  low,
+  high,
+  steps = 5,
+  title
+}: {
+  value: number
+  onChange: (next: number) => void
+  low: string
+  high: string
+  steps?: number
+  title?: string
+}): ReactNode {
+  return (
+    <div className="flex min-w-0 items-center gap-2" title={title}>
+      <span className="text-ink-600 shrink-0 text-[11px]">{low}</span>
+      <div className="flex shrink-0 items-center gap-1">
+        {Array.from({ length: steps }, (_, index) => index + 1).map((step) => (
+          <button
+            key={step}
+            type="button"
+            aria-label={`${step} of ${steps}`}
+            aria-pressed={step === value}
+            onClick={() => onChange(step)}
+            className={clsx(
+              'h-[18px] w-[18px] rounded-full border transition-colors',
+              step === value
+                ? 'border-brand bg-brand'
+                : step < value
+                  ? 'border-brand/40 bg-brand/30'
+                  : 'border-ink-700 hover:border-ink-500'
+            )}
+          />
+        ))}
+      </div>
+      <span className="text-ink-600 shrink-0 text-[11px]">{high}</span>
+    </div>
+  )
+}
+
 /** A small status word beside a row, for saved / failed / not resolved. */
 export function Hint({
   tone = 'muted',

@@ -1,5 +1,5 @@
 /**
- * shunt mode: spotify/portal-ai-plugins/plugins/shunt, adapted.
+ * Delegated reading: spotify/portal-ai-plugins/plugins/shunt, adapted.
  *
  * The idea is not compression but displacement. A file the agent reads costs
  * its whole length in this conversation, and then again on every turn after
@@ -20,12 +20,16 @@
  * Here `read` is our own tool, so the gate is in the tool: same threshold, same
  * exemptions — a targeted read with an offset or a limit always goes through,
  * because that is the agent saying it already knows what it needs.
+ *
+ * The planner below is not upstream's. It is the other half of the same idea:
+ * if the cheap model does the reading, the expensive one should do the
+ * thinking, and only the thinking.
  */
 import { generateText } from 'ai'
 import type { AppConfig } from '@shared/types'
 import { resolveModel } from './providers'
 
-export { workerIsTheSameModel, workerModelRef } from '@shared/modes'
+export { plannerModelRef, workerIsTheSameModel, workerModelRef } from '@shared/routing'
 
 /**
  * Worth delegating above this many lines, and not below it: the round trip and
@@ -48,6 +52,19 @@ export const BULK_READER_INSTRUCTIONS =
   'concisely. Output structured bullets only. No greetings, no prose, no preambles, no ' +
   'summaries. Lead every bullet with the exact name, type, or line number. Use nested ' +
   'bullets for details. Skip anything the caller did not ask for.'
+
+/**
+ * The planner's instructions. Not upstream's — shunt has no planner; this is
+ * the other half of the same idea. If the cheap model does the reading, the
+ * expensive one should do the thinking, and nothing else.
+ */
+export const PLANNER_INSTRUCTIONS =
+  'You are a senior engineer asked how to do something, not to do it. You have no tools ' +
+  'and you will not see the result. Answer with the plan: the steps in order, what each ' +
+  'one changes, what could go wrong and how it would be noticed, and what you would check ' +
+  'at the end. Name files and functions exactly when they are given to you, and say ' +
+  'plainly when something has to be found out first rather than guessing at it. No ' +
+  'preamble, no restating the question, no offers to help further.'
 
 /** Upstream's code-writer mode instructions, verbatim. */
 export const CODE_WRITER_INSTRUCTIONS =

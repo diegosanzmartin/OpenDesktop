@@ -1,7 +1,7 @@
 import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { homedir } from 'node:os'
 import type { AppConfig } from '@shared/types'
-import type { SessionMode } from '@shared/modes'
+import type { Savings } from '@shared/savings'
 import { bus } from './bus'
 import {
   CONFIG_PATH,
@@ -14,6 +14,7 @@ import {
 import { invalidateProviderCache, listModels } from './providers'
 import { getRuntime, resetRuntimes, testEnvironment } from './runtime'
 import { cachedRtkStatus, forgetRtkStatus, rtkStatus } from './rtk'
+import { meterSnapshot, resetMeter } from './meter'
 import { listSshAliases } from './runtime/ssh'
 import * as store from './store'
 import * as history from './history'
@@ -150,12 +151,19 @@ export function registerIpc(): void {
     invalidateProviderCache()
   })
 
+  /** What has been spent on each model, for the allowance counters. */
+  ipcMain.handle('meter:get', () => meterSnapshot())
+  ipcMain.handle('meter:reset', () => {
+    resetMeter()
+    return meterSnapshot()
+  })
+
   /*
-   * Whether rtk mode can do anything on a given target.
+   * Whether rtk can do anything on a given target.
    *
    * `probe` is honoured for the local machine only. Asking the question of a
    * remote target means opening the connection, and the mode picker is not a
-   * reason to dial an SSH host — the first turn in rtk mode probes it anyway,
+   * reason to dial an SSH host — the first turn that needs it probes it anyway,
    * and until then the honest answer is that nobody has looked.
    */
   ipcMain.handle('rtk:status', async (_e, environmentId: string, probe?: boolean) => {
@@ -191,7 +199,7 @@ export function registerIpc(): void {
         agentId?: string
         model?: string
         title?: string
-        mode?: SessionMode
+        savings?: Partial<Savings>
       }
     ) => {
       const config = rawConfig()
@@ -203,7 +211,7 @@ export function registerIpc(): void {
         environmentId,
         agentId: input.agentId ?? MANAGER_AGENT,
         model: input.model ?? config.model,
-        mode: input.mode ?? config.mode
+        savings: input.savings ?? config.savings
       })
     }
   )

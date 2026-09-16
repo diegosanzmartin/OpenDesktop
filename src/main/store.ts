@@ -4,7 +4,7 @@ import { nanoid } from 'nanoid'
 import type { Block, Message, MessagePart, Session, SessionStatus } from '@shared/types'
 import { DATA_DIR } from './config'
 import { copyHistory } from './history'
-import type { SessionMode } from '@shared/modes'
+import type { Savings } from '@shared/savings'
 import { bus } from './bus'
 
 const SESSIONS_DIR = join(DATA_DIR, 'sessions')
@@ -88,7 +88,7 @@ export function createSession(input: {
   environmentId: string
   agentId: string
   model: string
-  mode?: SessionMode
+  savings?: Partial<Savings>
   parentSessionId?: string
 }): Session {
   const now = Date.now()
@@ -99,7 +99,7 @@ export function createSession(input: {
     environmentId: input.environmentId,
     agentId: input.agentId,
     model: input.model,
-    mode: input.mode,
+    savings: input.savings,
     status: 'idle',
     createdAt: now,
     updatedAt: now,

@@ -2,9 +2,16 @@ import clsx from 'clsx'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Check, CircleAlert, Eye, EyeOff, Plus, Trash2 } from 'lucide-react'
 import type { AppConfig, ProviderConfig } from '@shared/types'
-import { DEFAULT_MODE, MODES, modeInfo, type SessionMode } from '@shared/modes'
+import { SWITCHES, savingsOf, type Savings } from '@shared/savings'
+import {
+  BILLINGS,
+  capability,
+  costTier,
+  pickModel,
+  type Billing
+} from '@shared/routing'
 import { useStore } from '../state/store'
-import { Hint, IconButton, Row, RowInput, RowSelect, Section } from './settings-ui'
+import { Hint, IconButton, Row, RowInput, RowSelect, RowSlider, Section, Toggle } from './settings-ui'
 
 const PRESETS: { id: string; label: string; npm: string; baseURL?: string }[] = [
   {
@@ -351,17 +358,44 @@ export function ModelsTab(): ReactNode {
 
   const dirty = useMemo(() => JSON.stringify(draft) !== JSON.stringify(config), [draft, config])
 
-  /** Every `provider/model` the document declares, for the pickers below. */
+  /** Every `provider/model` the document declares, for the rows and pickers below. */
   const declaredModels = useMemo(
     () =>
       Object.values(draft?.provider ?? {}).flatMap((provider) =>
         Object.values(provider.models).map((model) => ({
           ref: `${provider.id}/${model.id}`,
-          label: `${provider.name} · ${model.name}`
+          providerId: provider.id,
+          modelId: model.id,
+          label: `${provider.name} · ${model.name || model.id}`
         }))
       ),
     [draft]
   )
+
+  /**
+   * What has been spent on each model, so an allowance has something to count
+   * against. Local: no provider reports a balance back, so this is what this
+   * app has used and is labelled as such.
+   */
+  const [meter, setMeter] = useState<Record<string, { day: number; month: number }>>({})
+  useEffect(() => {
+    // An empty object when the answer is missing: the rows below index into
+    // this, and a settings page that throws because nothing has been spent yet
+    // would be a poor trade for one saved line.
+    void window.opendesktop.meter.get().then((next) => setMeter(next ?? {}))
+  }, [])
+
+  // The routing as it stands, shown rather than described: the settings above
+  // are two judgements per model, and this is what they add up to.
+  const delegate = useMemo(
+    () => (draft ? pickModel(draft, 'delegate', { spent: (ref) => ({ tokens: meter[ref]?.month ?? 0 }) }) : null),
+    [draft, meter]
+  )
+  const planner = useMemo(
+    () => (draft ? pickModel(draft, 'plan', { spent: (ref) => ({ tokens: meter[ref]?.month ?? 0 }) }) : null),
+    [draft, meter]
+  )
+  const savings: Savings = savingsOf(draft)
 
   useEffect(() => {
     if (!draft || !dirty) return
@@ -511,19 +545,22 @@ export function ModelsTab(): ReactNode {
       </Section>
 
       <Section
-        title="Mode"
-        description="How much of what a tool produces reaches the model. Set per session in the composer; this is what a new one starts as."
+        title="Savings"
+        description="What a session does to keep its context and its bill down. Independent of each other, and either can be turned on or off for one session from the composer. Neither is the app as it has always worked."
       >
-        <Row label="New sessions start in" description={modeInfo(draft.mode).blurb}>
-          <RowSelect
-            value={draft.mode ?? DEFAULT_MODE}
-            onChange={(event) => setDraft({ ...draft, mode: event.target.value as SessionMode })}
-            options={MODES.map((entry) => ({ value: entry.id, label: entry.label }))}
-          />
-        </Row>
+        {SWITCHES.map((entry) => (
+          <Row key={entry.id} label={entry.label} description={entry.blurb}>
+            <Toggle
+              checked={savings[entry.id]}
+              onChange={(next) =>
+                setDraft({ ...draft, savings: { ...(draft.savings ?? {}), [entry.id]: next } })
+              }
+            />
+          </Row>
+        ))}
         <Row
-          label="shunt delegates to"
-          description="The model that reads files in shunt mode. Its answer comes back; the files never do. Left as the session's own model, the files still stay out of the conversation but the reading is charged at full price."
+          label="Delegate reading to"
+          description="Left automatic, the cheapest model that clears the capability bar — which changes by itself when an allowance runs out."
         >
           <RowSelect
             value={draft.shuntModel ?? ''}
@@ -531,14 +568,32 @@ export function ModelsTab(): ReactNode {
               setDraft({ ...draft, shuntModel: event.target.value || undefined })
             }
             options={[
-              { value: '', label: draft.smallModel ? `Small model (${draft.smallModel})` : "The session's own model" },
+              {
+                value: '',
+                label: delegate ? `Automatic — ${delegate.label}` : 'Automatic'
+              },
               ...declaredModels.map((model) => ({ value: model.ref, label: model.label }))
             ]}
           />
         </Row>
         <Row
-          label="shunt refuses reads over"
-          description="Whole-file reads longer than this are refused and pointed at bulk_read. A read with an offset or a limit is always allowed — that is the agent saying it knows what it needs."
+          label="Ask for a plan"
+          description="Who is asked how to do something hard. Left automatic, the most capable model declared — and the tool is not offered at all when that is the session's own model."
+        >
+          <RowSelect
+            value={draft.plannerModel ?? ''}
+            onChange={(event) =>
+              setDraft({ ...draft, plannerModel: event.target.value || undefined })
+            }
+            options={[
+              { value: '', label: planner ? `Automatic — ${planner.label}` : 'Automatic' },
+              ...declaredModels.map((model) => ({ value: model.ref, label: model.label }))
+            ]}
+          />
+        </Row>
+        <Row
+          label="Refuse whole-file reads over"
+          description="While delegation is on. A read with an offset or a limit is always allowed — that is the agent saying it knows what it needs."
         >
           <RowInput
             mono
@@ -551,6 +606,135 @@ export function ModelsTab(): ReactNode {
           />
           <Hint>lines</Hint>
         </Row>
+      </Section>
+
+      <Section
+        title="Cost"
+        description="How each model is paid for, and the two judgements the router balances: what it costs relative to the others, and how capable it is. Nothing else can know either — a subscription model is free at the margin however expensive it looks, and no benchmark knows which of your models you actually trust."
+      >
+        {declaredModels.length === 0 ? (
+          <Row label={<Hint>No models declared yet.</Hint>} />
+        ) : (
+          declaredModels.map((entry) => {
+            const model = draft.provider[entry.providerId]?.models[entry.modelId]
+            if (!model) return null
+            const billing: Billing = model.billing ?? 'pay-as-you-go'
+            const patchModel = (next: Partial<typeof model>): void =>
+              setDraft({
+                ...draft,
+                provider: {
+                  ...draft.provider,
+                  [entry.providerId]: {
+                    ...draft.provider[entry.providerId],
+                    models: {
+                      ...draft.provider[entry.providerId].models,
+                      [entry.modelId]: { ...model, ...next }
+                    }
+                  }
+                }
+              })
+            const used = meter[entry.ref]
+            const allowance = model.allowance?.tokens
+            return (
+              <Row
+                key={entry.ref}
+                label={entry.label}
+                description={
+                  <span className="font-mono text-[11px]">{entry.ref}</span>
+                }
+              >
+                <div className="flex w-full flex-wrap items-center justify-end gap-x-3 gap-y-1.5">
+                  <RowSelect
+                    value={billing}
+                    onChange={(event) =>
+                      patchModel({ billing: event.target.value as Billing })
+                    }
+                    options={BILLINGS.map((kind) => ({ value: kind.id, label: kind.label }))}
+                  />
+
+                  {billing === 'flat' ? (
+                    <div className="flex items-center gap-1.5">
+                      <RowInput
+                        mono
+                        width="w-[76px]"
+                        placeholder="per month"
+                        value={model.monthlyCost !== undefined ? String(model.monthlyCost) : ''}
+                        onChange={(value) => patchModel({ monthlyCost: money(value) })}
+                      />
+                      <Hint>/ month</Hint>
+                    </div>
+                  ) : null}
+
+                  {billing === 'allowance' ? (
+                    <div className="flex items-center gap-1.5">
+                      <RowInput
+                        mono
+                        width="w-[92px]"
+                        placeholder="tokens"
+                        value={allowance !== undefined ? String(allowance) : ''}
+                        onChange={(value) => {
+                          const parsed = Number(value.replace(/\D/g, ''))
+                          patchModel({
+                            allowance: {
+                              period: model.allowance?.period ?? 'month',
+                              tokens: parsed || undefined
+                            }
+                          })
+                        }}
+                      />
+                      <RowSelect
+                        value={model.allowance?.period ?? 'month'}
+                        onChange={(event) =>
+                          patchModel({
+                            allowance: {
+                              tokens: model.allowance?.tokens,
+                              period: event.target.value as 'day' | 'month'
+                            }
+                          })
+                        }
+                        options={[
+                          { value: 'month', label: 'per month' },
+                          { value: 'day', label: 'per day' }
+                        ]}
+                      />
+                      <Hint tone={allowance && (used?.month ?? 0) >= allowance ? 'warn' : 'muted'}>
+                        {(
+                          (model.allowance?.period === 'day' ? used?.day : used?.month) ?? 0
+                        ).toLocaleString('en-US')}{' '}
+                        counted here
+                      </Hint>
+                    </div>
+                  ) : null}
+
+                  <RowSlider
+                    title="What this model costs relative to the others. A flat rate or an unspent allowance is treated as the cheapest whatever this says, because the next token really is free."
+                    low="cheap"
+                    high="dear"
+                    value={costTier(model)}
+                    onChange={(cost) => patchModel({ cost })}
+                  />
+                  <RowSlider
+                    title="How capable this model is — the IQ the router weighs against cost. Reading and boilerplate go to the cheapest model that clears the bar; a plan goes to the best there is."
+                    low="modest"
+                    high="strong"
+                    value={capability(model)}
+                    onChange={(iq) => patchModel({ iq })}
+                  />
+                </div>
+              </Row>
+            )
+          })
+        )}
+        {delegate && planner ? (
+          <Row label={<Hint>As it stands</Hint>}>
+            <span className="text-ink-500 text-right text-[11.5px]">
+              reading and boilerplate → <span className="font-mono">{delegate.ref}</span>,{' '}
+              {delegate.why}
+              <br />
+              plans → <span className="font-mono">{planner.ref}</span>, {planner.why}
+            </span>
+          </Row>
+        ) : null}
       </Section>
 
       <Section

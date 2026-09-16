@@ -29,6 +29,7 @@ import {
   startBackgroundTask
 } from './background'
 import { buildUserMessage } from './agent/runner'
+import { createTools, type ToolContext } from './agent/tools'
 import { createServer } from 'node:http'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -49,10 +50,20 @@ import {
   bashReadTarget,
   packFiles,
   readRefusal,
-  stripFences,
+  stripFences
+} from './shunt'
+import { NOTHING, savingsLabel, savingsOf } from '@shared/savings'
+import {
+  candidates,
+  capability,
+  costTier,
+  marginalCost,
+  pickModel,
+  plannerModelRef,
   workerIsTheSameModel,
   workerModelRef
-} from './shunt'
+} from '@shared/routing'
+import { meterSnapshot, record as meterRecord, resetMeter, spentOn } from './meter'
 import {
   acceptRewrite,
   cachedRtkStatus,
@@ -273,6 +284,52 @@ function toolCallingModel(toolName: string, input: Record<string, unknown>): Lan
             controller.enqueue({ type: 'text-start', id: 'wt' })
             controller.enqueue({ type: 'text-delta', id: 'wt', delta: 'Done.' })
             controller.enqueue({ type: 'text-end', id: 'wt' })
+            controller.enqueue(finish('stop', 20, 8))
+            controller.close()
+          }
+        })
+      }
+    }
+  }) as unknown as LanguageModel
+}
+
+/** A mock model that makes one tool call per step, in order, then answers. */
+function sequenceModel(calls: { tool: string; input: Record<string, unknown> }[]): LanguageModel {
+  let step = 0
+  return new MockLanguageModelV4({
+    doStream: async () => {
+      const call = calls[step]
+      step++
+      if (call) {
+        const payload = JSON.stringify(call.input)
+        return {
+          stream: new ReadableStream({
+            start(controller) {
+              controller.enqueue({ type: 'stream-start', warnings: [] })
+              controller.enqueue({ type: 'response-metadata', id: `q${step}`, modelId: 'mock' })
+              controller.enqueue({ type: 'tool-input-start', id: `k${step}`, toolName: call.tool })
+              controller.enqueue({ type: 'tool-input-delta', id: `k${step}`, delta: payload })
+              controller.enqueue({ type: 'tool-input-end', id: `k${step}` })
+              controller.enqueue({
+                type: 'tool-call',
+                toolCallId: `k${step}`,
+                toolName: call.tool,
+                input: payload
+              })
+              controller.enqueue(finish('tool-calls', 10, 5))
+              controller.close()
+            }
+          })
+        }
+      }
+      return {
+        stream: new ReadableStream({
+          start(controller) {
+            controller.enqueue({ type: 'stream-start', warnings: [] })
+            controller.enqueue({ type: 'response-metadata', id: 'qz', modelId: 'mock' })
+            controller.enqueue({ type: 'text-start', id: 'qt' })
+            controller.enqueue({ type: 'text-delta', id: 'qt', delta: 'Both done.' })
+            controller.enqueue({ type: 'text-end', id: 'qt' })
             controller.enqueue(finish('stop', 20, 8))
             controller.close()
           }
@@ -2509,7 +2566,7 @@ async function main(): Promise<void> {
     }
   }
 
-  section('rtk mode: what may run in place of what was asked for')
+  section('filtered output: what may run in place of what was asked for')
   {
     // rtk's own rewrite suite, as the shapes this gate has to let through.
     const allowed: [string, string][] = [
@@ -2546,7 +2603,7 @@ async function main(): Promise<void> {
     check('and nothing is invented when it says something else', parseRtkVersion('who?') === null)
   }
 
-  section('rtk mode: asking rtk what to run')
+  section('filtered output: asking rtk what to run')
   {
     const permissions = defaultConfig().permissions
 
@@ -2651,7 +2708,7 @@ async function main(): Promise<void> {
     forgetRtkStatus()
   }
 
-  section('rtk mode: a real turn, with rtk stood in for')
+  section('filtered output: a real turn, with rtk stood in for')
   {
     /*
      * A stand-in on the PATH rather than a stub in the code: the point of this
@@ -2699,10 +2756,13 @@ async function main(): Promise<void> {
       environmentId: 'local',
       agentId: 'build',
       model: 'mock/mock',
-      mode: 'rtk'
+      savings: { rtk: true }
     })
     history.clearHistory(rtkSession.id)
-    check('the mode is a property of the session', store.getSession(rtkSession.id)?.mode === 'rtk')
+    check(
+      'the switch is a property of the session',
+      store.getSession(rtkSession.id)?.savings?.rtk === true
+    )
 
     providers.setModelResolverOverride(() => ({
       providerId: 'mock',
@@ -2729,7 +2789,11 @@ async function main(): Promise<void> {
       (rtkBlock?.output ?? '').includes('compact(git status)'),
       rtkBlock?.output
     )
-    check('the agent is told its output is filtered', /# rtk/.test(systemPrompt))
+    check(
+      'the agent is told its output is filtered',
+      /# Filtered command output \(rtk\)/.test(systemPrompt),
+      systemPrompt.slice(-600)
+    )
     check(
       'and told that file contents are not',
       /never filtered/.test(systemPrompt),
@@ -2765,7 +2829,7 @@ async function main(): Promise<void> {
       plainBlock?.input.ranAs === undefined && (plainBlock?.output ?? '').includes('plain-ok'),
       plainBlock?.output
     )
-    check('and is told nothing about rtk', !/# rtk/.test(systemPrompt))
+    check('and is told nothing about rtk', !/rtk/.test(systemPrompt))
 
     // A mode that cannot work says so in the chat rather than pretending.
     process.env.PATH = realPath
@@ -2776,7 +2840,7 @@ async function main(): Promise<void> {
       environmentId: 'local',
       agentId: 'build',
       model: 'mock/mock',
-      mode: 'rtk'
+      savings: { rtk: true }
     })
     history.clearHistory(brokenSession.id)
     providers.setModelResolverOverride(() => ({
@@ -2798,11 +2862,15 @@ async function main(): Promise<void> {
       .filter((m) => m.role === 'system')
       .flatMap((m) => m.parts.map((p) => p.text ?? ''))
       .join('\n')
-    check('a mode that cannot be honoured is said out loud', /rtk mode/.test(said), said.slice(0, 200))
+    check(
+      'a switch that cannot be honoured is said out loud',
+      /rtk cannot be used/.test(said),
+      said.slice(0, 200)
+    )
     check('and the turn still happens', (store.listBlocks(brokenSession.id)[0]?.output ?? '').includes('unfiltered'))
     check(
       'and it is said once, not at every turn',
-      !/rtk mode[\s\S]*rtk mode/.test(said)
+      !/rtk cannot be used[\s\S]*rtk cannot be used/.test(said)
     )
 
     /*
@@ -2822,7 +2890,7 @@ async function main(): Promise<void> {
         environmentId: 'local',
         agentId: 'build',
         model: 'mock/mock',
-        mode: 'rtk'
+        savings: { rtk: true }
       })
       askSessions.push(s.id)
       history.clearHistory(s.id)
@@ -2856,7 +2924,7 @@ async function main(): Promise<void> {
     forgetRtkStatus()
   }
 
-  section('shunt mode: what a large file costs to look at')
+  section('delegated reading: what a large file costs to look at')
   {
     const over = readRefusal({ path: '/p/big.ts', lines: 4014 })
     check('a whole large file is refused', over !== null)
@@ -2914,12 +2982,18 @@ async function main(): Promise<void> {
       workerModelRef({ ...base, smallModel: 'p/small' }, 'p/big') === 'p/small'
     )
     check(
-      "and failing that it runs anyway, on the session's own",
-      workerModelRef(base, 'p/big') === 'p/big' && workerIsTheSameModel(base, 'p/big')
+      'and failing that, whichever declared model the router likes',
+      workerModelRef(base, 'p/big') === 'helmcode/glm5.3-flash',
+      workerModelRef(base, 'p/big')
+    )
+    const noModels = { ...base, provider: {} }
+    check(
+      "and with nothing declared at all it still runs, on the session's own",
+      workerModelRef(noModels, 'p/big') === 'p/big' && workerIsTheSameModel(noModels, 'p/big')
     )
   }
 
-  section('shunt mode: a real turn, with the reading delegated')
+  section('delegated reading: a real turn')
   {
     const dir = join(tmpdir(), 'opendesktop-shunt')
     mkdirSync(dir, { recursive: true })
@@ -2940,7 +3014,7 @@ async function main(): Promise<void> {
       environmentId: 'local',
       agentId: 'build',
       model: 'mock/mock',
-      mode: 'shunt'
+      savings: { shunt: true }
     })
     history.clearHistory(shuntSession.id)
 
@@ -3033,7 +3107,7 @@ async function main(): Promise<void> {
       environmentId: 'local',
       agentId: 'build',
       model: 'mock/mock',
-      mode: 'shunt'
+      savings: { shunt: true }
     })
     history.clearHistory(gated.id)
     providers.setModelResolverOverride(() => ({
@@ -3055,7 +3129,7 @@ async function main(): Promise<void> {
       environmentId: 'local',
       agentId: 'build',
       model: 'mock/mock',
-      mode: 'shunt'
+      savings: { shunt: true }
     })
     history.clearHistory(paged.id)
     providers.setModelResolverOverride(() => ({
@@ -3080,7 +3154,7 @@ async function main(): Promise<void> {
       environmentId: 'local',
       agentId: 'build',
       model: 'mock/mock',
-      mode: 'shunt'
+      savings: { shunt: true }
     })
     history.clearHistory(written.id)
     providers.setModelResolverOverride((ref) =>
@@ -3133,6 +3207,452 @@ async function main(): Promise<void> {
       history.clearHistory(id)
     }
     rmSync(dir, { recursive: true, force: true })
+    saveConfig(defaultConfig())
+  }
+
+  section('two switches, not three modes')
+  {
+    const base = defaultConfig()
+    const session = (over: Partial<Session>): Session =>
+      ({
+        id: 'x',
+        title: 't',
+        cwd: '/tmp',
+        environmentId: 'local',
+        agentId: 'auto',
+        model: 'p/m',
+        status: 'idle',
+        createdAt: 0,
+        updatedAt: 0,
+        usage: { input: 0, output: 0, cost: 0 },
+        ...over
+      }) as Session
+
+    check('nothing on by default', savingsOf({ ...base, savings: undefined }).rtk === false)
+    check('the label for nothing on is Direct', savingsLabel(NOTHING) === 'Direct')
+    check('and both on reads as both', savingsLabel({ rtk: true, shunt: true }) === 'rtk + shunt')
+    check('one on reads as that one', savingsLabel({ rtk: false, shunt: true }) === 'shunt')
+
+    const both = { ...base, savings: { rtk: true, shunt: true } }
+    check('they compose — this is the point of the change', savingsOf(both).rtk && savingsOf(both).shunt)
+
+    const off = savingsOf(both, session({ savings: { rtk: false } }))
+    check('a session may turn one off without touching the other', !off.rtk && off.shunt)
+    const on = savingsOf({ ...base, savings: {} }, session({ savings: { shunt: true } }))
+    check('or turn one on on its own', on.shunt && !on.rtk)
+
+    // What is already on disk from when this was a single mode.
+    check('an old rtk session still filters', savingsOf(base, session({ mode: 'rtk' })).rtk)
+    check('an old shunt session still delegates', savingsOf(base, session({ mode: 'shunt' })).shunt)
+    check(
+      'an old direct session does neither, whatever the app now says',
+      !savingsOf(both, session({ mode: 'direct' })).rtk &&
+        !savingsOf(both, session({ mode: 'direct' })).shunt
+    )
+    check('and an old app-wide mode is still honoured', savingsOf({ ...base, savings: undefined, mode: 'rtk' }).rtk)
+  }
+
+  section('which model does which job')
+  {
+    const model = (over: Record<string, unknown>) => ({ id: 'm', name: 'M', ...over }) as never
+    check('a cheap price reads as a cheap model', costTier(model({ price: { input: 0.2 } })) === 1)
+    check('and a dear one as a dear model', costTier(model({ price: { input: 20 } })) === 5)
+    check('the slider wins over the price', costTier(model({ price: { input: 20 }, cost: 2 })) === 2)
+    check('an unpriced model sits in the middle', costTier(model({})) === 3)
+    check('as does an unrated one', capability(model({})) === 3)
+    check('and a rating out of range is brought back in', capability(model({ iq: 99 })) === 5)
+
+    check(
+      'a subscription is free at the margin, whatever it looks like',
+      marginalCost(model({ billing: 'flat', cost: 5 })) === 1
+    )
+    check(
+      'an allowance is free until it runs out',
+      marginalCost(model({ billing: 'allowance', cost: 4, allowance: { tokens: 1000, period: 'month' } }), {
+        tokens: 100
+      }) === 1
+    )
+    check(
+      'and costs what it costs once it has',
+      marginalCost(model({ billing: 'allowance', cost: 4, allowance: { tokens: 1000, period: 'month' } }), {
+        tokens: 1000
+      }) === 4
+    )
+    check(
+      'and stops being free as it nears the end',
+      marginalCost(model({ billing: 'allowance', cost: 4, allowance: { tokens: 1000, period: 'month' } }), {
+        tokens: 950
+      }) === 3
+    )
+
+    const fleet: AppConfig = {
+      ...defaultConfig(),
+      provider: {
+        p: {
+          id: 'p',
+          npm: '@ai-sdk/openai-compatible',
+          name: 'P',
+          options: {},
+          models: {
+            brain: { id: 'brain', name: 'Brain', cost: 5, iq: 5 },
+            middle: { id: 'middle', name: 'Middle', cost: 3, iq: 3 },
+            tiny: { id: 'tiny', name: 'Tiny', cost: 1, iq: 1 },
+            cheap: { id: 'cheap', name: 'Cheap', cost: 2, iq: 2 }
+          }
+        }
+      }
+    }
+
+    check('every declared model is a candidate', candidates(fleet).length === 4)
+    const delegate = pickModel(fleet, 'delegate')
+    check(
+      'reading goes to the cheapest model that is still worth trusting',
+      delegate?.ref === 'p/cheap',
+      delegate
+    )
+    check('not to the cheapest thing on the list', delegate?.ref !== 'p/tiny')
+    const plan = pickModel(fleet, 'plan')
+    check('a plan goes to the best there is', plan?.ref === 'p/brain', plan)
+    check('and says why, so the choice is not a mystery', /most capable/.test(plan?.why ?? ''))
+
+    const subscribed: AppConfig = {
+      ...fleet,
+      provider: {
+        p: {
+          ...fleet.provider.p,
+          models: {
+            ...fleet.provider.p.models,
+            brain: { id: 'brain', name: 'Brain', cost: 5, iq: 5, billing: 'flat' }
+          }
+        }
+      }
+    }
+    const paid = pickModel(subscribed, 'delegate')
+    check(
+      'a subscription takes the work, however dear it looks',
+      paid?.ref === 'p/brain',
+      paid
+    )
+    check('and the reason says so', /already paid for/.test(paid?.why ?? ''))
+
+    /*
+     * A model that is dear but has an allowance: free while the allowance
+     * lasts, so it takes the work; its own price once it does not, so the work
+     * goes to whatever is genuinely cheaper.
+     */
+    const metered: AppConfig = {
+      ...fleet,
+      provider: {
+        p: {
+          ...fleet.provider.p,
+          models: {
+            middle: fleet.provider.p.models.middle,
+            included: {
+              id: 'included',
+              name: 'Included',
+              cost: 4,
+              iq: 4,
+              billing: 'allowance',
+              allowance: { tokens: 100, period: 'month' }
+            }
+          }
+        }
+      }
+    }
+    check(
+      'an allowance takes the work while it lasts',
+      pickModel(metered, 'delegate', { spent: () => ({ tokens: 0 }) })?.ref === 'p/included'
+    )
+    const after = pickModel(metered, 'delegate', {
+      spent: (ref) => (ref === 'p/included' ? { tokens: 500 } : { tokens: 0 })
+    })
+    check('and hands it back once it is spent', after?.ref === 'p/middle', after)
+
+    check('a named worker outranks the router', workerModelRef({ ...fleet, shuntModel: 'p/brain' }, 'p/x') === 'p/brain')
+    check('as does a named planner', plannerModelRef({ ...fleet, plannerModel: 'p/tiny' }, 'p/x') === 'p/tiny')
+    check(
+      'with one model declared it is used for everything',
+      pickModel(
+        {
+          ...fleet,
+          provider: {
+            p: { ...fleet.provider.p, models: { only: { id: 'only', name: 'Only', iq: 1 } } }
+          }
+        },
+        'delegate'
+      )?.ref === 'p/only'
+    )
+  }
+
+  section('counting what has been spent')
+  {
+    resetMeter()
+    check('a model nobody has used has spent nothing', spentOn('p/m', 'month').tokens === 0)
+    meterRecord('p/m', { input: 100, output: 20 })
+    meterRecord('p/m', { input: 5, output: 5 })
+    check('input and output are counted together', spentOn('p/m', 'month').tokens === 130)
+    check('and the day is counted too', spentOn('p/m', 'day').tokens === 130)
+    check('a different model keeps its own count', spentOn('p/other', 'month').tokens === 0)
+    meterRecord('p/m', { input: 0, output: 0 })
+    check('an empty turn changes nothing', spentOn('p/m', 'month').tokens === 130)
+    check('the snapshot is what the settings page reads', meterSnapshot()['p/m']?.month === 130)
+    resetMeter()
+    check('and it can be started again', spentOn('p/m', 'month').tokens === 0)
+  }
+
+  section('which tools each switch puts on the table')
+  {
+    const { runtime } = fakeRuntime(() => ({ stdout: '' }))
+    const held = store.createSession({
+      title: 'roster',
+      cwd: '/tmp',
+      environmentId: 'local',
+      agentId: 'auto',
+      model: 'p/middle'
+    })
+    const message = store.addMessage({ sessionId: held.id, role: 'assistant', parts: [] })
+
+    const fleet: AppConfig = {
+      ...defaultConfig(),
+      provider: {
+        p: {
+          id: 'p',
+          npm: '@ai-sdk/openai-compatible',
+          name: 'P',
+          options: {},
+          models: {
+            brain: { id: 'brain', name: 'Brain', cost: 5, iq: 5 },
+            middle: { id: 'middle', name: 'Middle', cost: 3, iq: 3 }
+          }
+        }
+      }
+    }
+
+    const roster = (savings: { rtk: boolean; shunt: boolean }, modelRef = 'p/middle'): string[] => {
+      const ctx: ToolContext = {
+        config: fleet,
+        agent: { id: 'a', name: 'A', description: '', mode: 'primary' },
+        permissions: fleet.permissions,
+        sessionId: held.id,
+        environmentId: 'local',
+        cwd: '/tmp',
+        runtime,
+        signal: new AbortController().signal,
+        savings,
+        modelRef,
+        currentMessageId: () => message.id,
+        depth: 0
+      }
+      return Object.keys(createTools(ctx))
+    }
+
+    const plain = roster({ rtk: false, shunt: false })
+    check('with nothing on, the tools are the ordinary ones', plain.includes('bash') && plain.includes('read'))
+    check('and nothing is delegated', !plain.includes('bulk_read') && !plain.includes('plan'))
+    check('filtering output adds no tools — it changes what they return', roster({ rtk: true, shunt: false }).join() === plain.join())
+
+    const delegating = roster({ rtk: false, shunt: true })
+    check('delegation adds the three that delegate', ['bulk_read', 'code_write', 'plan'].every((t) => delegating.includes(t)))
+    check('and keeps read, which is how exact text is still got', delegating.includes('read'))
+    check(
+      'a session already on the best model is not offered a planner',
+      !roster({ rtk: false, shunt: true }, 'p/brain').includes('plan'),
+      roster({ rtk: false, shunt: true }, 'p/brain')
+    )
+
+    store.deleteSession(held.id)
+    history.clearHistory(held.id)
+  }
+
+  section('both switches at once, in one turn')
+  {
+    const dir = join(tmpdir(), 'opendesktop-both')
+    mkdirSync(dir, { recursive: true })
+    const big = join(dir, 'huge.ts')
+    writeFileSync(big, Array.from({ length: 600 }, (_, i) => `const x${i} = ${i}`).join('\n'))
+
+    const bin = join(tmpdir(), 'opendesktop-fake-rtk-both')
+    mkdirSync(bin, { recursive: true })
+    writeFileSync(
+      join(bin, 'rtk'),
+      ['#!/bin/sh', 'case "$1" in', '  --version) echo "rtk 0.28.2" ;;', '  rewrite) echo "rtk $2" ;;', '  *) echo "filtered($*)" ;;', 'esac'].join('\n'),
+      { mode: 0o755 }
+    )
+    const realPath = process.env.PATH
+    process.env.PATH = `${bin}:${realPath ?? ''}`
+    forgetRtkStatus()
+
+    saveConfig({ ...defaultConfig(), shuntModel: 'mock/worker' })
+
+    const both = store.createSession({
+      title: 'both',
+      cwd: dir,
+      environmentId: 'local',
+      agentId: 'build',
+      model: 'mock/mock',
+      savings: { rtk: true, shunt: true }
+    })
+    history.clearHistory(both.id)
+
+    let prompt = ''
+    // Built once: a fresh one per step would start its sequence again and call
+    // the same tool until the step limit stopped it.
+    const sequence = sequenceModel([
+      { tool: 'read', input: { path: big } },
+      { tool: 'bash', input: { command: 'git status', description: 'check the repo' } }
+    ]) as unknown as { doStream: (o: unknown) => Promise<never> }
+    providers.setModelResolverOverride((ref) =>
+      ref === 'mock/worker'
+        ? {
+            providerId: 'mock',
+            modelId: 'worker',
+            label: 'Worker',
+            model: answeringModel('- nothing interesting', 900, 20)
+          }
+        : {
+            providerId: 'mock',
+            modelId: 'mock',
+            label: 'Mock',
+            model: new MockLanguageModelV4({
+              doStream: async (options) => {
+                const messages = (options as { prompt?: { role: string; content: unknown }[] }).prompt
+                const system = messages?.find((m) => m.role === 'system')
+                if (system && typeof system.content === 'string') prompt = system.content
+                return sequence.doStream(options)
+              }
+            }) as unknown as LanguageModel
+          }
+    )
+    const allowBoth = bus.subscribe((event) => {
+      if (event.type === 'approval.requested') resolveApproval(event.request.id, 'once')
+    })
+    await runTurn({ sessionId: both.id, userText: 'look at huge.ts then check the repo' })
+    allowBoth()
+    providers.setModelResolverOverride(null)
+
+    const blocks = store.listBlocks(both.id)
+    check('both tool calls happened in the one turn', blocks.length === 2, blocks.length)
+    check(
+      'the large read was refused, as delegation says',
+      blocks[0]?.tool === 'read' && blocks[0]?.status === 'error' && /bulk_read/.test(blocks[0]?.error ?? ''),
+      blocks[0]?.error
+    )
+    check(
+      'and the command was filtered, as rtk says',
+      blocks[1]?.input.ranAs === 'rtk git status' &&
+        (blocks[1]?.output ?? '').includes('filtered(git status)'),
+      blocks[1]?.input.ranAs
+    )
+    check('the agent was told about both', /rtk\)/.test(prompt) && /shunt\)/.test(prompt))
+    check(
+      'and the two notes are separate sections, not one muddled one',
+      (prompt.match(/^# /gm) ?? []).length >= 2,
+      prompt.match(/^# /gm)
+    )
+
+    process.env.PATH = realPath
+    forgetRtkStatus()
+    store.deleteSession(both.id)
+    history.clearHistory(both.id)
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(bin, { recursive: true, force: true })
+    saveConfig(defaultConfig())
+  }
+
+  section('asking a stronger model how to do it')
+  {
+    // Two models, one obviously better. The session runs on the modest one,
+    // which is the situation the planner exists for.
+    saveConfig({
+      ...defaultConfig(),
+      provider: {
+        mock: {
+          id: 'mock',
+          npm: '@ai-sdk/openai-compatible',
+          name: 'Mock',
+          options: { apiKey: 'x' },
+          models: {
+            mock: { id: 'mock', name: 'Modest', cost: 1, iq: 2 },
+            brain: { id: 'brain', name: 'Brain', cost: 5, iq: 5 }
+          }
+        }
+      }
+    })
+    resetMeter()
+
+    const planned = store.createSession({
+      title: 'plan',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: 'build',
+      model: 'mock/mock',
+      savings: { shunt: true }
+    })
+    history.clearHistory(planned.id)
+
+    let plannerSystem = ''
+    providers.setModelResolverOverride((ref) =>
+      ref === 'mock/brain'
+        ? {
+            providerId: 'mock',
+            modelId: 'brain',
+            label: 'Brain',
+            model: new MockLanguageModelV4({
+              doGenerate: async (options) => {
+                const messages = (options as { prompt?: { role: string; content: unknown }[] }).prompt
+                plannerSystem = String(messages?.find((m) => m.role === 'system')?.content ?? '')
+                return {
+                  content: [{ type: 'text' as const, text: '1. Read the config. 2. Change one thing.' }],
+                  finishReason: { unified: 'stop' as const, raw: 'stop' },
+                  usage: {
+                    inputTokens: { total: 300, noCache: 300, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 60, text: 60, reasoning: 0 }
+                  },
+                  warnings: []
+                }
+              }
+            }) as unknown as LanguageModel
+          }
+        : {
+            providerId: 'mock',
+            modelId: 'mock',
+            label: 'Modest',
+            model: toolCallingModel('plan', {
+              task: 'Move the whole config onto a new shape',
+              context: 'config.ts holds it, and three other files read it'
+            })
+          }
+    )
+    await runTurn({ sessionId: planned.id, userText: 'how should I do this?' })
+    providers.setModelResolverOverride(null)
+
+    const planBlock = store.listBlocks(planned.id)[0]
+    check('the plan is a block of its own', planBlock?.tool === 'plan', planBlock?.tool)
+    check(
+      'and it went to the most capable model, not the session’s own',
+      planBlock?.subtitle === 'planned by mock/brain',
+      planBlock?.subtitle
+    )
+    check('the planner is told to plan and not to work', /not to do it/.test(plannerSystem))
+    check(
+      'the plan comes back',
+      (planBlock?.output ?? '').includes('Change one thing'),
+      planBlock?.output
+    )
+    check(
+      'the stronger model is paid for out of this session',
+      (store.getSession(planned.id)?.usage.input ?? 0) >= 300,
+      store.getSession(planned.id)?.usage
+    )
+    check(
+      'and counted against that model, not against the one running the session',
+      meterSnapshot()['mock/brain']?.month === 360,
+      meterSnapshot()
+    )
+
+    store.deleteSession(planned.id)
+    history.clearHistory(planned.id)
+    resetMeter()
     saveConfig(defaultConfig())
   }
 

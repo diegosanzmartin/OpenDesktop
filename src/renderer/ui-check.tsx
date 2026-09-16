@@ -20,6 +20,7 @@ import { Mentions } from './src/components/Markdown'
 import { DocumentCard } from './src/components/DocumentCard'
 import { Composer } from './src/components/Composer'
 import { ContextGauge } from './src/components/ContextGauge'
+import { ModelsTab } from './src/components/ModelsTab'
 
 const failures: string[] = []
 let checks = 0
@@ -320,36 +321,57 @@ async function run(): Promise<void> {
     }
   }
 
-  section('the mode picker')
+  section('the savings chip')
   {
-    const pickerIn = (host: HTMLElement): HTMLSelectElement | undefined =>
-      [...host.querySelectorAll('select')].find((select) =>
-        (select.getAttribute('title') ?? '').startsWith('Mode')
-      ) as HTMLSelectElement | undefined
+    const chipIn = (host: HTMLElement): HTMLElement | undefined =>
+      [...host.querySelectorAll('button')].find((button) =>
+        (button.getAttribute('title') ?? '').startsWith('What this session does')
+      ) as HTMLElement | undefined
 
-    const direct = mount(<Composer session={session} />, 900)
+    const plain = mount(<Composer session={session} />, 900)
     await settle()
-    const picker = pickerIn(direct)
-    check('the composer offers a mode', Boolean(picker))
+    check('the composer carries the switches', Boolean(chipIn(plain)))
     check(
-      'all three are on it',
-      [...(picker?.options ?? [])].map((o) => o.value).join(',') === 'direct,rtk,shunt',
-      [...(picker?.options ?? [])].map((o) => o.value)
-    )
-    check('and a session with none set reads as Direct', picker?.value === 'direct', picker?.value)
-    check(
-      'and a direct session is not told about rtk — the options name it, nothing else does',
-      !(direct.textContent ?? '').includes('not installed') &&
-        !/rtk \d/.test(direct.textContent ?? ''),
-      direct.textContent
+      'and nothing on reads as Direct',
+      (chipIn(plain)?.textContent ?? '').includes('Direct'),
+      chipIn(plain)?.textContent
     )
 
-    // rtk mode, with the bridge answering the way each case would.
+    const one = mount(<Composer session={{ ...session, savings: { shunt: true } }} />, 900)
+    await settle()
+    check('one on is named', (chipIn(one)?.textContent ?? '').includes('shunt'))
+
+    const two = mount(
+      <Composer session={{ ...session, savings: { rtk: true, shunt: true } }} />,
+      900
+    )
+    await settle()
+    check(
+      'and both on are named together, which a mode picker could not say',
+      (chipIn(two)?.textContent ?? '').includes('rtk + shunt'),
+      chipIn(two)?.textContent
+    )
+
+    // Opening it shows two independent switches, not three exclusive options.
+    chipIn(plain)?.click()
+    await settle()
+    const panel = [...document.body.querySelectorAll('div')].find((node) =>
+      (node.textContent ?? '').includes('Neither is Direct')
+    )
+    check('opening it offers both', Boolean(panel))
+    check(
+      'described rather than abbreviated',
+      (panel?.textContent ?? '').includes('Filter command output') &&
+        (panel?.textContent ?? '').includes('Delegate reading and planning'),
+      panel?.textContent
+    )
+    check('and there is no third option to choose', !(panel?.textContent ?? '').includes('Direct mode'))
+    document.body.querySelectorAll('div[style*="bottom"]').forEach((node) => node.remove())
+
     const saved = REPLIES.status
     REPLIES.status = { state: 'missing', message: 'not on the PATH' }
-    const broken = mount(<Composer session={{ ...session, mode: 'rtk' }} />, 900)
+    const broken = mount(<Composer session={{ ...session, savings: { rtk: true } }} />, 900)
     await settle()
-    check('the picker follows the session', pickerIn(broken)?.value === 'rtk')
     check(
       'a missing rtk is admitted to, not hidden',
       (broken.textContent ?? '').includes('rtk not installed here'),
@@ -358,32 +380,30 @@ async function run(): Promise<void> {
     check('and it is a warning, not a note', broken.innerHTML.includes('text-warn'))
 
     REPLIES.status = { state: 'ready', version: '0.28.2' }
-    const ready = mount(<Composer session={{ ...session, mode: 'rtk' }} />, 900)
+    const ready = mount(<Composer session={{ ...session, savings: { rtk: true } }} />, 900)
     await settle()
     check(
       'a working rtk shows which one is working',
       (ready.textContent ?? '').includes('rtk 0.28.2'),
       ready.textContent
     )
-    check('and says nothing alarming', !ready.innerHTML.includes('text-warn'))
     REPLIES.status = saved
 
-    // shunt says which model is doing the reading, and says so loudly when it
-    // is the same one — the files still stay out of the conversation, but the
-    // price is the session's own.
-    const same = mount(<Composer session={{ ...session, mode: 'shunt' }} />, 900)
+    // Delegation says where the reading is going, and says so loudly when it
+    // is going nowhere cheaper.
+    const same = mount(<Composer session={{ ...session, savings: { shunt: true } }} />, 900)
     await settle()
     check(
-      'shunt with no cheaper model set says so',
-      (same.textContent ?? '').includes('no cheaper model set'),
+      'delegating to the session\u2019s own model says so',
+      (same.textContent ?? '').includes('no cheaper model'),
       same.textContent
     )
 
     useStore.setState({ config: { ...useStore.getState().config!, shuntModel: 'p/cheap' } })
-    const cheap = mount(<Composer session={{ ...session, mode: 'shunt' }} />, 900)
+    const cheap = mount(<Composer session={{ ...session, savings: { shunt: true } }} />, 900)
     await settle()
     check(
-      'and names the worker once there is one',
+      'and naming the worker once there is one',
       (cheap.textContent ?? '').includes('reading → p/cheap'),
       cheap.textContent
     )
@@ -391,7 +411,7 @@ async function run(): Promise<void> {
     useStore.setState({ config: { ...useStore.getState().config!, shuntModel: undefined } })
   }
 
-  section('a command a mode rewrote')
+  section('a command a switch rewrote')
   {
     const rewritten: Block = block({
       id: 'b-rtk',
@@ -421,6 +441,59 @@ async function run(): Promise<void> {
       open.textContent
     )
     useStore.setState({ expanded: {} })
+  }
+
+  section('the cost and capability settings')
+  {
+    // Two models, one obviously better, so the routing has something to say.
+    const before = useStore.getState().config!
+    useStore.setState({
+      config: {
+        ...before,
+        savings: { rtk: false, shunt: true },
+        provider: {
+          p: {
+            id: 'p',
+            npm: '@ai-sdk/openai-compatible',
+            name: 'P',
+            options: {},
+            models: {
+              brain: { id: 'brain', name: 'Brain', cost: 5, iq: 5 },
+              cheap: { id: 'cheap', name: 'Cheap', cost: 1, iq: 2, billing: 'flat' }
+            }
+          }
+        }
+      }
+    })
+
+    const host = mount(<ModelsTab />, 900)
+    await settle()
+    const text = host.textContent ?? ''
+    check('the switches have a home of their own', text.includes('Savings'), text.slice(0, 120))
+    check(
+      'and each model carries the two judgements',
+      text.includes('Cost') && text.includes('cheap') && text.includes('strong'),
+      text.includes('Cost')
+    )
+    check(
+      'every way of paying is offered',
+      text.includes('Pay as you go') && text.includes('Flat rate') && text.includes('Included allowance')
+    )
+    check(
+      'and the routing says what it currently decides',
+      /reading and boilerplate → p\/cheap/.test(text) && /plans → p\/brain/.test(text),
+      text.slice(text.indexOf('As it stands'), text.indexOf('As it stands') + 200)
+    )
+    check(
+      'with the reason, so the choice is not a mystery',
+      text.includes('already paid for'),
+      text
+    )
+
+    const sliders = host.querySelectorAll('button[aria-label$="of 5"]')
+    check('the judgements are coarse on purpose — five steps', sliders.length === 20, sliders.length)
+
+    useStore.setState({ config: before })
   }
 
   console.log(`\n${checks - failures.length}/${checks} checks passed`)

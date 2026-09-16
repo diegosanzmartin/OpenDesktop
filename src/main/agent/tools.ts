@@ -2,7 +2,7 @@ import { tool, type ToolSet } from 'ai'
 import { z } from 'zod'
 import { basename, relative } from 'node:path'
 import type { AgentConfig, AppConfig, Block, Permissions } from '@shared/types'
-import { type SessionMode } from '@shared/modes'
+import { type Savings } from '@shared/savings'
 import { PermissionDenied, decide, hasSessionGrant, requestApproval } from '../approvals'
 import { diffStats, renderDiff } from '../diff'
 import { shellQuote, type Runtime } from '../runtime'
@@ -19,6 +19,8 @@ import { rewriteThroughRtk, rtkListingCommand, rtkStatus } from '../rtk'
 import {
   BULK_READER_INSTRUCTIONS,
   CODE_WRITER_INSTRUCTIONS,
+  PLANNER_INSTRUCTIONS,
+  plannerModelRef,
   MAX_PAYLOAD_CHARS,
   askWorker,
   bashReadTarget,
@@ -28,6 +30,7 @@ import {
   workerModelRef
 } from '../shunt'
 import { costOf } from '@shared/cost'
+import { record as meterRecord, spentLookup } from '../meter'
 
 export interface ToolContext {
   config: AppConfig
@@ -38,8 +41,8 @@ export interface ToolContext {
   cwd: string
   runtime: Runtime
   signal: AbortSignal
-  /** How much of what a tool produces reaches the model. */
-  mode: SessionMode
+  /** What this session does to keep its context and its bill down. */
+  savings: Savings
   /** The model running this turn, as `provider/model`. */
   modelRef: string
   /** The assistant message currently being streamed; blocks attach to it. */
@@ -204,7 +207,7 @@ function enabled(ctx: ToolContext, name: string): boolean {
  * call, so every tool can ask without paying for it.
  */
 async function rtkUsable(ctx: ToolContext): Promise<boolean> {
-  if (ctx.mode !== 'rtk') return false
+  if (!ctx.savings.rtk) return false
   const status = await rtkStatus(ctx.environmentId, ctx.runtime, ctx.cwd)
   return status.state === 'ready'
 }
@@ -277,7 +280,7 @@ export function createTools(ctx: ToolContext): ToolSet {
          * another route, so it is refused the same way. Upstream's exemptions
          * hold — a pipe or a redirect means the output is not coming in here.
          */
-        if (ctx.mode === 'shunt') {
+        if (ctx.savings.shunt) {
           const target = bashReadTarget(command)
           if (target) {
             const path = ctx.runtime.resolve(ctx.cwd, target)
@@ -300,7 +303,7 @@ export function createTools(ctx: ToolContext): ToolSet {
          * consulted, which can only ever add a prompt, never remove one.
          */
         const rewrite =
-          ctx.mode === 'rtk'
+          ctx.savings.rtk
             ? await rewriteThroughRtk({
                 environmentId: ctx.environmentId,
                 runtime: ctx.runtime,
@@ -440,7 +443,7 @@ export function createTools(ctx: ToolContext): ToolSet {
             // the file has to be read to be counted — it costs I/O, which is
             // not the resource this mode is protecting.
             const refusal =
-              ctx.mode === 'shunt'
+              ctx.savings.shunt
                 ? readRefusal({
                     path: resolved,
                     lines: all.length,
@@ -718,14 +721,23 @@ export function createTools(ctx: ToolContext): ToolSet {
    * use is a tool it will try to use anyway, and a description explaining that
    * the feature is off is worse than the tokens it costs.
    */
-  if (ctx.mode === 'shunt') {
-    const worker = workerModelRef(ctx.config, ctx.modelRef)
+  if (ctx.savings.shunt) {
+    /*
+     * Who does the work. Named in the settings, or worked out: the cheapest
+     * model that clears the capability floor for reading and writing, the most
+     * capable one for planning. Decided per turn rather than once, because an
+     * allowance running out changes the answer.
+     */
+    const spent = spentLookup(ctx.config)
+    const worker = workerModelRef(ctx.config, ctx.modelRef, spent)
+    const planner = plannerModelRef(ctx.config, ctx.modelRef, spent)
 
-    /** Spends the worker's tokens against this session, priced as its own model. */
-    const credit = (usage: { input: number; output: number }): string => {
-      const cost = costOf(ctx.config, worker, usage)
+    /** Spends another model's tokens against this session, priced as that model. */
+    const credit = (ref: string, usage: { input: number; output: number }): string => {
+      const cost = costOf(ctx.config, ref, usage)
       store.creditUsage(ctx.sessionId, { ...usage, cost: cost ?? 0 })
-      return `${worker}: ${usage.input} in, ${usage.output} out`
+      meterRecord(ref, usage)
+      return `${ref}: ${usage.input} in, ${usage.output} out`
     }
 
     const gather = async (paths: string[]): Promise<{ path: string; text: string }[]> => {
@@ -793,18 +805,77 @@ export function createTools(ctx: ToolContext): ToolSet {
                 prompt: `<question>\n${question}\n</question>\n\n${corpus}`,
                 signal: ctx.signal
               })
-              const spent = credit(answer.usage)
+              const paid = credit(worker, answer.usage)
               const kept = Math.round(corpus.length / 4)
               store.appendBlockOutput(
                 ctx.sessionId,
                 block.id,
-                `${answer.text}\n\n— ${spent}. About ${kept.toLocaleString('en-US')} tokens of ` +
+                `${answer.text}\n\n— ${paid}. About ${kept.toLocaleString('en-US')} tokens of ` +
                   `file stayed out of this conversation.`
               )
               return { output: answer.text || '(the worker returned nothing)' }
             }
           )
         }
+      })
+    }
+
+    /*
+     * The other direction. If the cheap model does the reading, the expensive
+     * one should do the thinking — and only the thinking, which is a few
+     * hundred tokens of question and a page of answer, so it is affordable on
+     * a model nobody would run a whole session on.
+     *
+     * Not offered when the session is already on the most capable model there
+     * is: asking itself for a plan is a round trip that returns its own
+     * judgement, which it can have for free by thinking.
+     */
+    if (enabled(ctx, 'plan') && planner !== ctx.modelRef) {
+      tools.plan = tool({
+        description:
+          `Ask a stronger model (${planner}) how to do something hard, before starting it. ` +
+          'Use it when the work has several moving parts, when the order matters, or when a ' +
+          'wrong approach would be expensive to undo — not for anything you already know how ' +
+          'to do. It has no tools and cannot see this conversation, so put everything it needs ' +
+          'in the request: what you are trying to achieve, what you have found out so far, and ' +
+          'the constraints. What comes back is a plan, not work: you carry it out.',
+        inputSchema: z.object({
+          task: z.string().describe('What needs doing, in full, standing on its own.'),
+          context: z
+            .string()
+            .optional()
+            .describe('What you already know: files, findings, constraints, what has been tried.')
+        }),
+        execute: async ({ task, context }) =>
+          withBlock(
+            ctx,
+            {
+              tool: 'plan',
+              title: task.replace(/\s+/g, ' ').slice(0, 90),
+              subtitle: `planned by ${planner}`,
+              input: { task, context, model: planner }
+            },
+            async (block) => {
+              store.appendBlockOutput(ctx.sessionId, block.id, `asking ${planner}…\n\n`)
+              const answer = await askWorker({
+                config: ctx.config,
+                modelRef: planner,
+                system: PLANNER_INSTRUCTIONS,
+                prompt:
+                  `<task>\n${task}\n</task>` +
+                  (context ? `\n\n<what-is-already-known>\n${context}\n</what-is-already-known>` : ''),
+                signal: ctx.signal
+              })
+              const paid = credit(planner, answer.usage)
+              if (!answer.text.trim()) throw new Error(`${planner} returned no plan.`)
+              store.appendBlockOutput(ctx.sessionId, block.id, `${answer.text}\n\n— ${paid}`)
+              return {
+                output:
+                  `${answer.text}\n\n(That plan is ${planner}'s, not yours to hand back to the ` +
+                  `user as an answer. Carry it out, and say so if you find it is wrong.)`
+              }
+            }
+          )
       })
     }
 
@@ -856,12 +927,12 @@ export function createTools(ctx: ToolContext): ToolSet {
                   (destination ? `\n\nWrite the complete contents of ${destination}.` : ''),
                 signal: ctx.signal
               })
-              const spent = credit(answer.usage)
+              const paid = credit(worker, answer.usage)
               const code = stripFences(answer.text)
               if (!code.trim()) throw new Error(`${worker} returned nothing. Try a clearer spec.`)
 
               if (!destination) {
-                store.appendBlockOutput(ctx.sessionId, block.id, `${code}\n\n— ${spent}`)
+                store.appendBlockOutput(ctx.sessionId, block.id, `${code}\n\n— ${paid}`)
                 return { output: code }
               }
 
@@ -895,7 +966,7 @@ export function createTools(ctx: ToolContext): ToolSet {
                 added: stats.added,
                 removed: stats.removed
               })
-              store.appendBlockOutput(ctx.sessionId, block.id, `${preview}\n\n— ${spent}`)
+              store.appendBlockOutput(ctx.sessionId, block.id, `${preview}\n\n— ${paid}`)
               return {
                 output:
                   `${existed ? 'Overwrote' : 'Created'} ${destination} ` +
@@ -1003,7 +1074,8 @@ export function toolNames(): string[] {
     'fetch',
     'task',
     'bulk_read',
-    'code_write'
+    'code_write',
+    'plan'
   ]
 }
 

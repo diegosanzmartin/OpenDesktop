@@ -1,15 +1,22 @@
 import clsx from 'clsx'
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { ArrowUp, ChevronDown, FileText, FolderOpen, ImageIcon, Paperclip, Square, X } from 'lucide-react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
+import {
+  ArrowUp,
+  Check,
+  ChevronDown,
+  FileText,
+  FolderOpen,
+  Gauge,
+  ImageIcon,
+  Paperclip,
+  Square,
+  X
+} from 'lucide-react'
 import type { Attachment, Session, Skill } from '@shared/types'
 import { isManager } from '@shared/types'
-import {
-  DEFAULT_MODE,
-  MODES,
-  modeInfo,
-  workerModelRef,
-  type SessionMode
-} from '@shared/modes'
+import { SWITCHES, savingsLabel, savingsOf, type Savings } from '@shared/savings'
+import { workerModelRef } from '@shared/routing'
 import { mentionToken } from '@shared/mentions'
 import { useStore } from '../state/store'
 import { folderName, shortenPath } from '../lib/format'
@@ -45,20 +52,55 @@ function Picker({
 }
 
 /**
- * How much of what a tool produces reaches the model, per session.
+ * The two switches, per session, as a chip that opens them.
  *
- * Next to the environment rather than the model, because that is what it is
- * about: the same model reading a filtered version of the same machine. A mode
- * that cannot work says so here — the alternative is a session labelled `rtk`
- * behaving exactly like `Direct` with nothing to show for it.
+ * They were a three-way mode picker, which was wrong: filtering command output
+ * and delegating file reading are not alternatives, and nothing about either
+ * makes the other less useful. So they are independent, and the chip says which
+ * are on — `Direct` when neither is, which is a label and not a third thing to
+ * choose.
+ *
+ * Next to the environment rather than the model, because that is what one of
+ * them is about: the same model reading a filtered version of the same machine.
+ * Anything a switch cannot actually do is said here, beside it.
  */
-function ModePicker({ session }: { session: Session }): ReactNode {
-  const mode = session.mode ?? DEFAULT_MODE
+function SavingsChip({ session }: { session: Session }): ReactNode {
   const config = useStore((s) => s.config)
+  const savings = savingsOf(config, session)
+
+  const [open, setOpen] = useState(false)
+  const [anchor, setAnchor] = useState({ bottom: 0, left: 0 })
+  const button = useRef<HTMLButtonElement>(null)
+  const panel = useRef<HTMLDivElement>(null)
   const [rtk, setRtk] = useState<{ state: string; version?: string; message?: string } | null>(null)
 
+  // Portalled and placed by hand: the composer sits at the bottom of a pane
+  // that scrolls, and a menu opening upwards inside it gets clipped.
+  useLayoutEffect(() => {
+    if (!open || !button.current) return
+    const rect = button.current.getBoundingClientRect()
+    setAnchor({ bottom: window.innerHeight - rect.top + 6, left: rect.left })
+  }, [open])
+
   useEffect(() => {
-    if (mode !== 'rtk') {
+    if (!open) return
+    const onDown = (event: MouseEvent): void => {
+      const target = event.target as Node
+      if (!button.current?.contains(target) && !panel.current?.contains(target)) setOpen(false)
+    }
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    window.addEventListener('mousedown', onDown)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('mousedown', onDown)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (!savings.rtk) {
       setRtk(null)
       return
     }
@@ -69,44 +111,94 @@ function ModePicker({ session }: { session: Session }): ReactNode {
     return () => {
       live = false
     }
-  }, [mode, session.environmentId])
+  }, [savings.rtk, session.environmentId])
 
-  const info = modeInfo(mode)
+  const toggle = (key: keyof Savings, next: boolean): void => {
+    void window.opendesktop.sessions.update(session.id, {
+      savings: { ...(session.savings ?? {}), [key]: next }
+    })
+  }
+
   const broken = rtk && (rtk.state === 'missing' || rtk.state === 'too-old')
   const worker = config ? workerModelRef(config, session.model) : session.model
+  const noCheaper = savings.shunt && worker === session.model
 
   return (
     <>
-      <Picker
-        title={`Mode — ${info.blurb}`}
-        value={mode}
-        onChange={(next) => {
-          void window.opendesktop.sessions.update(session.id, { mode: next as SessionMode })
-        }}
-        options={MODES.map((entry) => ({ value: entry.id, label: entry.label }))}
-      />
+      <button
+        ref={button}
+        type="button"
+        title="What this session does to keep its context and its bill down"
+        onClick={() => setOpen(!open)}
+        className={clsx(
+          'flex shrink-0 items-center gap-1 rounded-md px-1.5 py-[3px] text-[12px] transition-colors',
+          open ? 'bg-ink-800 text-ink-100' : 'text-ink-400 hover:text-ink-200'
+        )}
+      >
+        <Gauge className="h-3.5 w-3.5" />
+        {savingsLabel(savings)}
+      </button>
+
       {broken ? (
         <span className="text-warn shrink-0 text-[11.5px]" title={rtk?.message}>
           rtk not installed here
+        </span>
+      ) : noCheaper ? (
+        <span
+          className="text-warn shrink-0 text-[11.5px]"
+          title="Reading is delegated to this session's own model, so the files stay out of the conversation but are charged at full price. Give another model a lower cost under Settings → Models → Cost."
+        >
+          no cheaper model
+        </span>
+      ) : savings.shunt ? (
+        <span className="text-ink-600 hidden shrink-0 text-[11.5px] @[620px]:inline">
+          reading → {worker}
         </span>
       ) : rtk?.state === 'ready' && rtk.version ? (
         <span className="text-ink-600 hidden shrink-0 text-[11.5px] @[620px]:inline">
           rtk {rtk.version}
         </span>
-      ) : mode === 'shunt' ? (
-        worker === session.model ? (
-          <span
-            className="text-warn shrink-0 text-[11.5px]"
-            title="Reading is delegated to this session's own model, so the files stay out of the conversation but are charged at full price. Set a cheaper one under Settings → Models → Mode."
-          >
-            no cheaper model set
-          </span>
-        ) : (
-          <span className="text-ink-600 hidden shrink-0 text-[11.5px] @[620px]:inline">
-            reading → {worker}
-          </span>
-        )
       ) : null}
+
+      {open
+        ? createPortal(
+            <div
+              ref={panel}
+              style={{ bottom: anchor.bottom, left: anchor.left }}
+              className="border-ink-700 bg-ink-850 fixed z-[60] w-[290px] rounded-lg border p-1 shadow-2xl"
+            >
+              {SWITCHES.map((entry) => (
+                <button
+                  key={entry.id}
+                  type="button"
+                  onClick={() => toggle(entry.id, !savings[entry.id])}
+                  className="hover:bg-ink-800 flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left"
+                >
+                  <span
+                    className={clsx(
+                      'mt-[3px] flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[4px] border',
+                      savings[entry.id] ? 'border-brand bg-brand' : 'border-ink-600'
+                    )}
+                  >
+                    {savings[entry.id] ? (
+                      <Check className="text-ink-950 h-2.5 w-2.5" strokeWidth={3.5} />
+                    ) : null}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="text-ink-200 block text-[12.5px]">{entry.label}</span>
+                    <span className="text-ink-500 block text-[11.5px] leading-snug">
+                      {entry.blurb}
+                    </span>
+                  </span>
+                </button>
+              ))}
+              <div className="text-ink-600 px-2 py-1 text-[11px]">
+                Neither is Direct. Defaults are in Settings → Models.
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
     </>
   )
 }
@@ -568,7 +660,7 @@ export function Composer({ session }: { session: Session }): ReactNode {
             options={environments.map((e) => ({ value: e.id, label: e.name }))}
           />
 
-          <ModePicker session={session} />
+          <SavingsChip session={session} />
 
           <div className="ml-auto flex min-w-0 items-center gap-3">
             <Picker

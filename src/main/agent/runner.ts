@@ -14,7 +14,8 @@ import {
   type Attachment,
   type Message
 } from '@shared/types'
-import { DEFAULT_MODE, type SessionMode } from '@shared/modes'
+import { savingsOf, type Savings } from '@shared/savings'
+import { pickModel } from '@shared/routing'
 import { mentionToken, mentionedAgents } from '@shared/mentions'
 import { costOf } from '@shared/cost'
 import { budgetFor } from '@shared/context'
@@ -25,6 +26,7 @@ import { resolveModel } from '../providers'
 import { getRuntime } from '../runtime'
 import { rtkStatus } from '../rtk'
 import { workerIsTheSameModel } from '../shunt'
+import { record as meterRecord, spentLookup } from '../meter'
 import * as store from '../store'
 import * as history from '../history'
 import { createTools, type ToolContext } from './tools'
@@ -128,18 +130,21 @@ function systemPrompt(agent: AgentConfig, input: {
 }
 
 /**
- * What the agent needs to know about the mode it is running in.
+ * What the agent needs to know about the switches it is running under.
  *
- * Only added when the mode is actually in force. An agent told that its output
- * is being filtered when it is not will second-guess perfectly complete output
- * — and the first thing it does about it is run the command again with more
- * flags, which costs exactly what the mode exists to save.
+ * Only what is actually in force. An agent told that its output is being
+ * filtered when it is not will second-guess perfectly complete output — and
+ * the first thing it does about it is run the command again with more flags,
+ * which costs exactly what these exist to save. They compose: with both on it
+ * gets both notes, because both are true.
  */
-function modeGuidance(mode: SessionMode): string {
-  if (mode === 'rtk') {
-    return `
+function savingsGuidance(savings: Savings, planner: string | null): string {
+  let text = ''
 
-# rtk
+  if (savings.rtk) {
+    text += `
+
+# Filtered command output (rtk)
 Shell commands on this target run through rtk, which filters their output
 before you read it: a tree with counts instead of one line per file, failing
 tests instead of a whole run, \`ok abc1234\` instead of git's progress report.
@@ -150,10 +155,11 @@ more flags to see "the real output", and do not conclude a command printed
 nothing because it printed little. A file's contents are never filtered: when
 you need exact text — before an edit, always — use \`read\`.`
   }
-  if (mode === 'shunt') {
-    return `
 
-# shunt
+  if (savings.shunt) {
+    text += `
+
+# Delegated reading (shunt)
 Reading a file into this conversation costs its whole length now and again on
 every turn afterwards, so in this session that is not how files get read.
 
@@ -169,8 +175,17 @@ every turn afterwards, so in this session that is not how files get read.
 - \`code_write\` generates a file from a spec and a reference file without the
   result passing through here. For work that is mostly predictable from
   something that already exists. Anything needing judgement you do yourself.`
+
+    if (planner) {
+      text += `
+- \`plan\` asks ${planner}, which is more capable than you, how to do something
+  hard — before you start it, not after it has gone wrong. Use it when the work
+  has several moving parts or when a wrong approach would be expensive to undo.
+  The plan comes from the stronger model; the work is still yours.`
+    }
   }
-  return ''
+
+  return text
 }
 
 async function describeTarget(environmentId: string): Promise<{ platform: string }> {
@@ -305,8 +320,13 @@ async function compactIfNeeded(
   measuredTokens: number,
   force = false
 ): Promise<boolean> {
-  // The smaller model if one is configured: this is a summary, not the work.
-  const ref = config.smallModel ?? modelRef
+  // A summary is not the work, so it does not go to the model doing the work.
+  // Whatever was named for it, or whatever the router says is cheapest and
+  // still capable enough to be trusted with it.
+  const ref =
+    config.smallModel ??
+    pickModel(config, 'delegate', { spent: spentLookup(config) })?.ref ??
+    modelRef
 
   const result = await history.compactHistory(
     sessionId,
@@ -342,6 +362,14 @@ async function compactIfNeeded(
             })
             .join('\n\n')}\n</new-messages>`
       })
+      // Summarising was free in the accounting until now, which it never was
+      // in fact. Charged to the session, priced as whichever model did it.
+      const used = {
+        input: answer.usage.inputTokens ?? 0,
+        output: answer.usage.outputTokens ?? 0
+      }
+      store.creditUsage(sessionId, { ...used, cost: costOf(config, ref, used) ?? 0 })
+      meterRecord(ref, used)
       return answer.text
     },
     {
@@ -392,75 +420,69 @@ export async function compactNow(sessionId: string): Promise<boolean> {
 }
 
 /**
- * Sessions already told that their mode cannot be honoured, so the transcript
- * says it once instead of at every turn.
+ * Sessions already told that a switch cannot do what it says, so the
+ * transcript says it once instead of at every turn.
  */
 const modeWarned = new Set<string>()
 
-/**
- * Says so in the chat when a mode is selected but not available.
- *
- * The alternative is a session that quietly behaves like `direct` while the
- * picker says `rtk` — the user would be reading the token counts of one mode
- * and the label of another.
- */
-async function announceModeProblems(
-  config: AppConfig,
-  sessionId: string,
-  environmentId: string,
-  cwd: string,
-  modelRef: string,
-  mode: SessionMode
-): Promise<boolean> {
-  if (mode === 'shunt') {
-    // Not a failure: the corpus still stays out of the conversation, which is
-    // most of the point. But it is not the saving the mode advertises, and a
-    // user watching the cost should know which of the two they are getting.
-    if (workerIsTheSameModel(config, modelRef)) {
-      const key = `${sessionId}:shunt:same-model`
-      if (!modeWarned.has(key)) {
-        modeWarned.add(key)
-        store.addMessage({
-          sessionId,
-          role: 'system',
-          parts: [
-            {
-              type: 'text',
-              text:
-                `This session delegates reading to ${modelRef} — its own model, because no ` +
-                `cheaper one is set. Large files still stay out of the conversation, which is ` +
-                `where most of the saving is, but the reading is charged at full price.\n\n` +
-                `Set one under Settings → Models → Mode.`
-            }
-          ]
-        })
-      }
-    }
-    return true
-  }
-  if (mode !== 'rtk') return true
-  const runtime = getRuntime(environmentId)
-  const status = await rtkStatus(environmentId, runtime, cwd)
-  if (status.state === 'ready') return true
+function sayOnce(sessionId: string, key: string, text: string): void {
+  if (modeWarned.has(key)) return
+  modeWarned.add(key)
+  store.addMessage({ sessionId, role: 'system', parts: [{ type: 'text', text }] })
+}
 
-  const key = `${sessionId}:${environmentId}:${status.state}`
-  if (!modeWarned.has(key)) {
-    modeWarned.add(key)
-    store.addMessage({
-      sessionId,
-      role: 'system',
-      parts: [
-        {
-          type: 'text',
-          text:
-            `This session is in rtk mode, but rtk cannot be used on ` +
-            `${runtime.label}: ${status.message ?? 'it is not available'}\n\n` +
-            `Commands are running unfiltered, exactly as in Direct mode.`
-        }
-      ]
-    })
+/**
+ * Says so in the chat when a switch is on but cannot do what it claims.
+ *
+ * The alternative is a session that quietly behaves as if the switch were off
+ * while the composer says it is on — the user would be reading the token
+ * counts of one setting and the label of another.
+ *
+ * Returns the switches that are actually in force, which is what the agent is
+ * told about: a note describing filtered output to an agent whose output is
+ * not filtered is worse than no note at all.
+ */
+async function announceSavingsProblems(input: {
+  config: AppConfig
+  sessionId: string
+  environmentId: string
+  cwd: string
+  modelRef: string
+  savings: Savings
+}): Promise<Savings> {
+  const inForce: Savings = { ...input.savings }
+
+  if (input.savings.rtk) {
+    const runtime = getRuntime(input.environmentId)
+    const status = await rtkStatus(input.environmentId, runtime, input.cwd)
+    if (status.state !== 'ready') {
+      inForce.rtk = false
+      sayOnce(
+        input.sessionId,
+        `${input.sessionId}:${input.environmentId}:${status.state}`,
+        `This session is set to filter command output through rtk, but rtk cannot be used on ` +
+          `${runtime.label}: ${status.message ?? 'it is not available'}\n\n` +
+          `Commands are running unfiltered.`
+      )
+    }
   }
-  return false
+
+  if (input.savings.shunt && workerIsTheSameModel(input.config, input.modelRef)) {
+    // Not a failure: the corpus still stays out of the conversation, which is
+    // most of the point. But it is not the saving the setting advertises, and
+    // a user watching the cost should know which of the two they are getting.
+    sayOnce(
+      input.sessionId,
+      `${input.sessionId}:shunt:same-model`,
+      `This session delegates reading to ${input.modelRef} — its own model, because no ` +
+        `cheaper one is declared. Large files still stay out of the conversation, which is ` +
+        `where most of the saving is, but the reading is charged at full price.\n\n` +
+        `Give another model a lower cost under Settings → Models → Cost, or name one ` +
+        `directly under Savings.`
+    )
+  }
+
+  return inForce
 }
 
 interface TurnInput {
@@ -520,15 +542,20 @@ export async function runTurn(input: TurnInput): Promise<string> {
     const { platform } = await describeTarget(session.environmentId)
     const resolved = await resolveModel(config, agent.model ?? session.model)
 
-    const mode = session.mode ?? config.mode ?? DEFAULT_MODE
-    const modeWorks = await announceModeProblems(
+    const modelRef = agent.model ?? session.model
+    const savings = await announceSavingsProblems({
       config,
-      session.id,
-      session.environmentId,
-      session.cwd,
-      agent.model ?? session.model,
-      mode
-    )
+      sessionId: session.id,
+      environmentId: session.environmentId,
+      cwd: session.cwd,
+      modelRef,
+      savings: savingsOf(config, session)
+    })
+    const planner = savings.shunt
+      ? (config.plannerModel ??
+        pickModel(config, 'plan', { spent: spentLookup(config) })?.ref ??
+        null)
+      : null
 
     const ctx: ToolContext = {
       config,
@@ -539,8 +566,8 @@ export async function runTurn(input: TurnInput): Promise<string> {
       cwd: session.cwd,
       runtime,
       signal: controller.signal,
-      mode,
-      modelRef: agent.model ?? session.model,
+      savings,
+      modelRef,
       currentMessageId: () => assistant.id,
       depth: input.depth ?? 0,
       parentBlockId: input.parentBlockId,
@@ -551,7 +578,7 @@ export async function runTurn(input: TurnInput): Promise<string> {
           environmentId: session.environmentId,
           agentId,
           model: config.agent[agentId]?.model ?? session.model,
-          mode,
+          savings,
           parentSessionId: session.id
         })
         store.updateSession(child.id, { taskLabel: description })
@@ -587,7 +614,7 @@ export async function runTurn(input: TurnInput): Promise<string> {
           platform,
           date: new Date().toISOString().slice(0, 10)
         }) +
-        (modeWorks ? modeGuidance(mode) : '') +
+        savingsGuidance(savings, planner === modelRef ? null : planner) +
         (input.coordinationNote ?? ''),
       messages,
       tools,
@@ -688,10 +715,8 @@ export async function runTurn(input: TurnInput): Promise<string> {
     const outputTokens = usage.outputTokens ?? 0
     // Worked out now and kept on the message: a price edited next week must not
     // change what this turn is recorded as having cost.
-    const turnCost = costOf(config, agent.model ?? session.model, {
-      input: inputTokens,
-      output: outputTokens
-    })
+    const turnCost = costOf(config, modelRef, { input: inputTokens, output: outputTokens })
+    meterRecord(modelRef, { input: inputTokens, output: outputTokens })
     store.updateMessage(session.id, assistant.id, {
       completedAt: Date.now(),
       usage: {
