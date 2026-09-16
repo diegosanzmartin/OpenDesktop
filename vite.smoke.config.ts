@@ -17,7 +17,8 @@ export default defineConfig({
     rollupOptions: {
       input: {
         smoke: resolve('src/main/smoke.ts'),
-        'secrets-check': resolve('src/main/secrets-check.ts')
+        'secrets-check': resolve('src/main/secrets-check.ts'),
+        'ui-check': resolve('src/main/ui-check.ts')
       },
       external: [...Object.keys(pkg.dependencies), 'ai/test', 'electron', 'cpu-features', /^node:/],
       output: { format: 'esm', entryFileNames: '[name].mjs' }

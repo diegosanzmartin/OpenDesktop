@@ -17,6 +17,17 @@ const PRESETS: { id: string; label: string; npm: string; baseURL?: string }[] = 
   { id: 'google', label: 'Google', npm: '@ai-sdk/google' }
 ]
 
+/**
+ * A price as typed. An empty box means unknown, which is not the same as free,
+ * so it stays undefined rather than becoming 0.
+ */
+function money(value: string): number | undefined {
+  const cleaned = value.replace(/[^0-9.]/g, '')
+  if (!cleaned) return undefined
+  const parsed = Number(cleaned)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
 /** The API key row. The value only ever travels one way: into the keychain. */
 function ApiKeyRow({ providerId, onStored }: { providerId: string; onStored: () => void }): ReactNode {
   const secrets = useStore((s) => s.secrets)
@@ -142,7 +153,13 @@ function ProviderSection({
   const usesBaseUrl = provider.npm === '@ai-sdk/openai-compatible' || provider.npm === '@ai-sdk/openai'
 
   const setModels = (
-    list: { id: string; name: string; contextWindow?: number; vision?: boolean }[]
+    list: {
+      id: string
+      name: string
+      contextWindow?: number
+      vision?: boolean
+      price?: { input?: number; output?: number }
+    }[]
   ): void => {
     const map: ProviderConfig['models'] = {}
     for (const m of list) map[m.id || 'unnamed'] = { ...m, id: m.id || 'unnamed' }
@@ -196,7 +213,7 @@ function ProviderSection({
 
       <Row
         label="Models"
-        description="Mark a model as vision to let images be attached to it."
+        description="Id, name, context window, then the price per million tokens in and out — copied straight from the provider's page. Mark a model as vision to let images be attached."
       >
         <IconButton
           title="Add a model"
@@ -244,6 +261,30 @@ function ProviderSection({
                   setModels(next)
                 }}
                 className="border-ink-800 bg-ink-850 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 w-[84px] rounded-lg border px-2.5 py-1.5 font-mono text-[12px] outline-none"
+              />
+              <input
+                value={model.price?.input !== undefined ? String(model.price.input) : ''}
+                placeholder="$ in"
+                inputMode="decimal"
+                title="Price per million input tokens"
+                onChange={(event) => {
+                  const next = models.slice()
+                  next[index] = { ...model, price: { ...model.price, input: money(event.target.value) } }
+                  setModels(next)
+                }}
+                className="border-ink-800 bg-ink-850 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 w-[64px] rounded-lg border px-2 py-1.5 font-mono text-[12px] outline-none"
+              />
+              <input
+                value={model.price?.output !== undefined ? String(model.price.output) : ''}
+                placeholder="$ out"
+                inputMode="decimal"
+                title="Price per million output tokens"
+                onChange={(event) => {
+                  const next = models.slice()
+                  next[index] = { ...model, price: { ...model.price, output: money(event.target.value) } }
+                  setModels(next)
+                }}
+                className="border-ink-800 bg-ink-850 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 w-[64px] rounded-lg border px-2 py-1.5 font-mono text-[12px] outline-none"
               />
               <button
                 type="button"
@@ -404,6 +445,21 @@ export function ModelsTab(): ReactNode {
             value={draft.model}
             onChange={(event) => setDraft({ ...draft, model: event.target.value })}
             options={allModels.length ? allModels : [{ value: draft.model, label: draft.model }]}
+          />
+        </Row>
+
+        <Row
+          label="Tasks at once"
+          description="How many board tasks the scheduler runs in parallel. A task waiting on your approval does not count against this."
+        >
+          <RowInput
+            mono
+            width="w-[72px]"
+            value={String(draft.maxConcurrentTasks ?? 2)}
+            onChange={(value) => {
+              const parsed = Number(value.replace(/\D/g, ''))
+              setDraft({ ...draft, maxConcurrentTasks: Math.min(12, Math.max(1, parsed || 1)) })
+            }}
           />
         </Row>
 

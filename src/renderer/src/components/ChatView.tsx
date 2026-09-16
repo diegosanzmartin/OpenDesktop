@@ -6,6 +6,7 @@ import { isManager } from '@shared/types'
 import { useStore } from '../state/store'
 import { tokens } from '../lib/format'
 import { activityOf, duration, tokenRate } from '@shared/progress'
+import { formatCost } from '@shared/cost'
 import { ApprovalCard } from './ApprovalCard'
 import { Composer } from './Composer'
 import { Mentions } from './Markdown'
@@ -180,6 +181,8 @@ function StatusLine({
       </span>
       <span>{duration(seconds)}</span>
       {total > 0 ? <span>· {tokens(total)} tokens</span> : null}
+      {/* Absent when the model has no price declared: nothing, not "$0.00". */}
+      {message.usage?.cost !== undefined ? <span>· {formatCost(message.usage.cost)}</span> : null}
       {rate !== null ? <span>· {rate} tok/s</span> : null}
       <span>· {done ? (agentName ?? 'Manager') : activityOf(message, blocks)}</span>
     </div>

@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 import { activeSession, useStore, type DockTab } from '../state/store'
 import { folderName } from '../lib/format'
+import { formatCost } from '@shared/cost'
 import { EditableTitle } from './EditableTitle'
 import { DiffSquare } from './icons'
 
@@ -163,6 +164,17 @@ export function TopBar(): ReactNode {
       {view === 'chat' && session ? (
         <span className="bg-ink-800 text-ink-400 shrink-0 rounded-md px-1.5 py-[2px] text-[11.5px]">
           {folderName(session.cwd)}
+        </span>
+      ) : null}
+      {/* What this conversation has cost so far, when any model in it has a
+          price. Shown here because it is a fact about the session, like its
+          folder, rather than about any one turn. */}
+      {view === 'chat' && session && session.usage.cost > 0 ? (
+        <span
+          title="What this session has cost so far"
+          className="text-ink-600 shrink-0 text-[11.5px]"
+        >
+          {formatCost(session.usage.cost)}
         </span>
       ) : null}
 

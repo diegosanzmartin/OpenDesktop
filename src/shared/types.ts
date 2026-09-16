@@ -75,6 +75,12 @@ export interface ProviderModelConfig {
   toolCall?: boolean
   /** Declared, not detected: an OpenAI-compatible endpoint cannot be asked. */
   vision?: boolean
+  /**
+   * What the model costs, in whole currency units per million tokens — the way
+   * every provider publishes it, so it can be copied across without arithmetic.
+   * Absent means unknown, and unknown is shown as nothing rather than as zero.
+   */
+  price?: { input?: number; output?: number }
 }
 
 export interface ProviderConfig {
@@ -216,6 +222,11 @@ export interface Message {
   model?: string
   createdAt: number
   completedAt?: number
+  /**
+   * Recorded as the turn ends, cost included. Kept rather than recomputed, so
+   * changing a price later does not rewrite what past turns are said to have
+   * cost.
+   */
   usage?: { input: number; output: number; reasoning?: number; cost?: number }
 }
 

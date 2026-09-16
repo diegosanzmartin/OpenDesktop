@@ -49,6 +49,7 @@ import { activityOf, duration, tokenRate } from '@shared/progress'
 import { approvalDetail, approvalQuestion } from '@shared/approvals'
 import { mentionToken, mentionedAgents, splitMentions } from '@shared/mentions'
 import { extensionOf, fileSize, isDocument } from '@shared/documents'
+import { costOf, formatCost } from '@shared/cost'
 import { MANAGER_AGENT, isManager } from '@shared/types'
 import { familyOf, highlight, isShell, looksLikePath, terminalPayload } from '@shared/highlight'
 import type {
@@ -1044,6 +1045,53 @@ async function main(): Promise<void> {
       deniedSegment(perms, 'echo hi & rm -rf /*')
     )
     check('while letting an ordinary command through', deniedSegment(perms, 'ls -la') === null)
+  }
+
+  section('what a turn cost')
+  {
+    const priced: AppConfig = {
+      ...defaultConfig(),
+      provider: {
+        p: {
+          id: 'p',
+          npm: '@ai-sdk/openai-compatible',
+          name: 'P',
+          options: {},
+          models: {
+            paid: { id: 'paid', name: 'Paid', price: { input: 3, output: 15 } },
+            'in-only': { id: 'in-only', name: 'In only', price: { input: 1 } },
+            free: { id: 'free', name: 'Free' }
+          }
+        }
+      }
+    }
+
+    check(
+      'input and output are priced separately, per million',
+      costOf(priced, 'p/paid', { input: 1_000_000, output: 1_000_000 }) === 18
+    )
+    check(
+      'and a real turn lands on the right fraction',
+      Math.abs((costOf(priced, 'p/paid', { input: 9200, output: 1400 }) ?? 0) - 0.0486) < 1e-9,
+      costOf(priced, 'p/paid', { input: 9200, output: 1400 })
+    )
+    check(
+      'a half-declared price still counts what it knows',
+      costOf(priced, 'p/in-only', { input: 1_000_000, output: 1_000_000 }) === 1
+    )
+    check(
+      'an unpriced model is unknown, not free',
+      costOf(priced, 'p/free', { input: 1_000_000, output: 0 }) === null
+    )
+    check('as is a model that is not there at all', costOf(priced, 'p/ghost', { input: 1, output: 1 }) === null)
+    check('and a malformed reference', costOf(priced, 'nonsense', { input: 1, output: 1 }) === null)
+
+    /* Money has to read as money at the size a turn actually costs. */
+    check('a fraction of a cent keeps four figures', formatCost(0.0004) === '$0.0004', formatCost(0.0004))
+    check('a few cents keep three', formatCost(0.0486) === '$0.049', formatCost(0.0486))
+    check('as do tens of cents', formatCost(0.482) === '$0.482')
+    check('and whole amounts two', formatCost(12.3456) === '$12.35')
+    check('zero is zero, not a string of noughts', formatCost(0) === '$0')
   }
 
   section('documents the agent produced')

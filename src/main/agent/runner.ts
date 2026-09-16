@@ -15,6 +15,7 @@ import {
   type Message
 } from '@shared/types'
 import { mentionToken, mentionedAgents } from '@shared/mentions'
+import { costOf } from '@shared/cost'
 import { effectivePermissions, resolvedConfig } from '../config'
 import { bus } from '../bus'
 import { cancelSessionApprovals } from '../approvals'
@@ -426,8 +427,16 @@ export async function runTurn(input: TurnInput): Promise<string> {
         case 'finish-step': {
           usedInput += part.usage.inputTokens ?? 0
           usedOutput += part.usage.outputTokens ?? 0
+          const so_far = costOf(config, agent.model ?? session.model, {
+            input: usedInput,
+            output: usedOutput
+          })
           store.updateMessage(session.id, assistant.id, {
-            usage: { input: usedInput, output: usedOutput }
+            usage: {
+              input: usedInput,
+              output: usedOutput,
+              ...(so_far === null ? {} : { cost: so_far })
+            }
           })
           break
         }
@@ -456,9 +465,19 @@ export async function runTurn(input: TurnInput): Promise<string> {
     const usage = await result.totalUsage
     const inputTokens = usage.inputTokens ?? 0
     const outputTokens = usage.outputTokens ?? 0
+    // Worked out now and kept on the message: a price edited next week must not
+    // change what this turn is recorded as having cost.
+    const turnCost = costOf(config, agent.model ?? session.model, {
+      input: inputTokens,
+      output: outputTokens
+    })
     store.updateMessage(session.id, assistant.id, {
       completedAt: Date.now(),
-      usage: { input: inputTokens, output: outputTokens }
+      usage: {
+        input: inputTokens,
+        output: outputTokens,
+        ...(turnCost === null ? {} : { cost: turnCost })
+      }
     })
     // The agent may have handed the task back mid-turn; finishing the turn
     // does not un-block it, so the status it set is left alone.
@@ -468,7 +487,7 @@ export async function runTurn(input: TurnInput): Promise<string> {
       usage: {
         input: session.usage.input + inputTokens,
         output: session.usage.output + outputTokens,
-        cost: session.usage.cost
+        cost: session.usage.cost + (turnCost ?? 0)
       }
     })
   } catch (err) {
