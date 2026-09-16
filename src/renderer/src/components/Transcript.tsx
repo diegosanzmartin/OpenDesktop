@@ -1,8 +1,9 @@
 import clsx from 'clsx'
 import { useMemo, useState, type ReactNode } from 'react'
-import { ChevronRight, TriangleAlert } from 'lucide-react'
+import { ChevronDown, ChevronRight, TriangleAlert } from 'lucide-react'
 import type { Block, Message, MessagePart } from '@shared/types'
 import { useStore } from '../state/store'
+import { mentionToken } from '@shared/mentions'
 import { duration } from '../lib/format'
 import { BlockCard } from './BlockCard'
 import { Markdown } from './Markdown'
@@ -64,9 +65,13 @@ function summarize(blocks: Block[]): string {
 /* ---------------- subagents ---------------- */
 
 /**
- * A delegated task, rendered as its own small transcript inside the parent's.
- * The subagent works with no memory of this conversation, so showing what it
- * actually did — not just its closing report — is the only way to judge it.
+ * A delegated task: one line saying who has it and what it is, opening into
+ * everything they actually did.
+ *
+ * Stripped to match a command block, for the same reason — the agent's own
+ * colour already says which specialist this is, so a dot repeating it in the
+ * same colour was decoration. It is named with @ because that is how you name
+ * one in a message.
  */
 function SubChat({ block }: { block: Block }): ReactNode {
   const [open, setOpen] = useState(false)
@@ -83,44 +88,46 @@ function SubChat({ block }: { block: Block }): ReactNode {
 
   const running = block.status === 'running' || block.status === 'pending'
   const failed = block.status === 'error'
-  const color = agent?.color ?? 'var(--color-brand)'
+  const colour = agent?.color ?? 'var(--color-brand)'
+  const brief = String(block.input.prompt ?? '').trim()
 
   return (
-    <div
-      className={clsx(
-        'border-ink-800 bg-ink-850/40 my-1.5 overflow-hidden rounded-lg border',
-        failed && 'border-bad/40'
-      )}
-    >
+    <div className="border-ink-800/70 border-b last:border-b-0">
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="hover:bg-ink-850 flex w-full items-center gap-2 px-3 py-2 text-left"
+        className="hover:bg-ink-850/60 flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition-colors"
       >
-        <span
-          className={clsx('h-2 w-2 shrink-0 rounded-full', running && 'animate-pulse')}
-          style={{ background: color }}
-        />
-        <span className="shrink-0 text-[12px] font-medium" style={{ color }}>
-          {agent?.name ?? agentId ?? 'Subagent'}
+        {open ? (
+          <ChevronDown className="text-ink-600 h-3 w-3 shrink-0" />
+        ) : (
+          <ChevronRight className="text-ink-600 h-3 w-3 shrink-0" />
+        )}
+        <span className="shrink-0 text-[12.5px]" style={{ color: colour }}>
+          {mentionToken({ id: agentId ?? 'agent', name: agent?.name ?? agentId ?? 'Subagent' })}
         </span>
-        <span className="text-ink-200 min-w-0 flex-1 truncate text-[13px]">{block.title}</span>
-        <span className={clsx('shrink-0 text-[11px]', failed ? 'text-bad' : 'text-ink-600')}>
+        <span
+          className={clsx('min-w-0 flex-1 truncate text-[12.5px]', failed ? 'text-bad' : 'text-ink-300')}
+        >
+          {block.title}
+        </span>
+        <span
+          className={clsx('shrink-0 text-[10.5px]', running ? 'text-info' : 'text-ink-600')}
+        >
           {running ? 'working…' : duration(block)}
         </span>
-        <ChevronRight
-          className={clsx('text-ink-600 h-3.5 w-3.5 shrink-0 transition-transform', open && 'rotate-90')}
-        />
       </button>
 
       {open ? (
-        <div className="border-ink-800 border-t px-3 py-2">
-          <div className="text-ink-600 mb-2 text-[11.5px]">
-            Its brief: {String(block.input.prompt ?? '').slice(0, 400)}
-          </div>
+        <div className="px-2.5 pb-2">
+          {brief ? (
+            <div className="bg-ink-900 text-ink-400 mb-1.5 rounded-md px-2.5 py-1.5 text-[11.5px] leading-[1.55]">
+              {brief.length > 600 ? `${brief.slice(0, 600)}…` : brief}
+            </div>
+          ) : null}
           {assistant.length === 0 ? (
-            <div className="text-ink-600 text-[12px] italic">
-              {running ? 'Starting…' : 'It produced no transcript.'}
+            <div className="text-ink-600 px-0.5 text-[11.5px] italic">
+              {running ? 'starting…' : 'it produced no transcript'}
             </div>
           ) : (
             <div className="space-y-2">
@@ -154,14 +161,15 @@ export function ToolGroup({ blocks }: { blocks: Block[] }): ReactNode {
 
   return (
     <>
-      {tasks.length > 1 ? (
-        <div className="text-ink-600 mt-2 text-[11.5px]">
-          {tasks.length} agents working in parallel
+      {tasks.length > 0 ? (
+        // One container, as with the tool calls: how many agents are on it is
+        // then plain from the rows rather than from a sentence above them.
+        <div className="border-ink-800 my-1.5 overflow-hidden rounded-lg border">
+          {tasks.map((task) => (
+            <SubChat key={task.id} block={task} />
+          ))}
         </div>
       ) : null}
-      {tasks.map((task) => (
-        <SubChat key={task.id} block={task} />
-      ))}
 
       {rest.length > 0 ? (
         <div className="my-1">
