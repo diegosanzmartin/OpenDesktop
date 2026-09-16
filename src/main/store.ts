@@ -250,20 +250,25 @@ export function forkSession(
       }
     })
 
-    const messages: Message[] = file.messages.map((message) => ({
+    const messageIds = new Map<string, string>()
+    const messages: Message[] = file.messages.map((message) => {
+      const fresh = nanoid(12)
+      messageIds.set(message.id, fresh)
+      return {
       ...message,
-      id: nanoid(12),
+      id: fresh,
       sessionId: freshId,
       parts: message.parts.map((part) =>
         part.blockId ? { ...part, blockId: blockIds.get(part.blockId) ?? part.blockId } : { ...part }
       )
-    }))
+      }
+    })
 
     sessions.set(freshId, { session, messages, blocks })
     markDirty(freshId)
     // The model-facing transcript is the other half of a session; a fork that
     // copied only what a person reads would start the next turn amnesiac.
-    copyHistory(original.id, freshId)
+    copyHistory(original.id, freshId, messageIds)
     created.push(session)
   }
 
@@ -278,6 +283,68 @@ export function deleteSession(id: string): void {
   if (existsSync(path)) rmSync(path)
   flush()
   bus.emit({ type: 'session.deleted', sessionId: id })
+}
+
+/**
+ * Where a message sits in its session, or -1.
+ *
+ * By index rather than by id, because that is what both truncation and a fork
+ * need: a fork mints new message ids, so the only thing that survives the copy
+ * is the position.
+ */
+export function indexOfMessage(sessionId: string, messageId: string): number {
+  return sessions.get(sessionId)?.messages.findIndex((message) => message.id === messageId) ?? -1
+}
+
+/**
+ * Removes a message and everything after it, as if the turn never happened.
+ *
+ * The blocks those messages point at go with them — an orphan block would keep
+ * showing in the activity rail, timed and coloured, for work that has been
+ * taken back. So do the subagent sessions they spawned: a `task` block is the
+ * only route to its child session, and a child left behind is a chat nobody
+ * can reach from anywhere, still holding its own transcript.
+ */
+export function truncateFrom(sessionId: string, index: number): Message[] {
+  const file = sessions.get(sessionId)
+  if (!file || index < 0 || index >= file.messages.length) return []
+
+  const removed = file.messages.splice(index)
+
+  const blockIds = new Set<string>()
+  for (const message of removed) {
+    for (const part of message.parts) if (part.blockId) blockIds.add(part.blockId)
+  }
+  // Blocks of blocks: a subagent's work hangs off the task block that started it.
+  let growing = true
+  while (growing) {
+    growing = false
+    for (const block of file.blocks) {
+      if (block.parentBlockId && blockIds.has(block.parentBlockId) && !blockIds.has(block.id)) {
+        blockIds.add(block.id)
+        growing = true
+      }
+    }
+  }
+
+  const children = new Set<string>()
+  for (const block of file.blocks) {
+    if (!blockIds.has(block.id)) continue
+    const child = block.input?.childSessionId
+    if (typeof child === 'string') children.add(child)
+  }
+
+  file.blocks = file.blocks.filter((block) => !blockIds.has(block.id))
+  markDirty(sessionId)
+
+  for (const child of children) {
+    for (const descendant of descendantsOf(child)) deleteSession(descendant.id)
+    deleteSession(child)
+  }
+
+  bus.emit({ type: 'session.rewound', sessionId })
+  bus.emit({ type: 'session.updated', session: file.session })
+  return removed
 }
 
 /* ---------------- messages ---------------- */

@@ -501,6 +501,25 @@ export function Composer({ session }: { session: Session }): ReactNode {
 
   const openFolderPicker = useStore((s) => s.openFolderPicker)
 
+  /*
+   * A rewind puts what the message said back here, so it can be edited and
+   * sent again. Claimed rather than read: the draft is cleared as it is taken,
+   * so it cannot overwrite what someone types next.
+   */
+  const draft = useStore((s) => s.draft)
+  const setDraft = useStore((s) => s.setDraft)
+  useEffect(() => {
+    if (!draft || draft.sessionId !== session.id) return
+    setText(draft.text)
+    setAttachments(draft.attachments)
+    setDraft(null)
+    queueMicrotask(() => {
+      area.current?.focus()
+      const end = draft.text.length
+      area.current?.setSelectionRange(end, end)
+    })
+  }, [draft, session.id, setDraft])
+
   const patch = (next: Partial<Session>): void => {
     void window.opendesktop.sessions.update(session.id, next)
   }

@@ -21,6 +21,7 @@ import { listSshAliases } from './runtime/ssh'
 import * as store from './store'
 import * as history from './history'
 import { compactNow, isRunning, runTurn, stop } from './agent/runner'
+import { forkFrom, rewind } from './rewind'
 import { deniedSegment, listPending, resolveApproval, type ApprovalAnswer } from './approvals'
 import { previewOrigin, previewUrl } from './preview'
 import { deleteSecret, secretHint, secretStatus, setSecret } from './secrets'
@@ -249,6 +250,10 @@ export function registerIpc(): void {
     }
   )
   ipcMain.handle('session:compact', (_e, id: string) => compactNow(id))
+  ipcMain.handle('session:rewind', (_e, id: string, messageId: string) => rewind(id, messageId))
+  ipcMain.handle('session:forkFrom', (_e, id: string, messageId: string) =>
+    forkFrom(id, messageId)
+  )
   ipcMain.handle('session:messages', (_e, id: string) => store.listMessages(id))
   ipcMain.handle('session:blocks', (_e, id: string) => store.listBlocks(id))
   ipcMain.handle('session:running', (_e, id: string) => isRunning(id))

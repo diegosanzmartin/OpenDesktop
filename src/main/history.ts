@@ -33,6 +33,100 @@ export function getHistory(sessionId: string): ModelMessage[] {
   return fresh
 }
 
+/* ---------------- where each turn began ---------------- */
+
+/**
+ * The length of the model transcript when a turn started, per user message.
+ *
+ * Rewinding needs this and cannot work it out afterwards: the UI transcript
+ * and the model transcript are different shapes, and one user message can be
+ * followed by a dozen model messages with no visible boundary between turns.
+ * Recording the length at the moment the turn begins is the only cheap way to
+ * know, later, exactly where to cut.
+ *
+ * Their own file, so a history written before rewind existed still loads —
+ * those messages simply have no mark, and the UI says rewind is unavailable
+ * rather than guessing at a boundary.
+ */
+const marks = new Map<string, Record<string, number>>()
+
+function marksPathFor(sessionId: string): string {
+  return join(HISTORY_DIR, `${sessionId}.marks.json`)
+}
+
+function getMarks(sessionId: string): Record<string, number> {
+  const cached = marks.get(sessionId)
+  if (cached) return cached
+  let loaded: Record<string, number> = {}
+  const path = marksPathFor(sessionId)
+  if (existsSync(path)) {
+    try {
+      loaded = JSON.parse(readFileSync(path, 'utf8')) as Record<string, number>
+    } catch {
+      loaded = {}
+    }
+  }
+  marks.set(sessionId, loaded)
+  return loaded
+}
+
+function persistMarks(sessionId: string): void {
+  mkdirSync(HISTORY_DIR, { recursive: true })
+  writeFileSync(marksPathFor(sessionId), JSON.stringify(marks.get(sessionId) ?? {}), 'utf8')
+}
+
+/** Records where the transcript stood before this turn was added to it. */
+export function markTurn(sessionId: string, messageId: string): void {
+  const all = getMarks(sessionId)
+  all[messageId] = getHistory(sessionId).length
+  persistMarks(sessionId)
+}
+
+/** Where that turn began, or null when nothing was recorded for it. */
+export function markOf(sessionId: string, messageId: string): number | null {
+  const at = getMarks(sessionId)[messageId]
+  return typeof at === 'number' ? at : null
+}
+
+/**
+ * Cuts the transcript back to a length, and forgets the turns after it.
+ *
+ * Snapped with `safeBoundary`, for the same reason compaction is: cutting
+ * between an assistant's tool calls and their results sends the provider a
+ * result with nothing to match it to.
+ */
+export function truncateHistory(sessionId: string, to: number): number {
+  const history = getHistory(sessionId)
+  const at = safeBoundary(history, Math.max(0, Math.min(to, history.length)))
+  if (at >= history.length) return history.length
+  memory.set(sessionId, history.slice(0, at))
+  persist(sessionId)
+
+  const all = getMarks(sessionId)
+  for (const [messageId, mark] of Object.entries(all)) {
+    if (mark >= at) delete all[messageId]
+  }
+  persistMarks(sessionId)
+  return at
+}
+
+/**
+ * Moves the marks over a compaction, which replaced everything before `cut`
+ * with a single note.
+ *
+ * A turn that began inside the summarised region no longer has a boundary to
+ * return to — its messages are not there any more — so its mark goes. The rest
+ * shift by however much was collapsed.
+ */
+function remapMarks(sessionId: string, cut: number): void {
+  const all = getMarks(sessionId)
+  for (const [messageId, mark] of Object.entries(all)) {
+    if (mark < cut) delete all[messageId]
+    else all[messageId] = mark - cut + 1
+  }
+  persistMarks(sessionId)
+}
+
 export function appendHistory(sessionId: string, messages: ModelMessage[]): void {
   const history = getHistory(sessionId)
   history.push(...messages)
@@ -46,8 +140,10 @@ export function persist(sessionId: string): void {
 
 export function clearHistory(sessionId: string): void {
   memory.delete(sessionId)
-  const path = pathFor(sessionId)
-  if (existsSync(path)) rmSync(path)
+  marks.delete(sessionId)
+  for (const path of [pathFor(sessionId), marksPathFor(sessionId)]) {
+    if (existsSync(path)) rmSync(path)
+  }
 }
 
 /** How big the transcript is on disk. Measures only; it changes nothing. */
@@ -391,13 +487,29 @@ export async function compactHistory(
 
   memory.set(sessionId, [note, ...recent])
   persist(sessionId)
+  remapMarks(sessionId, cut)
   return { summarised: chunk.length, total, summary }
 }
 
-/** Copies one session's model transcript onto another, for a fork. */
-export function copyHistory(fromId: string, toId: string): void {
+/**
+ * Copies one session's model transcript onto another, for a fork.
+ *
+ * The marks come too, under the copy's own message ids — a fork mints new ones
+ * — so the copy can be rewound exactly like the original. Without the remap
+ * they would all point at messages that do not exist in it.
+ */
+export function copyHistory(fromId: string, toId: string, ids?: Map<string, string>): void {
   const source = getHistory(fromId)
   if (source.length === 0) return
   memory.set(toId, structuredClone(source))
   persist(toId)
+
+  const from = getMarks(fromId)
+  const to: Record<string, number> = {}
+  for (const [messageId, mark] of Object.entries(from)) {
+    const mapped = ids?.get(messageId) ?? messageId
+    to[mapped] = mark
+  }
+  marks.set(toId, to)
+  persistMarks(toId)
 }

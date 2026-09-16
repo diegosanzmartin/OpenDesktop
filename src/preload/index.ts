@@ -102,6 +102,18 @@ const api = {
       target?: { boardId?: string; columnId?: string }
     ): Promise<Session | undefined> => ipcRenderer.invoke('session:fork', id, target),
     compact: (id: string): Promise<boolean> => ipcRenderer.invoke('session:compact', id),
+    rewind: (
+      id: string,
+      messageId: string
+    ): Promise<
+      | { ok: true; text: string; attachments: Attachment[]; removed: number }
+      | { ok: false; reason: string }
+    > => ipcRenderer.invoke('session:rewind', id, messageId),
+    forkFrom: (
+      id: string,
+      messageId: string
+    ): Promise<{ ok: true; sessionId: string } | { ok: false; reason: string }> =>
+      ipcRenderer.invoke('session:forkFrom', id, messageId),
     messages: (id: string): Promise<Message[]> => ipcRenderer.invoke('session:messages', id),
     blocks: (id: string): Promise<Block[]> => ipcRenderer.invoke('session:blocks', id),
     running: (id: string): Promise<boolean> => ipcRenderer.invoke('session:running', id)

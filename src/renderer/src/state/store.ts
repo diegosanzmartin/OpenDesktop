@@ -66,6 +66,12 @@ interface State {
    * anywhere in the chat.
    */
   folderPicker: { sessionId: string; mode: 'browse' | 'search' } | null
+  /**
+   * Text and attachments waiting to be put back into a composer, from a
+   * rewind. Held here because the composer owns what is typed in it and there
+   * is no other way to hand it something from outside.
+   */
+  draft: { sessionId: string; text: string; attachments: Attachment[] } | null
   changes: RepoChanges | null
   changesLoading: boolean
   /** Keyed by `environmentId:cwd`, so sessions sharing a folder share a lookup. */
@@ -112,6 +118,9 @@ interface State {
   setSettingsOpen: (open: boolean) => void
   openFolderPicker: (sessionId: string, mode?: 'browse' | 'search') => void
   closeFolderPicker: () => void
+  setDraft: (draft: { sessionId: string; text: string; attachments: Attachment[] } | null) => void
+  rewindTo: (sessionId: string, messageId: string) => Promise<void>
+  forkFrom: (sessionId: string, messageId: string) => Promise<void>
   refreshChanges: () => Promise<void>
   setSessionQuery: (patch: Partial<SessionQuery>) => void
   setView: (view: AppView) => void
@@ -164,6 +173,7 @@ export const useStore = create<State>((set, get) => ({
   sidebarCollapsed: false,
   settingsOpen: false,
   folderPicker: null,
+  draft: null,
   changes: null,
   changesLoading: false,
   gitSummaries: {},
@@ -286,6 +296,17 @@ export const useStore = create<State>((set, get) => ({
         })
         break
 
+      case 'session.rewound': {
+        // Messages and blocks were removed, which no incremental event can
+        // express: reload what this session now is.
+        if (get().activeSessionId === event.sessionId) void get().selectSession(event.sessionId)
+        else {
+          const next = { ...get().messages }
+          delete next[event.sessionId]
+          set({ messages: next })
+        }
+        break
+      }
       case 'session.deleted': {
         const sessions = state.sessions.filter((s) => s.id !== event.sessionId)
         set({ sessions })
@@ -449,6 +470,33 @@ export const useStore = create<State>((set, get) => ({
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
   openFolderPicker: (sessionId, mode = 'browse') => set({ folderPicker: { sessionId, mode } }),
   closeFolderPicker: () => set({ folderPicker: null }),
+  setDraft: (draft) => set({ draft }),
+
+  /**
+   * Takes the conversation back to a message and puts what it said back in the
+   * box. Everything after it goes — which is the point: the window should look
+   * as though the turn never happened.
+   */
+  async rewindTo(sessionId, messageId) {
+    const result = await api().sessions.rewind(sessionId, messageId)
+    if (!result.ok) {
+      get().pushToast('warn', result.reason)
+      return
+    }
+    await get().selectSession(sessionId)
+    set({ draft: { sessionId, text: result.text, attachments: result.attachments } })
+  },
+
+  async forkFrom(sessionId, messageId) {
+    const result = await api().sessions.forkFrom(sessionId, messageId)
+    if (!result.ok) {
+      get().pushToast('warn', result.reason)
+      return
+    }
+    // The copy arrives as a session.created event; selecting it is all that is
+    // left to do.
+    await get().selectSession(result.sessionId)
+  },
 
   async refreshChanges() {
     const session = get().sessions.find((s) => s.id === get().activeSessionId)

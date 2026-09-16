@@ -39,7 +39,8 @@ import * as store from './store'
 import * as history from './history'
 import { dehydrate, estimateTokens, safeBoundary, shouldCompact } from './history'
 import { bus } from './bus'
-import { runTurn } from './agent/runner'
+import { isRunning, runTurn, stop } from './agent/runner'
+import { forkFrom, rewind } from './rewind'
 import { resolveApproval } from './approvals'
 import * as providers from './providers'
 import { getRuntime } from './runtime'
@@ -4123,6 +4124,254 @@ async function main(): Promise<void> {
       store.deleteSession(id)
       history.clearHistory(id)
     }
+  }
+
+  section('taking a turn back')
+  {
+    const rewound = store.createSession({
+      title: 'rewind',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: 'build',
+      model: 'mock/mock'
+    })
+    history.clearHistory(rewound.id)
+    const allow = bus.subscribe((event) => {
+      if (event.type === 'approval.requested') resolveApproval(event.request.id, 'once')
+    })
+
+    // Two turns, each of which runs a command, so there is something to cut.
+    for (const command of ['printf first', 'printf second']) {
+      providers.setModelResolverOverride(() => ({
+        providerId: 'mock',
+        modelId: 'mock',
+        label: 'Mock',
+        model: scriptedModel(command)
+      }))
+      await runTurn({ sessionId: rewound.id, userText: `do the ${command} thing` })
+      providers.setModelResolverOverride(null)
+    }
+
+    // A copy: listMessages hands back the live array, and truncating splices it.
+    const before = [...store.listMessages(rewound.id)]
+    const historyBefore = history.getHistory(rewound.id).length
+    check('two turns are there', before.filter((m) => m.role === 'user').length === 2, before.length)
+    check('and the model transcript has both', historyBefore >= 6, historyBefore)
+    check('with a mark for each', before.filter((m) => m.role === 'user').every((m) => history.markOf(rewound.id, m.id) !== null))
+
+    const second = before.filter((message) => message.role === 'user')[1]
+    // Read before the rewind, which forgets it.
+    const markOfSecond = history.markOf(rewound.id, second.id)
+    const result = rewind(rewound.id, second.id)
+    check('the rewind is allowed', result.ok, result)
+    if (result.ok) {
+      check('and hands back what was typed', result.text === 'do the printf second thing', result.text)
+      check('saying how much it removed', result.removed >= 2, result.removed)
+    }
+
+    const after = store.listMessages(rewound.id)
+    check('the second turn is gone from the chat', after.length === before.indexOf(second), {
+      after: after.length,
+      cut: before.indexOf(second)
+    })
+    check('the first one is untouched', after.some((m) => m.parts.some((p) => (p.text ?? '').includes('printf first'))))
+    check(
+      'its blocks went with it',
+      !store.listBlocks(rewound.id).some((block) => block.title === 'printf second'),
+      store.listBlocks(rewound.id).map((b) => b.title)
+    )
+    check('and the first turn keeps its own', store.listBlocks(rewound.id).some((block) => block.title === 'printf first'))
+
+    const left = history.getHistory(rewound.id)
+    check('the model transcript was cut too', left.length < historyBefore, { left: left.length, historyBefore })
+    check(
+      'and it was cut where that turn began, not at an arbitrary index',
+      left.length === markOfSecond,
+      { left: left.length, mark: markOfSecond }
+    )
+    check(
+      'what is left can be sent to a provider — no result without its call',
+      safeBoundary(left, left.length) === left.length,
+      left.map((m) => m.role)
+    )
+    check('the mark for the removed turn is forgotten', history.markOf(rewound.id, second.id) === null)
+    check(
+      'the mark for the one still there is not',
+      history.markOf(rewound.id, before.filter((m) => m.role === 'user')[0].id) === 0
+    )
+
+    // Rewinding an answer means rewinding the question that produced it.
+    const assistant = store.listMessages(rewound.id).find((m) => m.role === 'assistant')!
+    const viaAnswer = rewind(rewound.id, assistant.id)
+    check('rewinding an answer goes back to the question', viaAnswer.ok, viaAnswer)
+    if (viaAnswer.ok) {
+      check('and returns that question', viaAnswer.text === 'do the printf first thing', viaAnswer.text)
+    }
+    check('which leaves the session empty', store.listMessages(rewound.id).length === 0)
+    check('and the model transcript with it', history.getHistory(rewound.id).length === 0)
+
+    allow()
+    store.deleteSession(rewound.id)
+    history.clearHistory(rewound.id)
+  }
+
+  section('what rewind refuses to do')
+  {
+    const busy = store.createSession({
+      title: 'busy',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: 'build',
+      model: 'mock/mock'
+    })
+    history.clearHistory(busy.id)
+
+    // A model that does not answer until it is let go, so the turn is genuinely
+    // in flight while the rewind is attempted.
+    let release = (): void => undefined
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    providers.setModelResolverOverride(() => ({
+      providerId: 'mock',
+      modelId: 'mock',
+      label: 'Mock',
+      model: new MockLanguageModelV4({
+        doStream: async () => {
+          await held
+          return {
+            stream: new ReadableStream({
+              start(controller) {
+                controller.enqueue({ type: 'stream-start', warnings: [] })
+                controller.enqueue({ type: 'response-metadata', id: 'h1', modelId: 'mock' })
+                controller.enqueue({ type: 'text-start', id: 'ht' })
+                controller.enqueue({ type: 'text-delta', id: 'ht', delta: 'late' })
+                controller.enqueue({ type: 'text-end', id: 'ht' })
+                controller.enqueue(finish('stop', 5, 2))
+                controller.close()
+              }
+            })
+          }
+        }
+      }) as unknown as LanguageModel
+    }))
+
+    const turn = runTurn({ sessionId: busy.id, userText: 'hold on' })
+    for (let i = 0; i < 50 && !isRunning(busy.id); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    check('the turn is in flight', isRunning(busy.id))
+    const asked = store.listMessages(busy.id).find((m) => m.role === 'user')!
+    const refused = rewind(busy.id, asked.id)
+    check('rewinding mid-turn is refused', !refused.ok)
+    check(
+      'and says what to do about it',
+      !refused.ok && /stop it first/i.test(refused.reason),
+      refused
+    )
+    check('nothing was removed', store.listMessages(busy.id).length > 0)
+
+    release()
+    await turn
+    providers.setModelResolverOverride(null)
+
+    // ...and once it is done, the same rewind works.
+    const now = rewind(busy.id, asked.id)
+    check('the same rewind works once the model stops', now.ok, now)
+
+    // A turn with no mark cannot be cut safely, and says so rather than guessing.
+    const old = store.createSession({
+      title: 'unmarked',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: 'build',
+      model: 'mock/mock'
+    })
+    history.clearHistory(old.id)
+    const unmarked = store.addMessage({
+      sessionId: old.id,
+      role: 'user',
+      parts: [{ type: 'text', text: 'from before rewind existed' }]
+    })
+    history.appendHistory(old.id, [{ role: 'user', content: 'from before rewind existed' }])
+    const noMark = rewind(old.id, unmarked.id)
+    check('a turn with no recorded boundary is refused', !noMark.ok)
+    check(
+      'and the reason says why, not just no',
+      !noMark.ok && /boundary/.test(noMark.reason),
+      noMark
+    )
+    check('and it is still there afterwards', store.listMessages(old.id).length === 1)
+
+    for (const id of [busy.id, old.id]) {
+      store.deleteSession(id)
+      history.clearHistory(id)
+    }
+  }
+
+  section('a fork taken from one message')
+  {
+    const trunk = store.createSession({
+      title: 'trunk',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: 'build',
+      model: 'mock/mock'
+    })
+    history.clearHistory(trunk.id)
+    const allow = bus.subscribe((event) => {
+      if (event.type === 'approval.requested') resolveApproval(event.request.id, 'once')
+    })
+    for (const command of ['printf one', 'printf two']) {
+      providers.setModelResolverOverride(() => ({
+        providerId: 'mock',
+        modelId: 'mock',
+        label: 'Mock',
+        model: scriptedModel(command)
+      }))
+      await runTurn({ sessionId: trunk.id, userText: `ask about ${command}` })
+      providers.setModelResolverOverride(null)
+    }
+    allow()
+
+    const messages = [...store.listMessages(trunk.id)]
+    const firstAnswer = messages.find((m) => m.role === 'assistant')!
+    const forked = forkFrom(trunk.id, firstAnswer.id)
+    check('the fork is made', forked.ok, forked)
+    if (!forked.ok) throw new Error('fork failed')
+
+    const copy = store.listMessages(forked.sessionId)
+    check(
+      'it stops at the message it was taken from',
+      copy.length === messages.indexOf(firstAnswer) + 1,
+      { copy: copy.length, at: messages.indexOf(firstAnswer) + 1 }
+    )
+    check('it keeps the turn it was forked from', copy.some((m) => m.role === 'assistant'))
+    check('and nothing after it', !copy.some((m) => m.parts.some((p) => (p.text ?? '').includes('printf two'))))
+    check('the original is left whole', store.listMessages(trunk.id).length === messages.length)
+    check(
+      'the copy has its own model transcript, cut to match',
+      history.getHistory(forked.sessionId).length > 0 &&
+        history.getHistory(forked.sessionId).length < history.getHistory(trunk.id).length,
+      {
+        copy: history.getHistory(forked.sessionId).length,
+        trunk: history.getHistory(trunk.id).length
+      }
+    )
+    check(
+      'which is still sendable',
+      safeBoundary(history.getHistory(forked.sessionId), history.getHistory(forked.sessionId).length) ===
+        history.getHistory(forked.sessionId).length
+    )
+    check(
+      'and the copy can be rewound in its own right',
+      history.markOf(forked.sessionId, copy.find((m) => m.role === 'user')!.id) !== null
+    )
+
+    store.deleteSession(forked.sessionId)
+    history.clearHistory(forked.sessionId)
+    store.deleteSession(trunk.id)
+    history.clearHistory(trunk.id)
   }
 
   // Leave no smoke sessions behind.

@@ -505,6 +505,12 @@ export type AppEvent =
   | { type: 'session.created'; session: Session }
   | { type: 'session.updated'; session: Session }
   | { type: 'session.deleted'; sessionId: string }
+  /**
+   * A session was cut back to an earlier point, so what the renderer holds for
+   * it is wrong in a way no incremental event can express: messages and blocks
+   * were removed. It refetches.
+   */
+  | { type: 'session.rewound'; sessionId: string }
   | { type: 'board.updated'; board: Board }
   | { type: 'board.deleted'; boardId: string }
   | { type: 'message.created'; message: Message }

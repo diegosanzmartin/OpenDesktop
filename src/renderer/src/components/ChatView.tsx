@@ -1,10 +1,10 @@
 import clsx from 'clsx'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { FileText } from 'lucide-react'
+import { Check, Copy, FileText, GitBranch, RotateCcw } from 'lucide-react'
 import type { Attachment, Block, Message, Session } from '@shared/types'
 import { isManager } from '@shared/types'
 import { useStore } from '../state/store'
-import { tokens } from '../lib/format'
+import { timeAgo, tokens } from '../lib/format'
 import { activityOf, duration, tokenRate } from '@shared/progress'
 import { formatCost } from '@shared/cost'
 import { ApprovalCard } from './ApprovalCard'
@@ -53,7 +53,87 @@ function SentAttachment({ attachment }: { attachment: Attachment }): ReactNode {
   )
 }
 
-function MessageRow({ message }: { message: Message }): ReactNode {
+/**
+ * What can be done with a message, once it has been said.
+ *
+ * Shown on hover, under the message, because these are second thoughts rather
+ * than part of reading: copy it, take it back, or keep this answer and try a
+ * different question beside it.
+ *
+ * Rewind is the one with teeth. It removes this turn and everything after it
+ * from both transcripts and puts what was typed back in the box, so the window
+ * reads as though it never happened — which is only coherent when nothing is
+ * in flight, so it is disabled while the model is working and says why.
+ */
+function MessageActions({
+  session,
+  message,
+  align
+}: {
+  session: Session
+  message: Message
+  align: 'left' | 'right'
+}): ReactNode {
+  const rewindTo = useStore((s) => s.rewindTo)
+  const forkFrom = useStore((s) => s.forkFrom)
+  const [copied, setCopied] = useState(false)
+
+  const busy = session.status === 'running' || session.status === 'awaiting-approval'
+  const text = message.parts
+    .filter((part) => part.type === 'text')
+    .map((part) => part.text ?? '')
+    .join('')
+
+  const action =
+    'text-ink-600 hover:text-ink-200 disabled:hover:text-ink-700 rounded p-1 transition-colors disabled:cursor-default disabled:text-ink-700'
+
+  return (
+    <div
+      className={clsx(
+        'flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100',
+        align === 'right' ? 'justify-end' : 'justify-start'
+      )}
+    >
+      <span className="text-ink-600 mr-1 text-[11.5px]">{timeAgo(message.createdAt)}</span>
+      <button
+        type="button"
+        title="Copy"
+        className={action}
+        onClick={() => {
+          void navigator.clipboard.writeText(text).then(() => {
+            setCopied(true)
+            setTimeout(() => setCopied(false), 1200)
+          })
+        }}
+      >
+        {copied ? <Check className="text-ok h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+      </button>
+      <button
+        type="button"
+        disabled={busy}
+        title={
+          busy
+            ? 'Rewind is unavailable while the model is working — stop it first'
+            : 'Rewind to here: removes this turn and everything after it, and puts the message back in the box'
+        }
+        className={action}
+        onClick={() => void rewindTo(session.id, message.id)}
+      >
+        <RotateCcw className="h-3.5 w-3.5" />
+      </button>
+      <button
+        type="button"
+        title="Fork from here: a copy of the conversation up to this point, leaving this one alone"
+        className={action}
+        onClick={() => void forkFrom(session.id, message.id)}
+      >
+        <GitBranch className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  )
+}
+
+function MessageRow({ message, session }: { message: Message; session: Session }): ReactNode {
   const blocks = useStore((s) => s.blocks)
   const config = useStore((s) => s.config)
   const agent =
@@ -62,7 +142,7 @@ function MessageRow({ message }: { message: Message }): ReactNode {
   if (message.role === 'user') {
     const text = message.parts.map((p) => p.text ?? '').join('')
     return (
-      <div className="flex flex-col items-end gap-1.5">
+      <div className="group flex flex-col items-end gap-1.5">
         {message.attachments && message.attachments.length > 0 ? (
           <div className="flex max-w-[80%] flex-wrap justify-end gap-1.5">
             {message.attachments.map((attachment) => (
@@ -77,6 +157,7 @@ function MessageRow({ message }: { message: Message }): ReactNode {
             <Mentions text={text} />
           </div>
         ) : null}
+        <MessageActions session={session} message={message} align="right" />
       </div>
     )
   }
@@ -89,12 +170,14 @@ function MessageRow({ message }: { message: Message }): ReactNode {
     .filter(Boolean)
 
   return (
-    <div>
+    <div className="group">
       <MessageParts message={message} />
 
       <EditedFiles blocks={allBlocks} />
 
       <StatusLine message={message} blocks={allBlocks} agentColor={agent?.color} agentName={agent?.name} />
+
+      <MessageActions session={session} message={message} align="left" />
     </div>
   )
 }
@@ -225,7 +308,9 @@ export function ChatView({ session }: { session: Session }): ReactNode {
               </div>
             </div>
           ) : (
-            messages.map((message) => <MessageRow key={message.id} message={message} />)
+            messages.map((message) => (
+              <MessageRow key={message.id} message={message} session={session} />
+            ))
           )}
           {approvals.map((request, index) => (
             <ApprovalCard key={request.id} request={request} active={index === 0} />

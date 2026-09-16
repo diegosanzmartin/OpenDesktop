@@ -514,7 +514,7 @@ export async function runTurn(input: TurnInput): Promise<string> {
 
   // The transcript keeps what the user typed; the model gets the skills it named.
   const expanded = expandSkills(input.userText)
-  store.addMessage({
+  const asked = store.addMessage({
     sessionId: session.id,
     role: 'user',
     parts: [{ type: 'text', text: input.userText }],
@@ -623,6 +623,9 @@ export async function runTurn(input: TurnInput): Promise<string> {
       input.attachments
     )
     const messages: ModelMessage[] = [...history.getHistory(session.id), userMessage]
+    // Where this turn begins, recorded before it is appended: rewinding to this
+    // message later cuts the model transcript back to exactly here.
+    history.markTurn(session.id, asked.id)
     history.appendHistory(session.id, [userMessage])
 
     const result = streamText({

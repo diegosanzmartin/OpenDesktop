@@ -12,7 +12,7 @@
 import './src/styles.css'
 import React from 'react'
 import { createRoot } from 'react-dom/client'
-import type { ApprovalRequest, Block, Session } from '@shared/types'
+import type { ApprovalRequest, Block, Message, Session } from '@shared/types'
 import { useStore } from './src/state/store'
 import { BlockCard } from './src/components/BlockCard'
 import { ApprovalCard } from './src/components/ApprovalCard'
@@ -22,6 +22,7 @@ import { Composer } from './src/components/Composer'
 import { ContextGauge } from './src/components/ContextGauge'
 import { ModelsTab } from './src/components/ModelsTab'
 import { FolderPicker } from './src/components/FolderPicker'
+import { ChatView } from './src/components/ChatView'
 
 const failures: string[] = []
 let checks = 0
@@ -648,6 +649,70 @@ async function run(): Promise<void> {
     check('and ⌘R goes straight to the search', (host.textContent ?? '').includes('↑↓ move'))
 
     useStore.setState({ folderPicker: null, sessions: [session], activeSessionId: session.id })
+  }
+
+  section('what a message offers once it is said')
+  {
+    const said: Message[] = [
+      {
+        id: 'm-user',
+        sessionId: session.id,
+        role: 'user',
+        parts: [{ type: 'text', text: 'quita este texto del chat' }],
+        createdAt: Date.now()
+      },
+      {
+        id: 'm-answer',
+        sessionId: session.id,
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'Done.' }],
+        createdAt: Date.now(),
+        completedAt: Date.now()
+      }
+    ]
+    useStore.setState({ messages: { [session.id]: said }, activeSessionId: session.id })
+
+    const idle = mount(<ChatView session={session} />, 900)
+    await settle()
+    const buttons = (host: HTMLElement): HTMLButtonElement[] =>
+      [...host.querySelectorAll('button')].filter((button) =>
+        /^(Copy|Rewind|Fork)/.test(button.getAttribute('title') ?? '')
+      ) as HTMLButtonElement[]
+
+    const offered = buttons(idle)
+    check('every message offers the three', offered.length === 6, offered.length)
+    check(
+      'and they are named for what they do',
+      offered.slice(0, 3).map((button) => (button.getAttribute('title') ?? '').split(/[ :—]/)[0]).join() ===
+        'Copy,Rewind,Fork',
+      offered.slice(0, 3).map((b) => b.getAttribute('title'))
+    )
+    check('when the session is idle, rewind is available', !offered[1].disabled)
+    check(
+      'and says what it will do',
+      (offered[1].getAttribute('title') ?? '').includes('back in the box'),
+      offered[1].getAttribute('title')
+    )
+    check('the time it was said is there too', (idle.textContent ?? '').includes('just now'))
+    check(
+      'and the row is out of the way until the message is hovered',
+      (offered[0].parentElement?.className ?? '').includes('opacity-0'),
+      offered[0].parentElement?.className
+    )
+
+    const working = mount(<ChatView session={{ ...session, status: 'running' }} />, 900)
+    await settle()
+    const busy = buttons(working)
+    check('while the model works, rewind is not offered', busy[1].disabled)
+    check(
+      'and the tooltip is the reason rather than the action',
+      (busy[1].getAttribute('title') ?? '').includes('while the model is working'),
+      busy[1].getAttribute('title')
+    )
+    check('copying is still fine', !busy[0].disabled)
+    check('and so is forking', !busy[2].disabled)
+
+    useStore.setState({ messages: {} })
   }
 
   console.log(`\n${checks - failures.length}/${checks} checks passed`)
