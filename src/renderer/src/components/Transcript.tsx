@@ -191,7 +191,10 @@ export function ToolGroup({ blocks }: { blocks: Block[] }): ReactNode {
           </button>
 
           {open ? (
-            <div className="mt-1.5 space-y-1.5 pb-1">
+            // One outlined container with the calls divided inside it, rather
+            // than a stack of separate boxes: the group is the thing, and each
+            // call is a line of it.
+            <div className="border-ink-800 mt-1.5 mb-1 overflow-hidden rounded-lg border">
               {rest.map((block) => (
                 <BlockCard key={block.id} block={block} />
               ))}

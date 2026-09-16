@@ -1,48 +1,26 @@
 import clsx from 'clsx'
 import { useMemo, type ReactNode } from 'react'
-import {
-  ChevronDown,
-  ChevronRight,
-  Download,
-  FileDiff,
-  FilePlus2,
-  FileText,
-  FolderTree,
-  Globe,
-  Search,
-  Terminal,
-  Users
-} from 'lucide-react'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 import type { Block } from '@shared/types'
 import { useStore } from '../state/store'
-import { STATUS_COLOR, STATUS_LABEL, TOOL_LABEL, duration, stripAnsi } from '../lib/format'
-import { StatusDot } from './ui'
+import { STATUS_COLOR, STATUS_LABEL, duration, stripAnsi } from '../lib/format'
 import { DiffBody } from './DiffBody'
 
-const ICONS: Record<string, typeof Terminal> = {
-  bash: Terminal,
-  read: FileText,
-  write: FilePlus2,
-  edit: FileDiff,
-  grep: Search,
-  glob: FolderTree,
-  list: FolderTree,
-  fetch: Globe,
-  task: Users
-}
-
 /**
- * One tool call, rendered as its own collapsible block: a single clickable
- * summary line, and on expand the exact input plus the live output.
+ * The line a tool call gets in the transcript, and what it opens into.
+ *
+ * Deliberately close to bare: what happened, how long it took, and how it
+ * ended. The tool's name, its icon, the folder, the host and the agent were all
+ * repeating what the surrounding conversation already says, and a row of
+ * labels around one command is harder to read than the command.
  */
-export function BlockCard({ block, compact }: { block: Block; compact?: boolean }): ReactNode {
+export function BlockCard({ block }: { block: Block; compact?: boolean }): ReactNode {
   const expanded = useStore((s) => s.expanded[block.id] ?? false)
   const toggle = useStore((s) => s.toggleBlock)
   const sessions = useStore((s) => s.sessions)
   const selectSession = useStore((s) => s.selectSession)
   const previewFile = usePreviewOpener()
 
-  const Icon = ICONS[block.tool] ?? Terminal
   const isDiff = block.tool === 'edit' || block.tool === 'write'
   const output = useMemo(() => stripAnsi(block.output), [block.output])
   const childSessionId =
@@ -52,130 +30,116 @@ export function BlockCard({ block, compact }: { block: Block; compact?: boolean 
     [childSessionId, sessions]
   )
   const filePath = typeof block.input.path === 'string' ? block.input.path : null
+  const command = typeof block.input.command === 'string' ? block.input.command : null
+
+  // What the agent said it was doing reads better than the command it typed;
+  // the command itself is one click away.
+  const heading = block.tool === 'bash' ? (block.subtitle ?? block.title) : block.title
+  const failed = block.status === 'error' || Boolean(block.exitCode)
 
   return (
-    <div
-      className={clsx(
-        'border-ink-700 bg-ink-850 overflow-hidden rounded-md border',
-        block.status === 'error' && 'border-bad/40',
-        block.status === 'awaiting-approval' && 'border-warn/50'
-      )}
-    >
+    <div className="border-ink-800/70 border-b last:border-b-0">
       <button
         type="button"
         onClick={() => toggle(block.id)}
-        className="hover:bg-ink-800 flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition-colors"
+        className="hover:bg-ink-850/60 flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition-colors"
       >
         {expanded ? (
-          <ChevronDown className="text-ink-500 h-3 w-3 shrink-0" />
+          <ChevronDown className="text-ink-600 h-3 w-3 shrink-0" />
         ) : (
-          <ChevronRight className="text-ink-500 h-3 w-3 shrink-0" />
+          <ChevronRight className="text-ink-600 h-3 w-3 shrink-0" />
         )}
-        <Icon className="text-ink-400 h-3.5 w-3.5 shrink-0" />
-        <span className="text-ink-500 shrink-0 text-[10px] font-semibold uppercase tracking-wide">
-          {TOOL_LABEL[block.tool] ?? block.tool}
-        </span>
         <span
           className={clsx(
-            'min-w-0 flex-1 truncate font-mono text-[11.5px]',
-            block.status === 'error' ? 'text-bad' : 'text-ink-100'
+            'min-w-0 flex-1 truncate text-[12.5px]',
+            failed ? 'text-bad' : 'text-ink-300'
           )}
         >
-          {block.title}
+          {heading}
         </span>
-        {block.subtitle && !compact ? (
-          <span className="text-ink-500 shrink-0 truncate text-[10.5px]">{block.subtitle}</span>
-        ) : null}
-        <span className={clsx('shrink-0 text-[10px]', STATUS_COLOR[block.status])}>
-          {block.status === 'running' || block.status === 'awaiting-approval'
-            ? STATUS_LABEL[block.status]
-            : duration(block)}
-        </span>
-        <StatusDot status={block.status} />
+
+        {block.status === 'running' || block.status === 'awaiting-approval' ? (
+          <span className={clsx('shrink-0 text-[10.5px]', STATUS_COLOR[block.status])}>
+            {STATUS_LABEL[block.status]}
+          </span>
+        ) : (
+          <span className="text-ink-600 shrink-0 text-[10.5px]">
+            {duration(block)}
+            {block.exitCode !== undefined ? (
+              <span className={clsx('ml-1.5', block.exitCode ? 'text-bad' : 'text-ink-700')}>
+                exit {block.exitCode}
+              </span>
+            ) : null}
+          </span>
+        )}
       </button>
 
       {expanded ? (
-        <div className="border-ink-700 border-t">
-          <div className="bg-ink-900 px-3 py-2">
-            <div className="text-ink-500 mb-1 text-[10px] font-semibold uppercase tracking-wide">Input</div>
-            {block.tool === 'bash' ? (
-              <pre className="text-ink-200 whitespace-pre-wrap break-all font-mono text-[11.5px]">
-                <span className="text-brand">$ </span>
-                {String(block.input.command ?? '')}
-              </pre>
-            ) : (
-              <pre className="text-ink-300 whitespace-pre-wrap break-all font-mono text-[11px]">
-                {Object.entries(block.input)
-                  .filter(([, value]) => value !== undefined && value !== '')
-                  .map(([key, value]) => {
-                    const text = typeof value === 'string' ? value : JSON.stringify(value)
-                    const clipped = text.length > 600 ? `${text.slice(0, 600)}…` : text
-                    return `${key}: ${clipped}`
-                  })
-                  .join('\n')}
-              </pre>
-            )}
-            <div className="text-ink-600 mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px]">
-              <span className="font-mono">{block.cwd}</span>
-              <span>{block.environmentId}</span>
-              <span>{block.agentId}</span>
-              {block.exitCode !== undefined ? <span>exit {block.exitCode}</span> : null}
+        <div className="px-2.5 pb-2">
+          {command !== null ? (
+            <pre className="bg-ink-900 text-ink-200 mb-1.5 overflow-x-auto rounded-md px-2.5 py-1.5 font-mono text-[11.5px] leading-[1.55] whitespace-pre-wrap break-all">
+              <span className="text-brand">$ </span>
+              {command}
+            </pre>
+          ) : (
+            <pre className="bg-ink-900 text-ink-400 mb-1.5 overflow-x-auto rounded-md px-2.5 py-1.5 font-mono text-[11px] leading-[1.55] whitespace-pre-wrap break-all">
+              {Object.entries(block.input)
+                .filter(([, value]) => value !== undefined && value !== '')
+                .map(([key, value]) => {
+                  const text = typeof value === 'string' ? value : JSON.stringify(value)
+                  const clipped = text.length > 600 ? `${text.slice(0, 600)}…` : text
+                  return `${key}: ${clipped}`
+                })
+                .join('\n')}
+            </pre>
+          )}
+
+          {block.error ? (
+            <pre className="text-bad mb-1 px-0.5 font-mono text-[11px] leading-[1.55] whitespace-pre-wrap">
+              {block.error}
+            </pre>
+          ) : null}
+
+          <div className="max-h-[420px] overflow-auto">
+            {output ? (
+              isDiff ? (
+                <DiffBody text={output} />
+              ) : (
+                <pre className="text-ink-400 px-0.5 font-mono text-[11px] leading-[1.55] whitespace-pre-wrap break-all">
+                  {output}
+                </pre>
+              )
+            ) : block.status === 'running' ? (
+              <div className="text-ink-600 px-0.5 text-[11px] italic">waiting for output…</div>
+            ) : null}
+          </div>
+
+          {filePath || childSession ? (
+            <div className="mt-1.5 flex items-center gap-3 px-0.5">
               {filePath ? (
                 <button
                   type="button"
-                  className="text-brand hover:underline"
+                  className="text-ink-600 hover:text-brand text-[10.5px]"
                   onClick={(event) => {
                     event.stopPropagation()
                     void previewFile(block.environmentId, filePath)
                   }}
                 >
-                  Open in browser
+                  Open file
                 </button>
               ) : null}
               {childSession ? (
                 <button
                   type="button"
-                  className="text-brand hover:underline"
+                  className="text-ink-600 hover:text-brand text-[10.5px]"
                   onClick={(event) => {
                     event.stopPropagation()
                     void selectSession(childSession.id)
                   }}
                 >
-                  Open subagent session
+                  Open its session
                 </button>
               ) : null}
-            </div>
-          </div>
-
-          <div className="border-ink-700 max-h-[420px] overflow-auto border-t">
-            {block.error ? (
-              <div className="text-bad bg-bad/5 px-3 py-2 font-mono text-[11px] whitespace-pre-wrap">
-                {block.error}
-              </div>
-            ) : null}
-            {output ? (
-              isDiff ? (
-                <div className="py-1">
-                  <DiffBody text={output} />
-                </div>
-              ) : (
-                <pre className="text-ink-300 px-3 py-2 font-mono text-[11px] leading-[1.55] whitespace-pre-wrap break-all">
-                  {output}
-                </pre>
-              )
-            ) : block.status === 'running' ? (
-              <div className="text-ink-500 px-3 py-2 text-[11px] italic">waiting for output…</div>
-            ) : !block.error ? (
-              <div className="text-ink-600 px-3 py-2 text-[11px] italic">no output</div>
-            ) : null}
-          </div>
-
-          {output.length > 4000 ? (
-            <div className="border-ink-700 flex items-center gap-2 border-t px-3 py-1.5">
-              <Download className="text-ink-500 h-3 w-3" />
-              <span className="text-ink-500 text-[10px]">
-                {output.length.toLocaleString('en-GB')} characters of output
-              </span>
             </div>
           ) : null}
         </div>
