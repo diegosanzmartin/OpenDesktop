@@ -351,6 +351,18 @@ export function ModelsTab(): ReactNode {
 
   const dirty = useMemo(() => JSON.stringify(draft) !== JSON.stringify(config), [draft, config])
 
+  /** Every `provider/model` the document declares, for the pickers below. */
+  const declaredModels = useMemo(
+    () =>
+      Object.values(draft?.provider ?? {}).flatMap((provider) =>
+        Object.values(provider.models).map((model) => ({
+          ref: `${provider.id}/${model.id}`,
+          label: `${provider.name} · ${model.name}`
+        }))
+      ),
+    [draft]
+  )
+
   useEffect(() => {
     if (!draft || !dirty) return
     const timer = setTimeout(() => {
@@ -508,6 +520,36 @@ export function ModelsTab(): ReactNode {
             onChange={(event) => setDraft({ ...draft, mode: event.target.value as SessionMode })}
             options={MODES.map((entry) => ({ value: entry.id, label: entry.label }))}
           />
+        </Row>
+        <Row
+          label="shunt delegates to"
+          description="The model that reads files in shunt mode. Its answer comes back; the files never do. Left as the session's own model, the files still stay out of the conversation but the reading is charged at full price."
+        >
+          <RowSelect
+            value={draft.shuntModel ?? ''}
+            onChange={(event) =>
+              setDraft({ ...draft, shuntModel: event.target.value || undefined })
+            }
+            options={[
+              { value: '', label: draft.smallModel ? `Small model (${draft.smallModel})` : "The session's own model" },
+              ...declaredModels.map((model) => ({ value: model.ref, label: model.label }))
+            ]}
+          />
+        </Row>
+        <Row
+          label="shunt refuses reads over"
+          description="Whole-file reads longer than this are refused and pointed at bulk_read. A read with an offset or a limit is always allowed — that is the agent saying it knows what it needs."
+        >
+          <RowInput
+            mono
+            width="w-[72px]"
+            value={String(draft.shuntMinLines ?? 350)}
+            onChange={(value) => {
+              const parsed = Number(value.replace(/\D/g, ''))
+              setDraft({ ...draft, shuntMinLines: Math.min(5000, Math.max(20, parsed || 350)) })
+            }}
+          />
+          <Hint>lines</Hint>
         </Row>
       </Section>
 

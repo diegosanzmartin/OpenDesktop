@@ -121,6 +121,29 @@ export function updateSession(id: string, patch: Partial<Session>): Session | un
   return file.session
 }
 
+/**
+ * Adds to a session's running totals, for work that happens inside a turn.
+ *
+ * A delegated read spends real tokens on a real model in the middle of a turn.
+ * The turn's own accounting adds its numbers to whatever the session holds when
+ * it ends, so this has to be applied to the live session rather than to a copy
+ * taken earlier — otherwise the last write silently erases the first.
+ */
+export function creditUsage(
+  id: string,
+  usage: { input: number; output: number; cost?: number }
+): void {
+  const file = sessions.get(id)
+  if (!file) return
+  updateSession(id, {
+    usage: {
+      input: file.session.usage.input + usage.input,
+      output: file.session.usage.output + usage.output,
+      cost: file.session.usage.cost + (usage.cost ?? 0)
+    }
+  })
+}
+
 export function setSessionStatus(id: string, status: SessionStatus): void {
   updateSession(id, { status })
 }

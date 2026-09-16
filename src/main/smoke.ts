@@ -31,7 +31,7 @@ import {
 import { buildUserMessage } from './agent/runner'
 import { createServer } from 'node:http'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as store from './store'
@@ -43,6 +43,16 @@ import { resolveApproval } from './approvals'
 import * as providers from './providers'
 import { getRuntime } from './runtime'
 import type { ExecOptions, ExecResult, Runtime } from './runtime'
+import {
+  BULK_READER_INSTRUCTIONS,
+  DEFAULT_MIN_LINES,
+  bashReadTarget,
+  packFiles,
+  readRefusal,
+  stripFences,
+  workerIsTheSameModel,
+  workerModelRef
+} from './shunt'
 import {
   acceptRewrite,
   cachedRtkStatus,
@@ -206,6 +216,64 @@ function delegatingModel(): LanguageModel {
             controller.enqueue({ type: 'text-delta', id: 'dt', delta: 'The subagent reported back.' })
             controller.enqueue({ type: 'text-end', id: 'dt' })
             controller.enqueue(finish('stop', 25, 9))
+            controller.close()
+          }
+        })
+      }
+    }
+  }) as unknown as LanguageModel
+}
+
+/**
+ * A mock model for a one-shot `generateText` call — the shape the summariser
+ * and shunt's worker use, which is not the streaming one.
+ */
+function answeringModel(text: string, input = 5000, output = 40): LanguageModel {
+  return new MockLanguageModelV4({
+    doGenerate: async () => ({
+      content: [{ type: 'text' as const, text }],
+      finishReason: { unified: 'stop' as const, raw: 'stop' },
+      usage: {
+        inputTokens: { total: input, noCache: input, cacheRead: 0, cacheWrite: 0 },
+        outputTokens: { total: output, text: output, reasoning: 0 }
+      },
+      warnings: []
+    })
+  }) as unknown as LanguageModel
+}
+
+/** A mock model that calls one named tool with a fixed input, then answers. */
+function toolCallingModel(toolName: string, input: Record<string, unknown>): LanguageModel {
+  let step = 0
+  const payload = JSON.stringify(input)
+  return new MockLanguageModelV4({
+    doStream: async () => {
+      step++
+      if (step === 1) {
+        return {
+          stream: new ReadableStream({
+            start(controller) {
+              controller.enqueue({ type: 'stream-start', warnings: [] })
+              controller.enqueue({ type: 'response-metadata', id: 'w1', modelId: 'mock' })
+              controller.enqueue({ type: 'tool-input-start', id: 'c1', toolName })
+              controller.enqueue({ type: 'tool-input-delta', id: 'c1', delta: payload })
+              controller.enqueue({ type: 'tool-input-end', id: 'c1' })
+              controller.enqueue({ type: 'tool-call', toolCallId: 'c1', toolName, input: payload })
+              controller.enqueue(finish('tool-calls', 10, 5))
+              controller.close()
+            }
+          })
+        }
+      }
+      return {
+        stream: new ReadableStream({
+          start(controller) {
+            controller.enqueue({ type: 'stream-start', warnings: [] })
+            controller.enqueue({ type: 'response-metadata', id: 'w2', modelId: 'mock' })
+            controller.enqueue({ type: 'text-start', id: 'wt' })
+            controller.enqueue({ type: 'text-delta', id: 'wt', delta: 'Done.' })
+            controller.enqueue({ type: 'text-end', id: 'wt' })
+            controller.enqueue(finish('stop', 20, 8))
             controller.close()
           }
         })
@@ -2786,6 +2854,286 @@ async function main(): Promise<void> {
     }
     rmSync(bin, { recursive: true, force: true })
     forgetRtkStatus()
+  }
+
+  section('shunt mode: what a large file costs to look at')
+  {
+    const over = readRefusal({ path: '/p/big.ts', lines: 4014 })
+    check('a whole large file is refused', over !== null)
+    check('and the refusal names the way through', /bulk_read/.test(over ?? ''), over)
+    check(
+      'and says a targeted read is still allowed',
+      /offset and a limit/.test(over ?? ''),
+      over
+    )
+    check(
+      'a small file is read as normal',
+      readRefusal({ path: '/p/small.ts', lines: DEFAULT_MIN_LINES }) === null
+    )
+    check(
+      'and so is a read that asked for a range',
+      readRefusal({ path: '/p/big.ts', lines: 4014, offset: 200 }) === null &&
+        readRefusal({ path: '/p/big.ts', lines: 4014, limit: 50 }) === null
+    )
+    check(
+      "the threshold is the session's own",
+      readRefusal({ path: '/p/x.ts', lines: 100, minLines: 50 }) !== null
+    )
+
+    check('cat on a file is a read', bashReadTarget('cat src/Service.java') === 'src/Service.java')
+    check('so is head with a flag', bashReadTarget('head -100 notes.md') === 'notes.md')
+    check('and less, and more', bashReadTarget('less a.txt') === 'a.txt' && bashReadTarget('more b') === 'b')
+    check(
+      'a quoted path with a space in it survives, where upstream loses it',
+      bashReadTarget('cat "my file.md"') === 'my file.md',
+      bashReadTarget('cat "my file.md"')
+    )
+    check('a pipe is a targeted read, so it goes through', bashReadTarget('cat f | grep x') === null)
+    check('a redirect is not a read into the conversation', bashReadTarget('cat f > g') === null)
+    check('and anything else is not a read at all', bashReadTarget('git status') === null)
+
+    check(
+      'files are handed over fenced by name',
+      packFiles([{ path: '/a.ts', text: 'x' }]).includes('<file path="/a.ts">')
+    )
+    check('an outer fence is stripped', stripFences('```ts\nconst a = 1\n```') === 'const a = 1')
+    check(
+      'a fence inside the file is not',
+      stripFences('```md\na\n```\nb\n```').includes('```'),
+      stripFences('```md\na\n```\nb\n```')
+    )
+    check('and unfenced code is left alone', stripFences('const a = 1') === 'const a = 1')
+
+    const base = defaultConfig()
+    check(
+      'the worker is whichever model was named for it',
+      workerModelRef({ ...base, shuntModel: 'p/cheap', smallModel: 'p/small' }, 'p/big') === 'p/cheap'
+    )
+    check(
+      'failing that, the small model the app already has',
+      workerModelRef({ ...base, smallModel: 'p/small' }, 'p/big') === 'p/small'
+    )
+    check(
+      "and failing that it runs anyway, on the session's own",
+      workerModelRef(base, 'p/big') === 'p/big' && workerIsTheSameModel(base, 'p/big')
+    )
+  }
+
+  section('shunt mode: a real turn, with the reading delegated')
+  {
+    const dir = join(tmpdir(), 'opendesktop-shunt')
+    mkdirSync(dir, { recursive: true })
+    const big = join(dir, 'big.ts')
+    // A marker no other file could contain, so "did this reach the model" is a
+    // question with a yes-or-no answer.
+    writeFileSync(
+      big,
+      Array.from({ length: 600 }, (_, i) => `const line${i} = 'MARKER-INSIDE-THE-FILE'`).join('\n')
+    )
+
+    const config = { ...defaultConfig(), shuntModel: 'mock/worker' }
+    saveConfig(config)
+
+    const shuntSession = store.createSession({
+      title: 'shunt',
+      cwd: dir,
+      environmentId: 'local',
+      agentId: 'build',
+      model: 'mock/mock',
+      mode: 'shunt'
+    })
+    history.clearHistory(shuntSession.id)
+
+    let workerCalls = 0
+    let workerPrompt = ''
+    let workerSystem = ''
+    providers.setModelResolverOverride((ref) => {
+      if (ref === 'mock/worker') {
+        workerCalls++
+        return {
+          providerId: 'mock',
+          modelId: 'worker',
+          label: 'Worker',
+          model: new MockLanguageModelV4({
+            doGenerate: async (options) => {
+              const prompt = (options as { prompt?: { role: string; content: unknown }[] }).prompt
+              workerSystem = String(
+                prompt?.find((m) => m.role === 'system')?.content ?? ''
+              )
+              workerPrompt = JSON.stringify(prompt)
+              return {
+                content: [{ type: 'text' as const, text: '- line0: a constant, line 1' }],
+                finishReason: { unified: 'stop' as const, raw: 'stop' },
+                usage: {
+                  inputTokens: { total: 5000, noCache: 5000, cacheRead: 0, cacheWrite: 0 },
+                  outputTokens: { total: 40, text: 40, reasoning: 0 }
+                },
+                warnings: []
+              }
+            }
+          }) as unknown as LanguageModel
+        }
+      }
+      return {
+        providerId: 'mock',
+        modelId: 'mock',
+        label: 'Mock',
+        model: toolCallingModel('bulk_read', {
+          question: 'What does this file declare?',
+          paths: [big]
+        })
+      }
+    })
+    const allowShunt = bus.subscribe((event) => {
+      if (event.type === 'approval.requested') resolveApproval(event.request.id, 'once')
+    })
+    await runTurn({ sessionId: shuntSession.id, userText: 'what is in big.ts?' })
+    allowShunt()
+    providers.setModelResolverOverride(null)
+
+    const readBlock = store.listBlocks(shuntSession.id)[0]
+    check('the delegated read is a block of its own', readBlock?.tool === 'bulk_read', readBlock?.tool)
+    check('it was asked exactly once', workerCalls === 1, workerCalls)
+    check("the worker got upstream's instructions", workerSystem === BULK_READER_INSTRUCTIONS)
+    check('and the file itself', workerPrompt.includes('MARKER-INSIDE-THE-FILE'))
+    check(
+      'the answer is what came back',
+      (readBlock?.output ?? '').includes('a constant, line 1'),
+      readBlock?.output
+    )
+    check(
+      'and the block says what stayed out',
+      /stayed out of this conversation/.test(readBlock?.output ?? '')
+    )
+
+    const transcript = JSON.stringify(history.getHistory(shuntSession.id))
+    check(
+      'the file never entered the conversation — which is the whole point',
+      !transcript.includes('MARKER-INSIDE-THE-FILE'),
+      transcript.length
+    )
+    check('but the answer did', transcript.includes('a constant, line 1'))
+
+    const spent = store.getSession(shuntSession.id)?.usage
+    check(
+      "the worker's tokens are charged to the session",
+      (spent?.input ?? 0) >= 5000,
+      spent
+    )
+    check(
+      "and the turn's own accounting does not erase them",
+      (spent?.input ?? 0) === 5000 + 30 && (spent?.output ?? 0) === 40 + 13,
+      spent
+    )
+
+    // The gate itself, through the ordinary read tool.
+    const gated = store.createSession({
+      title: 'shunt-read',
+      cwd: dir,
+      environmentId: 'local',
+      agentId: 'build',
+      model: 'mock/mock',
+      mode: 'shunt'
+    })
+    history.clearHistory(gated.id)
+    providers.setModelResolverOverride(() => ({
+      providerId: 'mock',
+      modelId: 'mock',
+      label: 'Mock',
+      model: toolCallingModel('read', { path: big })
+    }))
+    await runTurn({ sessionId: gated.id, userText: 'read the file' })
+    providers.setModelResolverOverride(null)
+    const refused = store.listBlocks(gated.id)[0]
+    check('reading it directly fails', refused?.status === 'error', refused?.status)
+    check('and the agent is told where to go instead', /bulk_read/.test(refused?.error ?? ''), refused?.error)
+
+    // ...and the same file, one page at a time, is still allowed.
+    const paged = store.createSession({
+      title: 'shunt-page',
+      cwd: dir,
+      environmentId: 'local',
+      agentId: 'build',
+      model: 'mock/mock',
+      mode: 'shunt'
+    })
+    history.clearHistory(paged.id)
+    providers.setModelResolverOverride(() => ({
+      providerId: 'mock',
+      modelId: 'mock',
+      label: 'Mock',
+      model: toolCallingModel('read', { path: big, offset: 1, limit: 20 })
+    }))
+    await runTurn({ sessionId: paged.id, userText: 'read the top of the file' })
+    providers.setModelResolverOverride(null)
+    const page = store.listBlocks(paged.id)[0]
+    check('a targeted read is never refused', page?.status === 'success', page?.status ?? page?.error)
+
+    /*
+     * code_write: the generated file goes to disk, the approval still shows the
+     * diff, and the code is not in the conversation.
+     */
+    const target = join(dir, 'generated.ts')
+    const written = store.createSession({
+      title: 'shunt-write',
+      cwd: dir,
+      environmentId: 'local',
+      agentId: 'build',
+      model: 'mock/mock',
+      mode: 'shunt'
+    })
+    history.clearHistory(written.id)
+    providers.setModelResolverOverride((ref) =>
+      ref === 'mock/worker'
+        ? {
+            providerId: 'mock',
+            modelId: 'worker',
+            label: 'Worker',
+            model: answeringModel('```ts\nexport const GENERATED = 1\n```', 800, 30)
+          }
+        : {
+            providerId: 'mock',
+            modelId: 'mock',
+            label: 'Mock',
+            model: toolCallingModel('code_write', {
+              spec: 'a constant module',
+              reference: [big],
+              target
+            })
+          }
+    )
+    let preview = ''
+    const allowWrite = bus.subscribe((event) => {
+      if (event.type !== 'approval.requested') return
+      preview = event.request.preview ?? ''
+      resolveApproval(event.request.id, 'once')
+    })
+    await runTurn({ sessionId: written.id, userText: 'generate it' })
+    allowWrite()
+    providers.setModelResolverOverride(null)
+
+    check(
+      'the generated file is on disk',
+      existsSync(target) && readFileSync(target, 'utf8') === 'export const GENERATED = 1',
+      existsSync(target) ? readFileSync(target, 'utf8') : 'missing'
+    )
+    check('the fence the model added is not', !readFileSync(target, 'utf8').includes('```'))
+    check(
+      'the approval showed what was about to be written',
+      preview.includes('GENERATED'),
+      preview
+    )
+    check(
+      'and the code never entered the conversation either',
+      !JSON.stringify(history.getHistory(written.id)).includes('GENERATED = 1')
+    )
+
+    for (const id of [shuntSession.id, gated.id, paged.id, written.id]) {
+      store.deleteSession(id)
+      history.clearHistory(id)
+    }
+    rmSync(dir, { recursive: true, force: true })
+    saveConfig(defaultConfig())
   }
 
   // Leave no smoke sessions behind.

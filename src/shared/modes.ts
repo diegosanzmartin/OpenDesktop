@@ -16,6 +16,8 @@
  * A mode is a property of a session, not of the app: a chat that is reading
  * code wants a different trade than one that is editing it.
  */
+import type { AppConfig } from './types'
+
 export type SessionMode = 'direct' | 'rtk' | 'shunt'
 
 export const DEFAULT_MODE: SessionMode = 'direct'
@@ -59,4 +61,26 @@ export function modeInfo(mode: SessionMode | undefined): ModeInfo {
 
 export function modeLabel(mode: SessionMode | undefined): string {
   return modeInfo(mode).label
+}
+
+/**
+ * Which model does shunt's reading.
+ *
+ * `smallModel` is already the app's answer to "something cheap for work that is
+ * not the work", so shunt uses it unless told otherwise. Falling back to the
+ * session's own model still displaces the corpus out of the conversation — the
+ * saving is in context rather than in price, and that is worth having — so this
+ * never refuses to run.
+ *
+ * Here rather than beside the rest of shunt because the composer says which
+ * model is doing the reading, and the renderer cannot import a module that
+ * talks to providers.
+ */
+export function workerModelRef(config: AppConfig, sessionModel: string): string {
+  return config.shuntModel ?? config.smallModel ?? sessionModel
+}
+
+/** True when the worker is the session's own model, so nothing is saved on price. */
+export function workerIsTheSameModel(config: AppConfig, sessionModel: string): boolean {
+  return workerModelRef(config, sessionModel) === sessionModel
 }

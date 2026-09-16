@@ -16,6 +16,18 @@ import {
 import * as store from '../store'
 import { recordWrite, writeWarning } from '../coordination'
 import { rewriteThroughRtk, rtkListingCommand, rtkStatus } from '../rtk'
+import {
+  BULK_READER_INSTRUCTIONS,
+  CODE_WRITER_INSTRUCTIONS,
+  MAX_PAYLOAD_CHARS,
+  askWorker,
+  bashReadTarget,
+  packFiles,
+  readRefusal,
+  stripFences,
+  workerModelRef
+} from '../shunt'
+import { costOf } from '@shared/cost'
 
 export interface ToolContext {
   config: AppConfig
@@ -28,6 +40,8 @@ export interface ToolContext {
   signal: AbortSignal
   /** How much of what a tool produces reaches the model. */
   mode: SessionMode
+  /** The model running this turn, as `provider/model`. */
+  modelRef: string
   /** The assistant message currently being streamed; blocks attach to it. */
   currentMessageId: () => string
   parentBlockId?: string
@@ -55,6 +69,67 @@ function shortPath(cwd: string, path: string): string {
   return !rel || rel.startsWith('..') ? path : rel
 }
 
+interface PermissionSpec {
+  key: keyof Omit<Permissions, 'allowlist' | 'denylist'>
+  command?: string
+  detail: string
+  preview?: string
+  /** Ask even if the allowlist would have covered it. */
+  forceAsk?: boolean
+}
+
+/**
+ * Puts the question to a person, against a block that already exists.
+ *
+ * Separate from `withBlock` because one tool cannot ask at the start: the whole
+ * point of a delegated write is that the file is generated before it is
+ * written, and an approval card for a write has to show the diff. So that tool
+ * runs, then asks, then writes — and asks with exactly the same wording,
+ * denylist and session grants as every other one.
+ */
+async function askPermission(ctx: ToolContext, block: Block, spec: PermissionSpec): Promise<void> {
+  const decision = decide(ctx.permissions, spec.key, spec.command)
+  if (decision.mode === 'deny') {
+    store.updateBlock(ctx.sessionId, block.id, {
+      status: 'error',
+      error: 'Not permitted by configuration',
+      endedAt: Date.now()
+    })
+    throw new PermissionDenied(spec.detail)
+  }
+
+  const needsAsk =
+    decision.mode === 'ask' &&
+    (!decision.preapproved || spec.forceAsk === true) &&
+    !hasSessionGrant(ctx.sessionId, block.tool)
+  if (!needsAsk) return
+
+  const was = store.getBlock(ctx.sessionId, block.id)?.status
+  store.updateBlock(ctx.sessionId, block.id, { status: 'awaiting-approval' })
+  store.setSessionStatus(ctx.sessionId, 'awaiting-approval')
+  const answer = await requestApproval({
+    sessionId: ctx.sessionId,
+    blockId: block.id,
+    tool: block.tool,
+    title: block.title,
+    detail: spec.detail,
+    summary: block.subtitle,
+    preview: spec.preview,
+    environmentId: ctx.environmentId,
+    cwd: ctx.cwd
+  })
+  store.setSessionStatus(ctx.sessionId, 'running')
+  if (answer === 'reject') {
+    store.updateBlock(ctx.sessionId, block.id, {
+      status: 'canceled',
+      error: 'Rejected by the user',
+      endedAt: Date.now()
+    })
+    throw new PermissionDenied(spec.detail)
+  }
+  store.updateBlock(ctx.sessionId, block.id, { status: was ?? 'running' })
+}
+
 /**
  * Wraps a tool run in the block lifecycle: create the block, ask for permission
  * when the config says so, run, then close the block. Everything the UI shows
@@ -69,14 +144,7 @@ async function withBlock(
     input: Record<string, unknown>
     added?: number
     removed?: number
-    permission?: {
-      key: keyof Omit<Permissions, 'allowlist' | 'denylist'>
-      command?: string
-      detail: string
-      preview?: string
-      /** Ask even if the allowlist would have covered it. */
-      forceAsk?: boolean
-    }
+    permission?: PermissionSpec
   },
   run: (block: Block) => Promise<{ output: string; exitCode?: number }>
 ): Promise<string> {
@@ -98,46 +166,7 @@ async function withBlock(
   store.pushPart(ctx.sessionId, messageId, { type: 'block', blockId: block.id })
 
   try {
-    if (spec.permission) {
-      const decision = decide(ctx.permissions, spec.permission.key, spec.permission.command)
-      if (decision.mode === 'deny') {
-        store.updateBlock(ctx.sessionId, block.id, {
-          status: 'error',
-          error: 'Not permitted by configuration',
-          endedAt: Date.now()
-        })
-        throw new PermissionDenied(spec.permission.detail)
-      }
-      const needsAsk =
-        decision.mode === 'ask' &&
-        (!decision.preapproved || spec.permission.forceAsk === true) &&
-        !hasSessionGrant(ctx.sessionId, spec.tool)
-
-      if (needsAsk) {
-        store.updateBlock(ctx.sessionId, block.id, { status: 'awaiting-approval' })
-        store.setSessionStatus(ctx.sessionId, 'awaiting-approval')
-        const answer = await requestApproval({
-          sessionId: ctx.sessionId,
-          blockId: block.id,
-          tool: spec.tool,
-          title: spec.title,
-          detail: spec.permission.detail,
-          summary: spec.subtitle,
-          preview: spec.permission.preview,
-          environmentId: ctx.environmentId,
-          cwd: ctx.cwd
-        })
-        store.setSessionStatus(ctx.sessionId, 'running')
-        if (answer === 'reject') {
-          store.updateBlock(ctx.sessionId, block.id, {
-            status: 'canceled',
-            error: 'Rejected by the user',
-            endedAt: Date.now()
-          })
-          throw new PermissionDenied(spec.permission.detail)
-        }
-      }
-    }
+    if (spec.permission) await askPermission(ctx, block, spec.permission)
 
     if (ctx.signal.aborted) {
       store.updateBlock(ctx.sessionId, block.id, { status: 'canceled', endedAt: Date.now() })
@@ -243,6 +272,26 @@ export function createTools(ctx: ToolContext): ToolSet {
             }
           )
         }
+        /*
+         * shunt mode: cat/head/tail on a large file is the same read by
+         * another route, so it is refused the same way. Upstream's exemptions
+         * hold — a pipe or a redirect means the output is not coming in here.
+         */
+        if (ctx.mode === 'shunt') {
+          const target = bashReadTarget(command)
+          if (target) {
+            const path = ctx.runtime.resolve(ctx.cwd, target)
+            const counted = await ctx.runtime
+              .exec(`wc -l < ${shellQuote(path)}`, { cwd: ctx.cwd, timeoutMs: 15_000 })
+              .catch(() => null)
+            const lines = Number.parseInt((counted?.stdout ?? '').trim(), 10)
+            const refusal = Number.isFinite(lines)
+              ? readRefusal({ path, lines, minLines: ctx.config.shuntMinLines })
+              : null
+            if (refusal) throw new Error(refusal)
+          }
+        }
+
         /*
          * In rtk mode the command is handed to rtk before it runs, and the
          * decision to run it is still made about what the model asked for —
@@ -386,6 +435,21 @@ export function createTools(ctx: ToolContext): ToolSet {
             }
             const content = await ctx.runtime.readFile(resolved)
             const all = content.split('\n')
+            // shunt mode: a whole large file does not come in here. Checked
+            // after reading it, because the line count is the threshold and
+            // the file has to be read to be counted — it costs I/O, which is
+            // not the resource this mode is protecting.
+            const refusal =
+              ctx.mode === 'shunt'
+                ? readRefusal({
+                    path: resolved,
+                    lines: all.length,
+                    offset,
+                    limit,
+                    minLines: ctx.config.shuntMinLines
+                  })
+                : null
+            if (refusal) throw new Error(refusal)
             const start = (offset ?? 1) - 1
             const end = Math.min(all.length, start + (limit ?? 2000))
             const slice = all.slice(start, end)
@@ -649,6 +713,204 @@ export function createTools(ctx: ToolContext): ToolSet {
     })
   }
 
+  /*
+   * shunt mode's two tools. Present only in that mode: a tool the agent cannot
+   * use is a tool it will try to use anyway, and a description explaining that
+   * the feature is off is worse than the tokens it costs.
+   */
+  if (ctx.mode === 'shunt') {
+    const worker = workerModelRef(ctx.config, ctx.modelRef)
+
+    /** Spends the worker's tokens against this session, priced as its own model. */
+    const credit = (usage: { input: number; output: number }): string => {
+      const cost = costOf(ctx.config, worker, usage)
+      store.creditUsage(ctx.sessionId, { ...usage, cost: cost ?? 0 })
+      return `${worker}: ${usage.input} in, ${usage.output} out`
+    }
+
+    const gather = async (paths: string[]): Promise<{ path: string; text: string }[]> => {
+      const files: { path: string; text: string }[] = []
+      for (const path of paths) {
+        const text = await ctx.runtime.readFile(path).catch(() => null)
+        if (text === null) throw new Error(`Cannot read ${path}. Check the path and try again.`)
+        files.push({ path, text })
+      }
+      return files
+    }
+
+    if (enabled(ctx, 'bulk_read')) {
+      tools.bulk_read = tool({
+        description:
+          'Ask a question about one or more files without reading them into this conversation. ' +
+          'The files go to another model, which answers and is then forgotten; only its answer ' +
+          'comes back here. Use it for anything you are reading to understand rather than to ' +
+          'edit: a large file, a question spanning several files, a long diff.\n' +
+          'Every call stands alone, so asking again with the same paths costs you nothing — ask ' +
+          'one thing at a time instead of one question about everything. The answer is ' +
+          'second-hand: before you edit or quote anything, read that part with read and an ' +
+          'offset, which is always allowed.',
+        inputSchema: z.object({
+          question: z.string().describe('One specific question about these files.'),
+          paths: z
+            .array(z.string())
+            .min(1)
+            .max(25)
+            .describe('The files to send. Absolute, or relative to the working directory.')
+        }),
+        execute: async ({ question, paths }) => {
+          const resolved = paths.map((path) => ctx.runtime.resolve(ctx.cwd, path))
+          return withBlock(
+            ctx,
+            {
+              tool: 'bulk_read',
+              title: question,
+              subtitle: `${resolved.length} file${resolved.length === 1 ? '' : 's'} · ${worker}`,
+              input: { question, paths: resolved, model: worker },
+              permission: {
+                key: 'read',
+                detail: `Read ${resolved.length} file${resolved.length === 1 ? '' : 's'}`,
+                preview: resolved.join('\n')
+              }
+            },
+            async (block) => {
+              const files = await gather(resolved)
+              const corpus = packFiles(files)
+              if (corpus.length > MAX_PAYLOAD_CHARS) {
+                throw new Error(
+                  `Those files come to ${corpus.length} characters, over the ${MAX_PAYLOAD_CHARS} ` +
+                    `a single delegation carries. Split them across two calls.`
+                )
+              }
+              store.appendBlockOutput(
+                ctx.sessionId,
+                block.id,
+                `asking ${worker} about ${files.length} file${files.length === 1 ? '' : 's'}…\n\n`
+              )
+              const answer = await askWorker({
+                config: ctx.config,
+                modelRef: worker,
+                system: BULK_READER_INSTRUCTIONS,
+                prompt: `<question>\n${question}\n</question>\n\n${corpus}`,
+                signal: ctx.signal
+              })
+              const spent = credit(answer.usage)
+              const kept = Math.round(corpus.length / 4)
+              store.appendBlockOutput(
+                ctx.sessionId,
+                block.id,
+                `${answer.text}\n\n— ${spent}. About ${kept.toLocaleString('en-US')} tokens of ` +
+                  `file stayed out of this conversation.`
+              )
+              return { output: answer.text || '(the worker returned nothing)' }
+            }
+          )
+        }
+      })
+    }
+
+    if (enabled(ctx, 'code_write')) {
+      tools.code_write = tool({
+        description:
+          'Generate a file from a spec and a reference file, without the generated code passing ' +
+          'through this conversation. For work that is mostly predictable from something that ' +
+          'already exists: tests alongside existing tests, config beside config, stubs, ' +
+          'docstrings. A reference is required — without one the result matches nothing in the ' +
+          'project. Give a target to have it written, or leave it out to read it back here. ' +
+          'Not for work that needs judgement: do that yourself with write and edit.',
+        inputSchema: z.object({
+          spec: z.string().describe('What to generate, in as much detail as you have.'),
+          reference: z
+            .array(z.string())
+            .min(1)
+            .max(10)
+            .describe('Existing files whose patterns and style the result must match.'),
+          target: z.string().optional().describe('Where to write it. Omitted, it comes back here.')
+        }),
+        execute: async ({ spec, reference, target }) => {
+          const references = reference.map((path) => ctx.runtime.resolve(ctx.cwd, path))
+          const destination = target ? ctx.runtime.resolve(ctx.cwd, target) : null
+          return withBlock(
+            ctx,
+            {
+              tool: 'code_write',
+              title: destination ? shortPath(ctx.cwd, destination) : spec,
+              subtitle: destination ? spec : `${worker} · to this conversation`,
+              input: { spec, reference: references, target: destination, model: worker }
+            },
+            async (block) => {
+              const files = await gather(references)
+              const corpus = packFiles(files)
+              if (corpus.length > MAX_PAYLOAD_CHARS) {
+                throw new Error(
+                  `Those references come to ${corpus.length} characters, over the ` +
+                    `${MAX_PAYLOAD_CHARS} a single delegation carries. Send fewer.`
+                )
+              }
+              store.appendBlockOutput(ctx.sessionId, block.id, `asking ${worker} to write it…\n\n`)
+              const answer = await askWorker({
+                config: ctx.config,
+                modelRef: worker,
+                system: CODE_WRITER_INSTRUCTIONS,
+                prompt:
+                  `<spec>\n${spec}\n</spec>\n\n<reference>\n${corpus}\n</reference>` +
+                  (destination ? `\n\nWrite the complete contents of ${destination}.` : ''),
+                signal: ctx.signal
+              })
+              const spent = credit(answer.usage)
+              const code = stripFences(answer.text)
+              if (!code.trim()) throw new Error(`${worker} returned nothing. Try a clearer spec.`)
+
+              if (!destination) {
+                store.appendBlockOutput(ctx.sessionId, block.id, `${code}\n\n— ${spent}`)
+                return { output: code }
+              }
+
+              /*
+               * Asked here rather than before the run, and this is the reason
+               * the tool is written this way: an approval for a write has to
+               * show the diff, and there is no diff until the worker has
+               * answered. The generation is cheap; the write is the part that
+               * needs consent.
+               */
+              const existed = await ctx.runtime.exists(destination)
+              const before = existed ? await ctx.runtime.readFile(destination).catch(() => '') : ''
+              const preview = existed
+                ? renderDiff(before, code)
+                : code
+                    .split('\n')
+                    .slice(0, 60)
+                    .map((line) => `+  ${line}`)
+                    .join('\n')
+              const stats = diffStats(before, code)
+              await askPermission(ctx, block, {
+                key: 'write',
+                detail: `${existed ? 'Overwrite' : 'Create'} ${destination}`,
+                preview
+              })
+
+              const warning = writeWarning(ctx.sessionId, destination)
+              await ctx.runtime.writeFile(destination, code)
+              recordWrite(ctx.sessionId, destination)
+              store.updateBlock(ctx.sessionId, block.id, {
+                added: stats.added,
+                removed: stats.removed
+              })
+              store.appendBlockOutput(ctx.sessionId, block.id, `${preview}\n\n— ${spent}`)
+              return {
+                output:
+                  `${existed ? 'Overwrote' : 'Created'} ${destination} ` +
+                  `(+${stats.added} −${stats.removed}, ${code.split('\n').length} lines). ` +
+                  `The code did not pass through this conversation — read the parts you intend ` +
+                  `to change before changing them.` +
+                  warning
+              }
+            }
+          )
+        }
+      })
+    }
+  }
+
   // Subagents. Depth-limited so a misbehaving agent cannot fork forever.
   const subagents = Object.values(ctx.config.agent).filter(
     (a) => a.mode === 'subagent' || a.mode === 'all'
@@ -739,7 +1001,9 @@ export function toolNames(): string[] {
     'glob',
     'list',
     'fetch',
-    'task'
+    'task',
+    'bulk_read',
+    'code_write'
   ]
 }
 

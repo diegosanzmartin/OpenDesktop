@@ -91,17 +91,70 @@ calls `rtk rewrite` itself.
 ## shunt
 
 [spotify/portal-ai-plugins/plugins/shunt](https://github.com/spotify/portal-ai-plugins/tree/main/plugins/shunt)
-— not yet implemented. Notes on what it is, so the shape is on record:
+is not about compression but displacement. A file the agent reads costs its
+whole length in the conversation now, and again on every turn afterwards. So
+the reading is given to a second, cheaper model: it gets the files and the
+question, and what comes back is the answer. The corpus never enters the
+conversation at all. Upstream measures 82–94% on large reads.
 
-it blocks the main model from reading large files and hands the reading to a
-cheaper model instead, which answers a question about the files rather than
-returning them. The corpus goes to the worker and never enters the main
-conversation, which is where the 82–94% in its benchmarks comes from. A second
-half does the same for boilerplate generation: a spec plus a reference file in,
-a written file out.
+Two tools appear in this mode, and only in this mode:
 
-The pieces it needs are already here — several providers, a `smallModel`, and
-the delegation machinery that `task` uses — so it is portable. What has to be
-decided is what the worker's answer costs, and where it shows up: the tokens
-are real tokens, spent on a different model, and a session gauge that ignores
-them would be lying by omission.
+- **`bulk_read(question, paths)`** — the files go to the worker, its answer
+  comes back. Every call stands alone, so asking again with the same paths
+  costs the conversation nothing; the agent is told to ask one thing at a time
+  rather than one question about everything.
+- **`code_write(spec, reference, target?)`** — generates a file from a spec and
+  a reference, without the generated code passing through the conversation. A
+  reference is required: upstream's reasoning, that without a file to match
+  against the worker writes context-free code that fits nothing in the project.
+
+And two gates, both of them upstream's, with upstream's exemptions:
+
+- `read` refuses a whole file over `shuntMinLines` (350 by default) and points
+  at `bulk_read`. A read with an **offset or a limit is always allowed** — that
+  is the agent saying it already knows what it needs, and it is the only thing
+  to trust for exact text.
+- `bash` refuses `cat`/`head`/`tail`/`less`/`more` on such a file too, since
+  that is the same read by another route. A pipe or a redirect goes through: the
+  output is not coming into the conversation.
+
+### What is adapted
+
+Upstream reaches its worker through Portal's `aika:invoke-chat`, one shell
+invocation per delegation, and pays for that twice: the input travels through
+argv, so it has a payload ceiling and refuses anything over it, and the action
+is ephemeral, so following up means replaying the corpus — which is the cost it
+exists to avoid, so it does not follow up. Here the worker is just another
+entry in `provider`, called the way the summariser is, so neither limit
+applies. There is still a cap (400,000 characters, upstream's number) but for a
+different reason: it is a guess at what fits in a cheap model's window without
+being truncated at the far end where nobody would see it.
+
+Upstream enforces its gate with hooks that block the assistant's `read` tool. Here
+`read` is our own tool, so the gate lives in the tool.
+
+One bug is not carried over. Upstream's `check-bash-read` word-splits the
+command, so `cat "my file.md"` gives it the path `my`, which is not a file,
+which means no refusal and the whole file read after all — a hole in its own
+gate. Quoted arguments are read as one word here.
+
+### What it costs, and where that shows
+
+The worker's tokens are real tokens. They are charged to the session as they
+are spent, priced as the worker's own model, and named in the block: what the
+delegation cost, and roughly how much file stayed out of the conversation. They
+are deliberately **not** added to the context gauge — the gauge is about what
+the next turn will resend, and the whole point is that the files will not be.
+
+`shuntModel` picks the worker, falling back to `smallModel` and then to the
+session's own model. That last case still works and still displaces the corpus,
+which is most of the saving, but the reading is charged at full price — so the
+composer says "no cheaper model set" and the session says it once in the chat.
+Both are in Settings → Models → Mode.
+
+### What is not delegated
+
+Upstream's list, and it is a good one: debugging, editing, small files, and
+architectural decisions. The first three follow from the gates (a targeted read
+is always allowed, and a small file is never refused); the last is a matter of
+the agent's judgement, and it is told so in the system prompt.

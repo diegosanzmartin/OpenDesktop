@@ -24,6 +24,7 @@ import { cancelSessionApprovals } from '../approvals'
 import { resolveModel } from '../providers'
 import { getRuntime } from '../runtime'
 import { rtkStatus } from '../rtk'
+import { workerIsTheSameModel } from '../shunt'
 import * as store from '../store'
 import * as history from '../history'
 import { createTools, type ToolContext } from './tools'
@@ -148,6 +149,26 @@ What comes back is meant to be enough to act on. Do not re-run a command with
 more flags to see "the real output", and do not conclude a command printed
 nothing because it printed little. A file's contents are never filtered: when
 you need exact text — before an edit, always — use \`read\`.`
+  }
+  if (mode === 'shunt') {
+    return `
+
+# shunt
+Reading a file into this conversation costs its whole length now and again on
+every turn afterwards, so in this session that is not how files get read.
+
+- \`bulk_read\` takes a question and some paths. The files go to another model,
+  which answers and is then forgotten; only its answer comes back here. Use it
+  for anything you are reading to *understand*. Files over the line limit are
+  refused by \`read\` and by \`cat\`/\`head\`/\`tail\`, so this is the way in.
+- Each call stands alone. Asking again with the same paths costs you nothing, so
+  ask one thing at a time rather than one question about everything.
+- What comes back is second-hand. Before you edit or quote a line, read that
+  part with \`read\` and an offset — a targeted read is always allowed, and it is
+  the only thing you should trust for exact text.
+- \`code_write\` generates a file from a spec and a reference file without the
+  result passing through here. For work that is mostly predictable from
+  something that already exists. Anything needing judgement you do yourself.`
   }
   return ''
 }
@@ -384,11 +405,39 @@ const modeWarned = new Set<string>()
  * and the label of another.
  */
 async function announceModeProblems(
+  config: AppConfig,
   sessionId: string,
   environmentId: string,
   cwd: string,
+  modelRef: string,
   mode: SessionMode
 ): Promise<boolean> {
+  if (mode === 'shunt') {
+    // Not a failure: the corpus still stays out of the conversation, which is
+    // most of the point. But it is not the saving the mode advertises, and a
+    // user watching the cost should know which of the two they are getting.
+    if (workerIsTheSameModel(config, modelRef)) {
+      const key = `${sessionId}:shunt:same-model`
+      if (!modeWarned.has(key)) {
+        modeWarned.add(key)
+        store.addMessage({
+          sessionId,
+          role: 'system',
+          parts: [
+            {
+              type: 'text',
+              text:
+                `This session delegates reading to ${modelRef} — its own model, because no ` +
+                `cheaper one is set. Large files still stay out of the conversation, which is ` +
+                `where most of the saving is, but the reading is charged at full price.\n\n` +
+                `Set one under Settings → Models → Mode.`
+            }
+          ]
+        })
+      }
+    }
+    return true
+  }
   if (mode !== 'rtk') return true
   const runtime = getRuntime(environmentId)
   const status = await rtkStatus(environmentId, runtime, cwd)
@@ -473,9 +522,11 @@ export async function runTurn(input: TurnInput): Promise<string> {
 
     const mode = session.mode ?? config.mode ?? DEFAULT_MODE
     const modeWorks = await announceModeProblems(
+      config,
       session.id,
       session.environmentId,
       session.cwd,
+      agent.model ?? session.model,
       mode
     )
 
@@ -489,6 +540,7 @@ export async function runTurn(input: TurnInput): Promise<string> {
       runtime,
       signal: controller.signal,
       mode,
+      modelRef: agent.model ?? session.model,
       currentMessageId: () => assistant.id,
       depth: input.depth ?? 0,
       parentBlockId: input.parentBlockId,
@@ -651,12 +703,18 @@ export async function runTurn(input: TurnInput): Promise<string> {
     // The agent may have handed the task back mid-turn; finishing the turn
     // does not un-block it, so the status it set is left alone.
     const ended = store.getSession(session.id)
+    // Taken from the store, not from the `session` binding above. A tool may
+    // have spent tokens of its own mid-turn — a delegated read does exactly
+    // that — and those have to be added to, not overwritten. It happens to
+    // work either way today, because the store hands out the session itself
+    // rather than a copy, but this does not depend on that.
+    const before = ended?.usage ?? session.usage
     store.updateSession(session.id, {
       status: ended?.status === 'blocked' ? 'blocked' : 'idle',
       usage: {
-        input: session.usage.input + inputTokens,
-        output: session.usage.output + outputTokens,
-        cost: session.usage.cost + (turnCost ?? 0)
+        input: before.input + inputTokens,
+        output: before.output + outputTokens,
+        cost: before.cost + (turnCost ?? 0)
       }
     })
   } catch (err) {

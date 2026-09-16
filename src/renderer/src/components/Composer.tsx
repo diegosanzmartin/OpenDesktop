@@ -3,7 +3,13 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ArrowUp, ChevronDown, FileText, FolderOpen, ImageIcon, Paperclip, Square, X } from 'lucide-react'
 import type { Attachment, Session, Skill } from '@shared/types'
 import { isManager } from '@shared/types'
-import { DEFAULT_MODE, MODES, modeInfo, type SessionMode } from '@shared/modes'
+import {
+  DEFAULT_MODE,
+  MODES,
+  modeInfo,
+  workerModelRef,
+  type SessionMode
+} from '@shared/modes'
 import { mentionToken } from '@shared/mentions'
 import { useStore } from '../state/store'
 import { folderName, shortenPath } from '../lib/format'
@@ -48,6 +54,7 @@ function Picker({
  */
 function ModePicker({ session }: { session: Session }): ReactNode {
   const mode = session.mode ?? DEFAULT_MODE
+  const config = useStore((s) => s.config)
   const [rtk, setRtk] = useState<{ state: string; version?: string; message?: string } | null>(null)
 
   useEffect(() => {
@@ -66,6 +73,7 @@ function ModePicker({ session }: { session: Session }): ReactNode {
 
   const info = modeInfo(mode)
   const broken = rtk && (rtk.state === 'missing' || rtk.state === 'too-old')
+  const worker = config ? workerModelRef(config, session.model) : session.model
 
   return (
     <>
@@ -85,6 +93,19 @@ function ModePicker({ session }: { session: Session }): ReactNode {
         <span className="text-ink-600 hidden shrink-0 text-[11.5px] @[620px]:inline">
           rtk {rtk.version}
         </span>
+      ) : mode === 'shunt' ? (
+        worker === session.model ? (
+          <span
+            className="text-warn shrink-0 text-[11.5px]"
+            title="Reading is delegated to this session's own model, so the files stay out of the conversation but are charged at full price. Set a cheaper one under Settings → Models → Mode."
+          >
+            no cheaper model set
+          </span>
+        ) : (
+          <span className="text-ink-600 hidden shrink-0 text-[11.5px] @[620px]:inline">
+            reading → {worker}
+          </span>
+        )
       ) : null}
     </>
   )

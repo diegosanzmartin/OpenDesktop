@@ -367,6 +367,28 @@ async function run(): Promise<void> {
     )
     check('and says nothing alarming', !ready.innerHTML.includes('text-warn'))
     REPLIES.status = saved
+
+    // shunt says which model is doing the reading, and says so loudly when it
+    // is the same one — the files still stay out of the conversation, but the
+    // price is the session's own.
+    const same = mount(<Composer session={{ ...session, mode: 'shunt' }} />, 900)
+    await settle()
+    check(
+      'shunt with no cheaper model set says so',
+      (same.textContent ?? '').includes('no cheaper model set'),
+      same.textContent
+    )
+
+    useStore.setState({ config: { ...useStore.getState().config!, shuntModel: 'p/cheap' } })
+    const cheap = mount(<Composer session={{ ...session, mode: 'shunt' }} />, 900)
+    await settle()
+    check(
+      'and names the worker once there is one',
+      (cheap.textContent ?? '').includes('reading → p/cheap'),
+      cheap.textContent
+    )
+    check('with nothing to warn about', !cheap.innerHTML.includes('text-warn'))
+    useStore.setState({ config: { ...useStore.getState().config!, shuntModel: undefined } })
   }
 
   section('a command a mode rewrote')
