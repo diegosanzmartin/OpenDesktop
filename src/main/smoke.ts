@@ -9,7 +9,7 @@ import { MockLanguageModelV4 } from 'ai/test'
 import type { LanguageModel } from 'ai'
 import { defaultConfig, loadConfig, normalizeConfig, saveConfig, setAgentLoader } from './config'
 import { listAgents, parseAgentFile, saveAgent, seedBuiltins, serializeAgent } from './agents'
-import { expandSkills, listSkills } from './skills'
+import { SKILLS_DIR, expandSkills, listSkills } from './skills'
 import { parseDocument } from './frontmatter'
 import { addFromPaths, dropSessionAttachments, modelAcceptsImages } from './attachments'
 import {
@@ -323,14 +323,27 @@ async function main(): Promise<void> {
   check('a valid header does not use the fallback', !clean.lenient && clean.data.name === 'ok')
 
   section('skills')
+  // Seeded rather than borrowed from whoever is running this: these checks used
+  // to be skipped silently on a machine with no skills installed, which is
+  // exactly the machine where a regression would go unnoticed.
+  {
+    const probe = join(SKILLS_DIR, 'smoke-probe')
+    mkdirSync(probe, { recursive: true })
+    writeFileSync(
+      join(probe, 'SKILL.md'),
+      ['---', 'name: smoke-probe', 'description: A skill used by the tests.', '---', 'Do the thing.'].join('\n'),
+      'utf8'
+    )
+  }
   const installed = listSkills()
   console.log(`  (${installed.length} installed)`)
   check('listing skills does not throw', Array.isArray(installed))
+  check('the seeded skill is found', installed.some((skill) => skill.id === 'smoke-probe'))
   const untouched = expandSkills('no slash commands here')
   check('a message without a mention is untouched', untouched.prompt === 'no slash commands here')
   check('and reports no skills used', untouched.used.length === 0)
-  if (installed.length > 0) {
-    const first = installed[0]
+  {
+    const first = installed.find((skill) => skill.id === 'smoke-probe') ?? installed[0]
     const expanded = expandSkills(`/${first.id} do the thing`)
     check('a mention is recognised', expanded.used.includes(first.id), expanded.used)
     check('the instructions are put in front of the model', expanded.prompt.includes('<skill'))

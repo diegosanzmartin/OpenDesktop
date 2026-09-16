@@ -1,7 +1,7 @@
 {
   "name": "opendesktop",
   "version": "0.1.0",
-  "description": "An open desktop agent workspace — bring your own model.",
+  "description": "An open desktop agent workspace \u2014 bring your own model.",
   "main": "./out/main/index.js",
   "private": true,
   "type": "module",
@@ -12,9 +12,9 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "package": "electron-vite build && electron-builder --dir",
     "dist": "electron-vite build && electron-builder",
-    "smoke": "vite build -c vite.smoke.config.ts && node out/smoke/smoke.mjs",
+    "smoke": "vite build -c vite.smoke.config.ts && OPENDESKTOP_HOME=\"${TMPDIR:-/tmp}/opendesktop-smoke\" node out/smoke/smoke.mjs",
     "icon": "electron scripts/make-icon.cjs",
-    "secrets:check": "vite build -c vite.smoke.config.ts && electron out/smoke/secrets-check.mjs"
+    "secrets:check": "vite build -c vite.smoke.config.ts && OPENDESKTOP_HOME=\"${TMPDIR:-/tmp}/opendesktop-smoke\" electron out/smoke/secrets-check.mjs"
   },
   "build": {
     "appId": "com.opendesktop.app",

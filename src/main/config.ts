@@ -9,9 +9,20 @@ import type {
   ProviderConfig
 } from '@shared/types'
 
-export const CONFIG_DIR = join(homedir(), '.config', 'opendesktop')
+/**
+ * Everything the app stores lives under one root, and the root is overridable.
+ *
+ * Without that, anything that exercises the real config and store — the
+ * headless test above all — writes to the config of whoever is running it.
+ * That is not a hypothetical: the smoke test resets the config when it
+ * finishes, which quietly replaced a real machine's providers and hosts with
+ * the defaults every time it ran.
+ */
+const ROOT = process.env.OPENDESKTOP_HOME
+
+export const CONFIG_DIR = ROOT ? join(ROOT, 'config') : join(homedir(), '.config', 'opendesktop')
 export const CONFIG_PATH = join(CONFIG_DIR, 'config.json')
-export const DATA_DIR = join(homedir(), '.local', 'share', 'opendesktop')
+export const DATA_DIR = ROOT ? join(ROOT, 'data') : join(homedir(), '.local', 'share', 'opendesktop')
 
 const DEFAULT_PERMISSIONS: Permissions = {
   bash: 'ask',
@@ -192,8 +203,16 @@ export function loadConfig(force = false): AppConfig {
   if (cached && !force) return cached
   if (!existsSync(CONFIG_PATH)) {
     mkdirSync(dirname(CONFIG_PATH), { recursive: true })
-    writeFileSync(CONFIG_PATH, JSON.stringify(defaultConfig(), null, 2), 'utf8')
-    cached = defaultConfig()
+    const fresh = defaultConfig()
+    // Written the same way saveConfig writes it: agents live in their own
+    // files, so the document must not carry an `agent` key even an empty one.
+    const { agent: _agent, ...document } = fresh
+    writeFileSync(CONFIG_PATH, JSON.stringify(document, null, 2), 'utf8')
+    cached = fresh
+    // ...and the agents still have to be merged in. Returning early without
+    // this gave the first load of a fresh install no agents at all, which is
+    // the roster the manager is told it can delegate to.
+    if (agentLoader) cached.agent = agentLoader()
     return cached
   }
   try {

@@ -128,12 +128,10 @@ function ApiKeyRow({ providerId, onStored }: { providerId: string; onStored: () 
 function ProviderSection({
   provider,
   onChange,
-  onRemove,
   onKeyStored
 }: {
   provider: ProviderConfig
   onChange: (next: ProviderConfig) => void
-  onRemove: () => void
   onKeyStored: () => void
 }): ReactNode {
   const patch = (next: Partial<ProviderConfig>): void => onChange({ ...provider, ...next })
@@ -152,19 +150,19 @@ function ProviderSection({
   }
 
   return (
-    <Section
-      title={provider.name || provider.id}
-      description={
-        <span className="font-mono text-[12px]">
-          {provider.id}/&lt;model&gt; — how a model of this provider is named
-        </span>
-      }
-      action={
-        <IconButton title={`Remove ${provider.name || provider.id}`} tone="danger" onClick={onRemove}>
-          <Trash2 className="h-4 w-4" />
-        </IconButton>
-      }
-    >
+    <>
+      <Row
+        label="Id"
+        description={
+          <>
+            Its models are named <span className="font-mono">{provider.id}/&lt;model&gt;</span>. Set
+            when the provider is created — sessions, agents and the stored key all refer to it.
+          </>
+        }
+      >
+        <RowInput mono disabled value={provider.id} onChange={() => undefined} width="w-[160px]" />
+      </Row>
+
       <Row label="Display name">
         <RowInput value={provider.name} onChange={(name) => patch({ name })} />
       </Row>
@@ -279,7 +277,7 @@ function ProviderSection({
           </Row>
         ))
       )}
-    </Section>
+    </>
   )
 }
 
@@ -291,14 +289,16 @@ export function ModelsTab(): ReactNode {
   const [draft, setDraft] = useState<AppConfig | null>(config)
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
-  const [newId, setNewId] = useState('')
-  const [newPreset, setNewPreset] = useState(PRESETS[0].id)
+  const [selected, setSelected] = useState<string>('')
 
   /**
-   * What we last wrote. Config changes echo back through the store, and without
-   * this the echo would arrive after another keystroke and replace what is
-   * being typed with the value from a moment ago.
+   * A provider being created. It lives here rather than in the config until it
+   * has an id, because the id is the key: committing on every keystroke would
+   * create "h", "he", "hel" and delete each one again.
    */
+  const [creating, setCreating] = useState<ProviderConfig | null>(null)
+  const [newId, setNewId] = useState('')
+
   const lastSaved = useRef<string | null>(null)
 
   useEffect(() => {
@@ -309,12 +309,6 @@ export function ModelsTab(): ReactNode {
 
   const dirty = useMemo(() => JSON.stringify(draft) !== JSON.stringify(config), [draft, config])
 
-  /**
-   * Saved as you type, with no button to press. A settings screen that makes
-   * you confirm is a settings screen that can be left half-applied, and the
-   * old one silently did exactly that: a key stored against a provider whose
-   * pending edit had not been saved read as doing nothing at all.
-   */
   useEffect(() => {
     if (!draft || !dirty) return
     const timer = setTimeout(() => {
@@ -333,7 +327,16 @@ export function ModelsTab(): ReactNode {
     return () => clearTimeout(timer)
   }, [draft, dirty, refreshConfig])
 
+  // Whatever the picker is on, falling back to the first real provider.
+  const providers = useMemo(() => Object.values(draft?.provider ?? {}), [draft])
+  useEffect(() => {
+    if (creating) return
+    if (!selected || !draft?.provider[selected]) setSelected(providers[0]?.id ?? '')
+  }, [providers, selected, draft, creating])
+
   if (!draft) return null
+
+  const current = creating ?? draft.provider[selected]
 
   const allModels = Object.values(draft.provider).flatMap((p) =>
     Object.values(p.models).map((m) => ({
@@ -342,27 +345,46 @@ export function ModelsTab(): ReactNode {
     }))
   )
 
-  const addProvider = (): void => {
-    const id = newId.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-')
-    if (!id) return setError('Give the provider an id first.')
-    if (draft.provider[id]) return setError(`"${id}" already exists.`)
-    const preset = PRESETS.find((p) => p.id === newPreset) ?? PRESETS[0]
-    setDraft({
-      ...draft,
-      provider: {
-        ...draft.provider,
-        [id]: {
-          id,
-          name: id,
-          npm: preset.npm,
-          // The key is stored in the keychain under the provider id.
-          options: { baseURL: preset.baseURL, apiKey: `{secret:${id}}` },
-          models: {}
-        }
-      }
+  const startNew = (): void => {
+    setCreating({
+      id: '',
+      name: '',
+      npm: PRESETS[0].npm,
+      options: { baseURL: PRESETS[0].baseURL, apiKey: '' },
+      models: {}
     })
     setNewId('')
     setError(null)
+  }
+
+  /** Commits the new provider once its id is something that can be a key. */
+  const commitNew = (): void => {
+    if (!creating) return
+    const id = newId.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-')
+    if (!id) return setError('The id is required.')
+    if (draft.provider[id]) return setError(`"${id}" already exists.`)
+    const provider: ProviderConfig = {
+      ...creating,
+      id,
+      name: creating.name || id,
+      // The key is stored in the keychain under the provider id.
+      options: { ...creating.options, apiKey: `{secret:${id}}` }
+    }
+    setDraft({ ...draft, provider: { ...draft.provider, [id]: provider } })
+    setCreating(null)
+    setSelected(id)
+    setError(null)
+  }
+
+  const removeCurrent = (): void => {
+    if (creating) {
+      setCreating(null)
+      return
+    }
+    const rest = { ...draft.provider }
+    delete rest[selected]
+    setDraft({ ...draft, provider: rest })
+    setSelected(Object.keys(rest)[0] ?? '')
   }
 
   return (
@@ -371,11 +393,7 @@ export function ModelsTab(): ReactNode {
         title="Models"
         description="Providers, their keys and the models they offer."
         action={
-          error ? (
-            <Hint tone="bad">{error}</Hint>
-          ) : saved ? (
-            <Hint tone="ok">Saved</Hint>
-          ) : null
+          error ? <Hint tone="bad">{error}</Hint> : saved ? <Hint tone="ok">Saved</Hint> : null
         }
       >
         <Row
@@ -388,61 +406,106 @@ export function ModelsTab(): ReactNode {
             options={allModels.length ? allModels : [{ value: draft.model, label: draft.model }]}
           />
         </Row>
-      </Section>
 
-      {Object.values(draft.provider).map((provider) => (
-        <ProviderSection
-          key={provider.id}
-          provider={provider}
-          onChange={(next) =>
-            setDraft({ ...draft, provider: { ...draft.provider, [provider.id]: next } })
-          }
-          onRemove={() => {
-            const rest = { ...draft.provider }
-            delete rest[provider.id]
-            setDraft({ ...draft, provider: rest })
-          }}
-          onKeyStored={() => {
-            // Point the config at the keychain entry that was just written. The
-            // autosave below persists it; without this the provider would keep
-            // reading whatever placeholder was there before.
-            const current = draft.provider[provider.id]
-            if (current && current.options.apiKey !== `{secret:${provider.id}}`) {
-              setDraft({
-                ...draft,
-                provider: {
-                  ...draft.provider,
-                  [provider.id]: {
-                    ...current,
-                    options: { ...current.options, apiKey: `{secret:${provider.id}}` }
-                  }
-                }
-              })
-            }
-            void refreshSecrets()
-          }}
-        />
-      ))}
-
-      <Section title="Add a provider">
-        <Row label="Provider id" description="Lowercase, used as the prefix of every model name.">
-          <RowInput
-            mono
-            width="w-[160px]"
-            value={newId}
-            placeholder="helmcode"
-            onChange={setNewId}
-          />
+        <Row label="Provider" description="Which one you are editing.">
           <RowSelect
-            value={newPreset}
-            onChange={(event) => setNewPreset(event.target.value)}
-            options={PRESETS.map((p) => ({ value: p.id, label: p.label }))}
+            value={creating ? '__new__' : selected}
+            onChange={(event) => {
+              if (event.target.value === '__new__') return
+              setCreating(null)
+              setSelected(event.target.value)
+            }}
+            options={[
+              ...providers.map((provider) => ({
+                value: provider.id,
+                label: provider.name || provider.id
+              })),
+              ...(creating ? [{ value: '__new__', label: 'New provider…' }] : []),
+              ...(providers.length === 0 && !creating
+                ? [{ value: '', label: 'None yet' }]
+                : [])
+            ]}
           />
-          <IconButton title="Add provider" tone="accent" onClick={addProvider}>
+          <IconButton title="Add a provider" tone="accent" onClick={startNew}>
             <Plus className="h-4 w-4" />
           </IconButton>
+          {current ? (
+            <IconButton
+              title={creating ? 'Discard' : `Remove ${current.name || current.id}`}
+              tone="danger"
+              onClick={removeCurrent}
+            >
+              <Trash2 className="h-4 w-4" />
+            </IconButton>
+          ) : null}
         </Row>
       </Section>
+
+      {creating ? (
+        <Section title="New provider">
+          <Row
+            label="Id"
+            description="Required, lowercase. Its models will be named <id>/<model>."
+          >
+            <RowInput
+              mono
+              width="w-[160px]"
+              value={newId}
+              placeholder="helmcode"
+              onChange={setNewId}
+            />
+            <IconButton title="Create" tone="accent" disabled={!newId.trim()} onClick={commitNew}>
+              <Check className="h-4 w-4" />
+            </IconButton>
+          </Row>
+          <Row label="Kind" description="Which SDK package talks to it.">
+            <RowSelect
+              value={creating.npm}
+              onChange={(event) => {
+                const preset = PRESETS.find((p) => p.npm === event.target.value) ?? PRESETS[0]
+                setCreating({
+                  ...creating,
+                  npm: preset.npm,
+                  options: { ...creating.options, baseURL: preset.baseURL }
+                })
+              }}
+              options={PRESETS.map((preset) => ({ value: preset.npm, label: preset.label }))}
+            />
+          </Row>
+        </Section>
+      ) : current ? (
+        <Section title={current.name || current.id}>
+          <ProviderSection
+            provider={current}
+            onChange={(next) =>
+              setDraft({ ...draft, provider: { ...draft.provider, [current.id]: next } })
+            }
+            onKeyStored={() => {
+              // Point the config at the keychain entry that was just written.
+              // The autosave persists it; without this the provider would keep
+              // reading whatever placeholder was there before.
+              const existing = draft.provider[current.id]
+              if (existing && existing.options.apiKey !== `{secret:${current.id}}`) {
+                setDraft({
+                  ...draft,
+                  provider: {
+                    ...draft.provider,
+                    [current.id]: {
+                      ...existing,
+                      options: { ...existing.options, apiKey: `{secret:${current.id}}` }
+                    }
+                  }
+                })
+              }
+              void refreshSecrets()
+            }}
+          />
+        </Section>
+      ) : (
+        <Section title="No providers">
+          <Row label={<Hint>Add one to make a model selectable.</Hint>} />
+        </Section>
+      )}
     </>
   )
 }
