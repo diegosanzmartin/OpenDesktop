@@ -2,6 +2,9 @@ import clsx from 'clsx'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   Activity,
+  PanelLeft,
+  Plus,
+  Search,
   Archive,
   Copy,
   FolderTree,
@@ -77,6 +80,10 @@ function MenuItem({
 export function TopBar(): ReactNode {
   const session = useStore(activeSession)
   const collapsed = useStore((s) => s.sidebarCollapsed)
+  const toggleSidebar = useStore((s) => s.toggleSidebar)
+  const searchOpen = useStore((s) => s.searchOpen)
+  const toggleSearch = useStore((s) => s.toggleSearch)
+  const view = useStore((s) => s.view)
   const openDock = useStore((s) => s.openDock)
   const setSettingsOpen = useStore((s) => s.setSettingsOpen)
   const approvals = useStore((s) => s.approvals.length)
@@ -103,31 +110,64 @@ export function TopBar(): ReactNode {
   }, [menuOpen])
 
   return (
-    <header
-      className={clsx(
-        'drag-region flex h-11 shrink-0 items-center gap-2 pr-2.5',
-        collapsed ? 'pl-[76px]' : 'pl-3'
-      )}
-    >
-      <MessageSquare className="text-ink-500 h-4 w-4 shrink-0" />
+    /**
+     * One row across the whole window, above both columns.
+     *
+     * The traffic lights live at a fixed place in the window, so whatever sits
+     * next to them has to be fixed too. When this was two headers — one in the
+     * sidebar, one over the chat — collapsing the sidebar moved the toggle from
+     * one to the other and left the green light overlapping the pane behind it.
+     * The gutter is reserved here, once, and nothing moves again.
+     */
+    <header className="drag-region flex h-11 shrink-0 items-center gap-1 pl-[82px] pr-2.5">
+      <button
+        type="button"
+        onClick={toggleSidebar}
+        title={collapsed ? 'Show sidebar' : 'Hide sidebar'}
+        className="no-drag text-ink-500 hover:bg-ink-800 hover:text-ink-100 shrink-0 rounded-md p-1.5"
+      >
+        <PanelLeft className="h-4 w-4" />
+      </button>
+      <button
+        type="button"
+        onClick={toggleSearch}
+        title="Search sessions"
+        className={clsx(
+          'no-drag shrink-0 rounded-md p-1.5',
+          searchOpen ? 'bg-ink-800 text-ink-100' : 'text-ink-500 hover:bg-ink-800 hover:text-ink-100'
+        )}
+      >
+        <Search className="h-4 w-4" />
+      </button>
+      <button
+        type="button"
+        onClick={() => void newSession()}
+        title="New session"
+        className="no-drag text-ink-500 hover:bg-ink-800 hover:text-ink-100 mr-1 shrink-0 rounded-md p-1.5"
+      >
+        <Plus className="h-4 w-4" />
+      </button>
 
-      {session ? (
+      {view === 'board' ? <span className="flex-1" /> : null}
+
+      {view === 'chat' && session ? (
         <EditableTitle
           value={session.title}
           onCommit={(title) => void window.opendesktop.sessions.update(session.id, { title })}
           className="no-drag text-ink-100 text-[13.5px] font-medium"
           inputClassName="no-drag min-w-0 flex-1 text-[13.5px] font-medium"
         />
-      ) : (
+      ) : view === 'chat' ? (
         <span className="text-ink-100 min-w-0 truncate text-[13.5px] font-medium">OpenDesktop</span>
-      )}
-      {session ? (
+      ) : null}
+      {view === 'chat' && session ? (
         <span className="bg-ink-800 text-ink-400 shrink-0 rounded-md px-1.5 py-[2px] text-[11.5px]">
           {folderName(session.cwd)}
         </span>
       ) : null}
 
-      <div className="no-drag ml-auto flex items-center gap-0.5">
+      {/* The dock is a chat-side thing; on the board the panel is the task. */}
+      <div className={clsx('no-drag ml-auto flex items-center gap-0.5', view === 'board' && 'hidden')}>
         <DockButton tab="activity" title="Activity">
           <span className="relative block">
             <Activity className="h-4 w-4" />

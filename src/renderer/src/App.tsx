@@ -106,25 +106,27 @@ export default function App(): ReactNode {
   }
 
   return (
-    <div className="bg-ink-900 flex h-full">
-      <Sidebar />
-      <div className="border-ink-800 bg-ink-950 my-2 mr-1 flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg border">
-        {view === 'board' ? (
-          <BoardView />
-        ) : (
-          <>
-            <TopBar />
-            {session ? (
-              <ChatView session={session} />
-            ) : (
-              <div className="text-ink-500 flex flex-1 items-center justify-center text-[13px]">
-                Create a session to begin.
-              </div>
-            )}
-          </>
-        )}
+    <div className="bg-ink-900 flex h-full flex-col">
+      {/* One row across the window, owning the traffic-light gutter, so the
+          controls beside them never move and never get overlapped. */}
+      <TopBar />
+
+      <div className="flex min-h-0 flex-1">
+        <Sidebar />
+        <div className="border-ink-800 bg-ink-950 mb-2 ml-1 mr-1 flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg border">
+          {view === 'board' ? (
+            <BoardView />
+          ) : session ? (
+            <ChatView session={session} />
+          ) : (
+            <div className="text-ink-500 flex flex-1 items-center justify-center text-[13px]">
+              Create a session to begin.
+            </div>
+          )}
+        </div>
+        {view === 'board' ? null : <RightDock />}
       </div>
-      {view === 'board' ? null : <RightDock />}
+
       <SettingsOverlay />
       <Toasts />
     </div>

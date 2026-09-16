@@ -16,7 +16,7 @@ import { listSshAliases } from './runtime/ssh'
 import * as store from './store'
 import * as history from './history'
 import { isRunning, runTurn, stop } from './agent/runner'
-import { listPending, resolveApproval, type ApprovalAnswer } from './approvals'
+import { deniedSegment, listPending, resolveApproval, type ApprovalAnswer } from './approvals'
 import { previewOrigin, previewUrl } from './preview'
 import { deleteSecret, secretHint, secretStatus, setSecret } from './secrets'
 import { createTerminal, killTerminal, resizeTerminal, terminalBuffer, writeTerminal } from './terminal'
@@ -343,6 +343,20 @@ export function registerIpc(): void {
   ipcMain.handle('shell:run', async (_e, sessionId: string, command: string) => {
     const session = store.getSession(sessionId)
     if (!session) return { stdout: '', stderr: 'unknown session', exitCode: 1 }
+
+    // No approval prompt — the click is the approval, and the command is right
+    // there to read. The denylist still applies: it exists for the handful of
+    // things that should not run however they were asked for, and a model can
+    // put one of those in a fenced block for someone to click.
+    const blocked = deniedSegment(resolvedConfig().permissions, command)
+    if (blocked) {
+      return {
+        stdout: '',
+        stderr: `Refused: "${blocked}" matches the denylist in your permissions.`,
+        exitCode: 126
+      }
+    }
+
     try {
       const runtime = getRuntime(session.environmentId)
       await runtime.connect()

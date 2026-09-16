@@ -226,9 +226,22 @@ export function loadConfig(force = false): AppConfig {
   return cached
 }
 
-/** The config with secrets resolved. Never send this to the renderer. */
+/**
+ * The config with secrets resolved. Never send this to the renderer.
+ *
+ * Only the two subtrees that are documented to take placeholders are expanded:
+ * a provider's options and an environment's connection settings. Expanding the
+ * whole document also expanded agent prompts — and an agent is a file, which
+ * can be imported from elsewhere. One containing `{secret:helmcode}` in its
+ * prompt had the real key substituted in and could simply print it.
+ */
 export function resolvedConfig(): AppConfig {
-  return expandDeep(loadConfig())
+  const config = loadConfig()
+  return {
+    ...config,
+    provider: expandDeep(config.provider),
+    environment: expandDeep(config.environment)
+  }
 }
 
 /** The config as written on disk, placeholders intact. Safe for the renderer. */

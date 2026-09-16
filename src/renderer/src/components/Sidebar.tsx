@@ -2,9 +2,7 @@ import clsx from 'clsx'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   Activity,
-  PanelLeft,
   Plus,
-  Search,
   GitBranch,
   Pin,
   Settings as SettingsIcon
@@ -137,7 +135,8 @@ export function Sidebar(): ReactNode {
   const setSettingsOpen = useStore((s) => s.setSettingsOpen)
   const openDock = useStore((s) => s.openDock)
 
-  const [searching, setSearching] = useState(false)
+  const searchOpen = useStore((s) => s.searchOpen)
+  const toggleSearch = useStore((s) => s.toggleSearch)
   const view = useStore((s) => s.view)
 
   const labels = useMemo(
@@ -162,66 +161,20 @@ export function Sidebar(): ReactNode {
     if (showGit) void refreshGit()
   }, [showGit, sessions.length, refreshGit])
 
-  if (collapsed) {
-    return (
-      <aside className="bg-ink-900 flex w-[52px] shrink-0 flex-col items-center">
-        {/* The window's traffic lights sit over the first ~40px, so the strip
-            starts below them. It doubles as a drag region. */}
-        <div className="drag-region h-11 w-full shrink-0" />
-        <button
-          type="button"
-          onClick={toggleSidebar}
-          title="Show sidebar"
-          className="text-ink-400 hover:bg-ink-800 hover:text-ink-100 rounded-md p-1.5"
-        >
-          <PanelLeft className="h-4 w-4" />
-        </button>
-        <button
-          type="button"
-          onClick={() => void newSession()}
-          title="New session"
-          className="text-ink-400 hover:bg-ink-800 hover:text-ink-100 mt-1 rounded-md p-1.5"
-        >
-          <Plus className="h-4 w-4" />
-        </button>
-      </aside>
-    )
-  }
+  if (collapsed) return null
 
   return (
-    <aside className="bg-ink-900 flex w-[248px] shrink-0 flex-col">
-      <div className="drag-region flex h-11 items-center gap-1 px-2.5 pl-[82px]">
-        <button
-          type="button"
-          onClick={toggleSidebar}
-          title="Hide sidebar"
-          className="no-drag text-ink-400 hover:bg-ink-800 hover:text-ink-100 rounded-md p-1.5"
-        >
-          <PanelLeft className="h-4 w-4" />
-        </button>
-        <button
-          type="button"
-          onClick={() => setSearching(!searching)}
-          title="Search sessions"
-          className="no-drag text-ink-400 hover:bg-ink-800 hover:text-ink-100 rounded-md p-1.5"
-        >
-          <Search className="h-4 w-4" />
-        </button>
-      </div>
-
+    <aside className="bg-ink-900 flex w-[248px] shrink-0 flex-col pt-1">
       <ViewSwitcher />
 
-      {searching && view === 'chat' ? (
+      {searchOpen && view === 'chat' ? (
         <div className="px-2.5 pb-1.5">
           <input
             autoFocus
             value={query.search}
             onChange={(event) => setQuery({ search: event.target.value })}
             onKeyDown={(event) => {
-              if (event.key === 'Escape') {
-                setQuery({ search: '' })
-                setSearching(false)
-              }
+              if (event.key === 'Escape') toggleSearch()
             }}
             placeholder="Filter sessions"
             className="border-ink-700 bg-ink-850 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 w-full rounded-md border px-2 py-1 text-[12px] outline-none"

@@ -73,6 +73,8 @@ interface State {
   boardTaskId: string | null
   /** The row whose title is being edited in place, from the session menu. */
   renamingSessionId: string | null
+  /** The session filter box, toggled from the window bar it does not live in. */
+  searchOpen: boolean
   /**
    * Text handed to the terminal pane from somewhere else — a code block's run
    * button. The counter is what makes sending the same command twice register
@@ -108,6 +110,7 @@ interface State {
   selectBoard: (id: string | null) => void
   closeTask: () => void
   startRename: (id: string | null) => void
+  toggleSearch: () => void
   sendToTerminal: (text: string, run: boolean) => void
   consumeTerminalInject: () => void
   refreshBoards: () => Promise<void>
@@ -181,6 +184,7 @@ export const useStore = create<State>((set, get) => ({
   boards: [],
   boardTaskId: null,
   renamingSessionId: null,
+  searchOpen: false,
   terminalInject: null,
   activeBoardId: null,
 
@@ -475,6 +479,13 @@ export const useStore = create<State>((set, get) => ({
 
   closeTask: () => set({ boardTaskId: null }),
   startRename: (renamingSessionId) => set({ renamingSessionId }),
+
+  toggleSearch: () => {
+    const open = !get().searchOpen
+    // Closing it clears the filter: leaving a hidden filter applied is how a
+    // session list ends up looking empty for no visible reason.
+    set({ searchOpen: open, sessionQuery: { ...get().sessionQuery, search: open ? get().sessionQuery.search : '' } })
+  },
 
   sendToTerminal: (text, run) => {
     set({

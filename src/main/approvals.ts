@@ -87,13 +87,48 @@ export function matchesAny(value: string, patterns: string[]): boolean {
 
 /**
  * Splits a compound shell command so an allowlist entry cannot be smuggled past
- * by chaining (`ls && rm -rf /`). Every segment must be allowed on its own.
+ * by chaining. Every segment has to stand on its own.
+ *
+ * `&` and a bare newline are separators too. Without them, `cat x & rm -rf ~`
+ * was one segment that matched `cat *` and went through without asking.
  */
 export function splitCommand(command: string): string[] {
   return command
-    .split(/&&|\|\||;|\|/)
+    .split(/&&|\|\||;|\||&|\r?\n/)
     .map((s) => s.trim())
     .filter(Boolean)
+}
+
+/**
+ * Whether the command does something the text does not show.
+ *
+ * An allowlist entry like `echo *` is a statement about what `echo` does. It
+ * stops being true the moment the line can run another program inside itself or
+ * write over a file: `echo $(rm -rf ~)` and `echo x > ~/.zshrc` both matched
+ * that pattern and were approved silently.
+ *
+ * These are not denied — a person may well want them. They just never skip the
+ * prompt, because the prompt is the only place the real effect is visible.
+ */
+export function hasOpaqueShellSyntax(command: string): boolean {
+  return (
+    command.includes('$(') || // command substitution
+    command.includes('`') || // the older spelling of the same thing
+    command.includes('>') || // truncates or appends to a file
+    command.includes('<(') || // process substitution
+    command.includes('<<') // heredoc: the payload is not on this line
+  )
+}
+
+/**
+ * The segment of a command that the denylist refuses, or null.
+ *
+ * Shared by the agent's own bash calls and by the run button on a code block:
+ * the button needs no approval prompt, since clicking it is the approval, but
+ * the denylist is about things that should not run however they were asked for.
+ */
+export function deniedSegment(permissions: Permissions, command: string): string | null {
+  return splitCommand(command).find((segment) => matchesAny(segment, permissions.denylist)) ?? null
 }
 
 export interface PermissionDecision {
@@ -113,7 +148,11 @@ export function decide(
     if (segments.some((s) => matchesAny(s, permissions.denylist))) {
       return { mode: 'deny', preapproved: false }
     }
-    if (segments.length > 0 && segments.every((s) => matchesAny(s, permissions.allowlist))) {
+    if (
+      segments.length > 0 &&
+      !hasOpaqueShellSyntax(command) &&
+      segments.every((s) => matchesAny(s, permissions.allowlist))
+    ) {
       return { mode, preapproved: true }
     }
   }
