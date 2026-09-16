@@ -206,10 +206,10 @@ function enabled(ctx: ToolContext, name: string): boolean {
  * Whether rtk is both asked for and actually there. Cached after the first
  * call, so every tool can ask without paying for it.
  */
-async function rtkUsable(ctx: ToolContext): Promise<boolean> {
-  if (!ctx.savings.rtk) return false
+async function rtkUsable(ctx: ToolContext): Promise<string | null> {
+  if (!ctx.savings.rtk) return null
   const status = await rtkStatus(ctx.environmentId, ctx.runtime, ctx.cwd)
-  return status.state === 'ready'
+  return status.state === 'ready' ? (status.bin ?? 'rtk') : null
 }
 
 export function createTools(ctx: ToolContext): ToolSet {
@@ -588,8 +588,11 @@ export function createTools(ctx: ToolContext): ToolSet {
         // rtk groups matches by file and truncates long lines. Only when no
         // glob was asked for: rtk grep takes no include filter, and quietly
         // searching more than was asked is worse than not saving the tokens.
-        const viaRtk = !glob && (await rtkUsable(ctx))
-        const command = viaRtk ? (rtkListingCommand('grep', { pattern, path: target }) ?? own) : own
+        const bin = glob ? null : await rtkUsable(ctx)
+        const viaRtk = bin !== null
+        const command = bin
+          ? (rtkListingCommand('grep', { pattern, path: target, bin }) ?? own)
+          : own
         return withBlock(
           ctx,
           {
@@ -628,8 +631,11 @@ export function createTools(ctx: ToolContext): ToolSet {
         const own =
           `find ${shellQuote(target)} -type d \\( -name node_modules -o -name .git -o -name dist -o -name out \\) -prune -o ` +
           `-type f ${matcher} -print 2>/dev/null | head -n 300`
-        const viaRtk = await rtkUsable(ctx)
-        const command = viaRtk ? (rtkListingCommand('glob', { pattern, path: target }) ?? own) : own
+        const bin = await rtkUsable(ctx)
+        const viaRtk = bin !== null
+        const command = bin
+          ? (rtkListingCommand('glob', { pattern, path: target, bin }) ?? own)
+          : own
         return withBlock(
           ctx,
           {
@@ -657,8 +663,8 @@ export function createTools(ctx: ToolContext): ToolSet {
         const target = ctx.runtime.resolve(ctx.cwd, path ?? '.')
         // rtk ls is a tree with counts instead of one line per entry, which is
         // most of the saving on a directory anyone would call large.
-        const viaRtk = await rtkUsable(ctx)
-        const command = viaRtk ? rtkListingCommand('list', { path: target }) : null
+        const bin = await rtkUsable(ctx)
+        const command = bin ? rtkListingCommand('list', { path: target, bin }) : null
         return withBlock(
           ctx,
           {

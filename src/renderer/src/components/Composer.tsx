@@ -9,6 +9,7 @@ import {
   ChevronDown,
   FileText,
   FolderOpen,
+  Download,
   Gauge,
   ImageIcon,
   Paperclip,
@@ -75,6 +76,7 @@ function SavingsChip({ session }: { session: Session }): ReactNode {
   const button = useRef<HTMLButtonElement>(null)
   const panel = useRef<HTMLDivElement>(null)
   const [rtk, setRtk] = useState<{ state: string; version?: string; message?: string } | null>(null)
+  const [installing, setInstalling] = useState(false)
 
   // Portalled and placed by hand: the composer sits at the bottom of a pane
   // that scrolls, and a menu opening upwards inside it gets clipped.
@@ -194,6 +196,47 @@ function SavingsChip({ session }: { session: Session }): ReactNode {
                   </span>
                 </button>
               ))}
+              {broken ? (
+                /*
+                 * rtk has to be on the machine whose commands it filters — it
+                 * is what runs them — so the binary cannot be avoided. Having
+                 * to install it by hand on every host can be: this fetches the
+                 * release for that target into the home directory, checksum
+                 * and all, and nothing else on the machine is touched.
+                 */
+                <button
+                  type="button"
+                  disabled={installing}
+                  onClick={() => {
+                    setInstalling(true)
+                    void window.opendesktop.rtk
+                      .install(session.environmentId)
+                      .then((result) => {
+                        setInstalling(false)
+                        if (result?.ok) {
+                          void window.opendesktop.rtk
+                            .status(session.environmentId, true)
+                            .then((next) => setRtk(next ?? null))
+                        }
+                      })
+                      .catch(() => setInstalling(false))
+                  }}
+                  className="hover:bg-ink-800 text-ink-200 flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left disabled:opacity-60"
+                >
+                  <Download className="text-ink-500 mt-[3px] h-3.5 w-3.5 shrink-0" />
+                  <span className="min-w-0">
+                    <span className="block text-[12.5px]">
+                      {installing
+                        ? `Installing rtk on ${session.environmentId}…`
+                        : `Install rtk on ${session.environmentId}`}
+                    </span>
+                    <span className="text-ink-500 block text-[11.5px] leading-snug">
+                      Downloads the release for that host into ~/.opendesktop/bin, verifying its
+                      checksum. No brew, no sudo, nothing else changed.
+                    </span>
+                  </span>
+                </button>
+              ) : null}
               <div className="text-ink-600 px-2 py-1 text-[11px]">
                 Neither is Direct. Defaults are in Settings → Models.
               </div>

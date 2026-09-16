@@ -466,8 +466,11 @@ async function announceSavingsProblems(input: {
         // first line is read at a glance.
         `rtk is not available on ${runtime.label} — commands are running unfiltered.\n\n` +
           `${status.message ?? 'It could not be used on this execution target.'}\n\n` +
-          `Until then the session behaves as if the switch were off; turn it off from the ` +
-          `composer if you would rather not be reminded.`
+          `rtk has to be on the machine whose commands it filters, because it is what runs ` +
+          `them — but it does not have to be installed by hand. Open the savings menu beside ` +
+          `the composer and choose "Install rtk on ${runtime.id}": it fetches the release for ` +
+          `this host into ~/.opendesktop/bin, checks its checksum, and touches nothing else. ` +
+          `Or turn the switch off there if you would rather not be reminded.`
       )
     }
   }

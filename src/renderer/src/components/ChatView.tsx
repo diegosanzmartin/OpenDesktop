@@ -223,11 +223,12 @@ function Notice({ message }: { message: Message }): ReactNode {
         </button>
         <span className="bg-ink-800 h-px min-w-[12px] flex-1" />
       </div>
-      {open && more ? (
-        /* The whole notice, not only the part after the first paragraph:
-           whatever the divider clamped has to be reachable somewhere. */
+      {open && body ? (
+        /* Only what comes after the first paragraph. Opening also unclamps the
+           label above, so the first paragraph is already there in full — and
+           repeating it here printed the headline twice. */
         <div className="border-ink-800 text-ink-400 mt-2 min-w-0 rounded-lg border px-3 py-2 text-[12.5px]">
-          <Markdown text={text} />
+          <Markdown text={body} />
         </div>
       ) : null}
     </div>

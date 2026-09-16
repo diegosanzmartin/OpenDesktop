@@ -73,7 +73,11 @@ const api = {
       environmentId: string,
       probe?: boolean
     ): Promise<{ state: 'ready' | 'missing' | 'too-old' | 'unknown'; version?: string; message?: string }> =>
-      ipcRenderer.invoke('rtk:status', environmentId, probe)
+      ipcRenderer.invoke('rtk:status', environmentId, probe),
+    install: (
+      environmentId: string
+    ): Promise<{ ok: boolean; version?: string; message: string }> =>
+      ipcRenderer.invoke('rtk:install', environmentId)
   },
   env: {
     test: (id: string): Promise<{ ok: boolean; message: string }> => ipcRenderer.invoke('env:test', id),

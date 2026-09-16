@@ -87,9 +87,37 @@ chat and then behaves exactly as if it were off. The composer says it too, besid
 picker. The alternative — a chip saying `rtk` over a session running unfiltered —
 would have the user reading one setting's label and another's token counts.
 
-Install it with `brew install rtk`. OpenDesktop needs no `rtk init`: the hook
-that command installs is for editors that have no other way in, and this app
-calls `rtk rewrite` itself.
+### Putting it there
+
+rtk has to be on the machine whose commands it filters — it is the thing that
+*runs* them, so there is no arrangement where the binary lives somewhere else.
+(It is not a stdin filter: nothing accepts `git status | rtk`, which is the
+only shape that would let one copy serve every host.)
+
+What can be avoided is installing it by hand on each one. The savings menu
+offers **Install rtk on \<host\>** whenever the probe says it is missing, and
+that does what rtk's own `install.sh` does: detect the target, fetch the
+release for it from GitHub, verify its SHA-256 against the published
+`checksums.txt`, refuse an archive containing an absolute path or a `..`, and
+extract the binary. Two differences, both deliberate:
+
+- it installs into `~/.opendesktop/bin` rather than `~/.local/bin`, because
+  writing an executable into a directory the user's shell searches is a bigger
+  thing to do to their machine than they asked for; and
+- it never skips the checksum. Upstream has an escape hatch for that, and this
+  is a download onto somebody's server.
+
+Nothing needs it on the PATH, because every invocation here is by path: the
+rewrite comes back as `rtk git status`, and the leading token is replaced with
+the binary we actually have before anything runs. When rtk *is* on the PATH the
+bare name is kept, so the transcript reads as the command the model asked for.
+
+It is never automatic. It happens on a click, and it needs the host to be able
+to reach github.com — when it cannot, the error says that rather than
+reporting "rtk is missing" a second time. `brew install rtk` still works if you
+would rather, and OpenDesktop needs no `rtk init`: the hook that command
+installs is for editors that have no other way in, and this app calls
+`rtk rewrite` itself.
 
 ## shunt
 

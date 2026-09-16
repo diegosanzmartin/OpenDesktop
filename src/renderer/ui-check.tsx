@@ -413,6 +413,35 @@ async function run(): Promise<void> {
     )
     check('and it is a warning, not a note', broken.innerHTML.includes('text-warn'))
 
+    // The offer to put it there, which is the answer to "do I have to install
+    // rtk on every host": only shown when the probe says it is missing.
+    check(
+      'a missing rtk comes with an offer to fetch it',
+      (broken.textContent ?? '').includes('Install rtk on') === false,
+      'the offer lives in the menu, not the strip'
+    )
+    const chip = [...broken.querySelectorAll('button')].find((button) =>
+      (button.getAttribute('title') ?? '').startsWith('What this session does')
+    ) as HTMLButtonElement
+    chip.click()
+    await settle()
+    const menu = [...document.body.querySelectorAll('div')].find((node) =>
+      (node.textContent ?? '').includes('Neither is Direct')
+    )
+    check(
+      'the menu offers to install it on that host',
+      (menu?.textContent ?? '').includes('Install rtk on'),
+      menu?.textContent
+    )
+    check(
+      'and says what that does to the machine',
+      (menu?.textContent ?? '').includes('checksum') &&
+        (menu?.textContent ?? '').includes('No brew, no sudo'),
+      menu?.textContent
+    )
+    chip.click()
+    await settle()
+
     REPLIES.status = { state: 'ready', version: '0.28.2' }
     const ready = mount(<Composer session={{ ...session, savings: { rtk: true } }} />, 900)
     await settle()
@@ -707,11 +736,16 @@ async function run(): Promise<void> {
     check('with a way to read all of it', Boolean(opener))
     opener?.click()
     await settle()
+    const shown = host.textContent ?? ''
     check(
       'which shows the whole thing, first line included',
-      (host.textContent ?? '').includes('Commands are running unfiltered') &&
-        (host.textContent ?? '').includes('is set to filter command output'),
-      host.textContent
+      shown.includes('Commands are running unfiltered') &&
+        shown.includes('is set to filter command output')
+    )
+    check(
+      'and says the first line once, not twice',
+      shown.split('is set to filter command output').length - 1 === 1,
+      shown.split('is set to filter command output').length - 1
     )
     check(
       'and still does not overflow when open',

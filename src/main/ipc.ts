@@ -15,8 +15,9 @@ import { invalidateProviderCache, listModels } from './providers'
 import { getRuntime, resetRuntimes, testEnvironment } from './runtime'
 import { cachedRtkStatus, forgetRtkStatus, rtkStatus } from './rtk'
 import { browse, dirIndex, forgetDirIndex, searchRoot } from './browse'
+import { installRtk } from './rtk'
 import { meterSnapshot, resetMeter } from './meter'
-import { logPath } from './log'
+import { logLine, logPath } from './log'
 import { listSshAliases } from './runtime/ssh'
 import * as store from './store'
 import * as history from './history'
@@ -177,6 +178,22 @@ export function registerIpc(): void {
     if (config.environment[environmentId]?.kind !== 'local') return known
     const runtime = getRuntime(environmentId)
     return rtkStatus(environmentId, runtime, config.environment[environmentId]?.cwd ?? homedir())
+  })
+
+  /**
+   * Puts rtk on a target, when asked to.
+   *
+   * Never on a probe and never on a turn: this downloads an executable onto
+   * somebody's machine, so it happens on a click and nowhere else.
+   */
+  ipcMain.handle('rtk:install', async (_e, environmentId: string) => {
+    const config = rawConfig()
+    const runtime = getRuntime(environmentId)
+    const cwd = config.environment[environmentId]?.cwd ?? (await runtime.homeDir()) ?? '/'
+    const result = await installRtk(environmentId, runtime, cwd)
+    logLine(result.ok ? 'info' : 'warn', `rtk install on ${environmentId}: ${result.message}`)
+    bus.emit({ type: 'toast', level: result.ok ? 'info' : 'error', message: result.message })
+    return result
   })
 
   /* ---------- models & environments ---------- */

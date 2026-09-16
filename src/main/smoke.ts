@@ -31,6 +31,8 @@ import {
 import { buildUserMessage } from './agent/runner'
 import { createTools, type ToolContext } from './agent/tools'
 import { createServer } from 'node:http'
+import { createHash } from 'node:crypto'
+import { spawn } from 'node:child_process'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -70,6 +72,11 @@ import {
 } from '@shared/routing'
 import { meterSnapshot, record as meterRecord, resetMeter, spentOn } from './meter'
 import {
+  RTK_DIR,
+  installRtk,
+  installScript,
+  releaseTarget,
+  useBinary,
   acceptRewrite,
   cachedRtkStatus,
   forgetRtkStatus,
@@ -2613,19 +2620,23 @@ async function main(): Promise<void> {
     const permissions = defaultConfig().permissions
 
     forgetRtkStatus()
-    const missing = fakeRuntime(() => ({ exitCode: 127, stdout: 'command not found' }))
+    const missing = fakeRuntime(() => ({ exitCode: 127, stdout: '' }))
     const noRtk = await rtkStatus('fake-missing', missing.runtime, '/tmp')
     check('no rtk on the target is reported, not guessed at', noRtk.state === 'missing', noRtk)
-    check('and the message says how to get it', /brew install rtk/.test(noRtk.message ?? ''))
+    check(
+      'and the message says it can be put there without being installed by hand',
+      /does not have to be installed by hand/.test(noRtk.message ?? ''),
+      noRtk.message
+    )
 
     forgetRtkStatus()
-    const old = fakeRuntime(() => ({ stdout: 'rtk 0.22.0' }))
+    const old = fakeRuntime(() => ({ stdout: 'rtk\nrtk 0.22.0' }))
     const tooOld = await rtkStatus('fake-old', old.runtime, '/tmp')
     check('a binary without `rtk rewrite` is refused by version', tooOld.state === 'too-old', tooOld)
 
     forgetRtkStatus()
     const ready = fakeRuntime((command) => {
-      if (command === 'rtk --version') return { stdout: 'rtk 0.28.2' }
+      if (command.includes('--version')) return { stdout: 'rtk\nrtk 0.28.2' }
       if (command.startsWith('rtk rewrite')) return { stdout: 'rtk git status\n', exitCode: 0 }
       return { stdout: '' }
     })
@@ -2634,7 +2645,7 @@ async function main(): Promise<void> {
     check('a usable rtk is ready, with its version', first.state === 'ready' && first.version === '0.28.2', first)
     check(
       'and the question is asked once, not once per command',
-      ready.commands.filter((c) => c === 'rtk --version').length === 1,
+      ready.commands.filter((c) => c.includes('--version')).length === 1,
       ready.commands
     )
     check('the cache can be read without probing again', cachedRtkStatus('fake-ready').state === 'ready')
@@ -2655,7 +2666,9 @@ async function main(): Promise<void> {
     for (const [code, why] of [[1, 'rtk has nothing better'], [2, 'rtk denies it itself']] as const) {
       forgetRtkStatus()
       const quiet = fakeRuntime((command) =>
-        command === 'rtk --version' ? { stdout: 'rtk 0.28.2' } : { stdout: 'rtk git status', exitCode: code }
+        command.includes('--version')
+          ? { stdout: 'rtk\nrtk 0.28.2' }
+          : { stdout: 'rtk git status', exitCode: code }
       )
       const result = await rewriteThroughRtk({
         environmentId: `fake-${code}`,
@@ -2669,7 +2682,9 @@ async function main(): Promise<void> {
 
     forgetRtkStatus()
     const asks = fakeRuntime((command) =>
-      command === 'rtk --version' ? { stdout: 'rtk 0.28.2' } : { stdout: 'rtk git status', exitCode: 3 }
+      command.includes('--version')
+        ? { stdout: 'rtk\nrtk 0.28.2' }
+        : { stdout: 'rtk git status', exitCode: 3 }
     )
     const asked = await rewriteThroughRtk({
       environmentId: 'fake-ask',
@@ -2682,7 +2697,9 @@ async function main(): Promise<void> {
 
     forgetRtkStatus()
     const nasty = fakeRuntime((command) =>
-      command === 'rtk --version' ? { stdout: 'rtk 0.28.2' } : { stdout: 'rm -rf /tmp/x', exitCode: 0 }
+      command.includes('--version')
+        ? { stdout: 'rtk\nrtk 0.28.2' }
+        : { stdout: 'rm -rf /tmp/x', exitCode: 0 }
     )
     const blocked = await rewriteThroughRtk({
       environmentId: 'fake-nasty',
@@ -4372,6 +4389,141 @@ async function main(): Promise<void> {
     history.clearHistory(forked.sessionId)
     store.deleteSession(trunk.id)
     history.clearHistory(trunk.id)
+  }
+
+  section('putting rtk on a host without installing it by hand')
+  {
+    check('a linux x86 host gets the musl build', releaseTarget('Linux', 'x86_64') === 'x86_64-unknown-linux-musl')
+    check('an arm linux host gets the gnu one', releaseTarget('Linux', 'aarch64') === 'aarch64-unknown-linux-gnu')
+    check('this mac gets its own', releaseTarget('Darwin', 'arm64') === 'aarch64-apple-darwin')
+    check('an intel mac too', releaseTarget('Darwin', 'x86_64') === 'x86_64-apple-darwin')
+    check('and something rtk does not publish for is refused', releaseTarget('FreeBSD', 'riscv64') === null)
+
+    const script = installScript('x86_64-unknown-linux-musl', RTK_DIR)
+    check('the script verifies the checksum rtk publishes', /checksums\.txt/.test(script))
+    check('and refuses on a mismatch', /checksum mismatch/.test(script))
+    check('and refuses to install unverified when it cannot check', /refusing to install unverified/.test(script))
+    check('it refuses an archive with paths outside itself', /unsafe paths/.test(script))
+    check(
+      'it installs into this app’s own directory, not onto the PATH',
+      script.includes(`$HOME/${RTK_DIR}`) && !script.includes('.local/bin'),
+      RTK_DIR
+    )
+    check('and proves what it installed by asking its version', /rtk" --version/.test(script))
+    check('nothing is left behind on the way', /trap .*rm -rf/.test(script))
+
+    // Calling it by path, since a provisioned copy is deliberately not on the PATH.
+    const bin = '/home/user/.opendesktop/bin/rtk'
+    check(
+      'a rewrite is pointed at the binary we have',
+      useBinary('rtk git status', bin) === `'${bin}' git status`,
+      useBinary('rtk git status', bin)
+    )
+    check(
+      'the environment prefix survives it',
+      useBinary('LANG=C rtk ls -la', bin) === `LANG=C '${bin}' ls -la`,
+      useBinary('LANG=C rtk ls -la', bin)
+    )
+    check(
+      'every segment of a chain is pointed at it',
+      useBinary('rtk git status && rtk git log', bin) === `'${bin}' git status && '${bin}' git log`,
+      useBinary('rtk git status && rtk git log', bin)
+    )
+    check(
+      'a bare rtk on the PATH is left exactly as rtk wrote it',
+      useBinary('rtk git status', 'rtk') === 'rtk git status'
+    )
+    check(
+      'and the word rtk inside an argument is not touched',
+      useBinary('rtk grep rtk-is-here .', bin) === `'${bin}' grep rtk-is-here .`,
+      useBinary('rtk grep rtk-is-here .', bin)
+    )
+
+    /*
+     * The whole install, against a stand-in for GitHub: a local server that
+     * serves a tarball and a checksums.txt the way the real releases do. It
+     * proves the parts that are ours — target detection, verification,
+     * extraction, and the binary ending up somewhere we can call.
+     */
+    const room = join(tmpdir(), 'opendesktop-rtk-install')
+    rmSync(room, { recursive: true, force: true })
+    mkdirSync(join(room, 'home'), { recursive: true })
+    mkdirSync(join(room, 'release'), { recursive: true })
+
+    const target = releaseTarget(process.platform === 'darwin' ? 'Darwin' : 'Linux', process.arch === 'arm64' ? 'arm64' : 'x86_64')!
+    const asset = `rtk-${target}.tar.gz`
+    // A "binary" that behaves like rtk for the two things we ask of it.
+    mkdirSync(join(room, 'build'), { recursive: true })
+    writeFileSync(
+      join(room, 'build', 'rtk'),
+      ['#!/bin/sh', 'case "$1" in', '  --version) echo "rtk 0.28.2" ;;', '  rewrite) echo "rtk $2" ;;', 'esac'].join('\n'),
+      { mode: 0o755 }
+    )
+    await new Promise<void>((done, fail) => {
+      const tar = spawn('tar', ['-czf', join(room, 'release', asset), '-C', join(room, 'build'), 'rtk'])
+      tar.on('exit', (code) => (code === 0 ? done() : fail(new Error(`tar exited ${code}`))))
+    })
+    const digest = createHash('sha256')
+      .update(readFileSync(join(room, 'release', asset)))
+      .digest('hex')
+    writeFileSync(join(room, 'release', 'checksums.txt'), `${digest}  ${asset}\n`)
+
+    const server = createServer((request, response) => {
+      const url = request.url ?? ''
+      if (url.endsWith('/releases/latest')) {
+        response.writeHead(302, { location: '/rtk-ai/rtk/releases/tag/v0.28.2' })
+        response.end()
+        return
+      }
+      const name = url.split('/').pop() ?? ''
+      const file = join(room, 'release', name)
+      if (existsSync(file)) {
+        response.writeHead(200)
+        response.end(readFileSync(file))
+        return
+      }
+      response.writeHead(404)
+      response.end('no')
+    })
+    await new Promise<void>((ready) => server.listen(0, '127.0.0.1', () => ready()))
+    const port = (server.address() as { port: number }).port
+
+    // The script talks to github.com by name, so the stand-in is put in its
+    // place the only way a test can: by rewriting the URL it fetches.
+    const scripted = installScript(target, 'bin')
+      .replace(/https:\/\/github\.com/g, `http://127.0.0.1:${port}`)
+      .replace('$HOME/bin', join(room, 'home', 'bin'))
+
+    const local = getRuntime('local')
+    const ran = await local.exec(scripted, { cwd: room, timeoutMs: 120_000 })
+    check('the install runs to completion', ran.exitCode === 0, ran.stderr.slice(0, 300))
+    check(
+      'and leaves a binary where it said it would',
+      existsSync(join(room, 'home', 'bin', 'rtk')),
+      ran.stdout
+    )
+    check('which reports its version', /0\.28\.2/.test(ran.stdout), ran.stdout)
+
+    // ...and the same script refuses when the checksum does not match.
+    writeFileSync(join(room, 'release', 'checksums.txt'), `${'0'.repeat(64)}  ${asset}\n`)
+    const tampered = await local.exec(scripted, { cwd: room, timeoutMs: 120_000 })
+    check('a tampered download is refused', tampered.exitCode !== 0, tampered.exitCode)
+    check(
+      'and says why, rather than installing it anyway',
+      /checksum mismatch/.test(tampered.stderr + tampered.stdout),
+      (tampered.stderr + tampered.stdout).slice(-200)
+    )
+
+    server.close()
+
+    // The failure path through installRtk itself: a host rtk does not build for.
+    const exotic = fakeRuntime(() => ({ stdout: 'FreeBSD\nriscv64\n' }))
+    const refused = await installRtk('fake-exotic', exotic.runtime, '/tmp')
+    check('a host with no published build is told so', !refused.ok && /no build/.test(refused.message), refused)
+    check('and nothing was downloaded to find that out', exotic.commands.length === 1, exotic.commands)
+
+    rmSync(room, { recursive: true, force: true })
+    forgetRtkStatus()
   }
 
   // Leave no smoke sessions behind.
