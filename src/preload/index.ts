@@ -182,6 +182,27 @@ const api = {
       ipcRenderer.invoke('fs:list', environmentId, path),
     read: (environmentId: string, path: string): Promise<string> =>
       ipcRenderer.invoke('fs:read', environmentId, path),
+    browse: (
+      environmentId: string,
+      path: string
+    ): Promise<{
+      path: string
+      home: string
+      parent: string | null
+      dirs: string[]
+      error?: string
+    }> => ipcRenderer.invoke('fs:browse', environmentId, path),
+    findDirs: (
+      environmentId: string,
+      cwd: string,
+      refresh?: boolean
+    ): Promise<{
+      root: string
+      dirs: string[]
+      truncated: boolean
+      builtAt: number
+      error?: string
+    }> => ipcRenderer.invoke('fs:findDirs', environmentId, cwd, refresh),
     previewUrl: (environmentId: string, path: string): Promise<string> =>
       ipcRenderer.invoke('preview:url', environmentId, path),
     stat: (

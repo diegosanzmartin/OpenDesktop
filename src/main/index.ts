@@ -5,6 +5,7 @@ import { listAgents, migrateFromConfig, seedBuiltins } from './agents'
 import { loadSecrets } from './secrets'
 import { loadShellEnvironment } from './shell-env'
 import { registerIpc } from './ipc'
+import { installMenu } from './menu'
 import { startPreviewServer, stopPreviewServer } from './preview'
 import { disposeRuntimes } from './runtime'
 import { flush, loadStore } from './store'
@@ -111,6 +112,7 @@ void app.whenReady().then(async () => {
   startScheduler()
   await startPreviewServer()
   registerIpc()
+  installMenu()
   createWindow()
 
   app.on('activate', () => {

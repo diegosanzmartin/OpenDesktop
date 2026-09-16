@@ -461,6 +461,8 @@ export function Composer({ session }: { session: Session }): ReactNode {
     setAttachments([])
   }
 
+  const openFolderPicker = useStore((s) => s.openFolderPicker)
+
   const patch = (next: Partial<Session>): void => {
     void window.opendesktop.sessions.update(session.id, next)
   }
@@ -617,12 +619,8 @@ export function Composer({ session }: { session: Session }): ReactNode {
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 px-1">
           <button
             type="button"
-            title={session.cwd}
-            onClick={async () => {
-              if (session.environmentId !== 'local') return
-              const picked = await window.opendesktop.host.pickFolder()
-              if (picked) patch({ cwd: picked })
-            }}
+            title={`${session.cwd} — click to change it, ⌘R to search for one`}
+            onClick={() => openFolderPicker(session.id)}
             className="text-ink-500 hover:text-ink-200 flex min-w-0 shrink items-center gap-1.5 text-[12px]"
           >
             <FolderOpen className="h-3.5 w-3.5 shrink-0" />

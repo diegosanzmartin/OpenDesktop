@@ -60,6 +60,12 @@ interface State {
   dock: { open: boolean; tab: DockTab; width: number }
   sidebarCollapsed: boolean
   settingsOpen: boolean
+  /**
+   * The folder picker, when it is open, and which of its two halves to open
+   * in. Held here rather than in the composer so that ⌘R can open it from
+   * anywhere in the chat.
+   */
+  folderPicker: { sessionId: string; mode: 'browse' | 'search' } | null
   changes: RepoChanges | null
   changesLoading: boolean
   /** Keyed by `environmentId:cwd`, so sessions sharing a folder share a lookup. */
@@ -104,6 +110,8 @@ interface State {
   setDockWidth: (width: number) => void
   toggleSidebar: () => void
   setSettingsOpen: (open: boolean) => void
+  openFolderPicker: (sessionId: string, mode?: 'browse' | 'search') => void
+  closeFolderPicker: () => void
   refreshChanges: () => Promise<void>
   setSessionQuery: (patch: Partial<SessionQuery>) => void
   setView: (view: AppView) => void
@@ -155,6 +163,7 @@ export const useStore = create<State>((set, get) => ({
   dock: { open: false, tab: 'changes', width: 460 },
   sidebarCollapsed: false,
   settingsOpen: false,
+  folderPicker: null,
   changes: null,
   changesLoading: false,
   gitSummaries: {},
@@ -438,6 +447,8 @@ export const useStore = create<State>((set, get) => ({
   setDockWidth: (width) => set({ dock: { ...get().dock, width: Math.min(900, Math.max(320, width)) } }),
   toggleSidebar: () => set({ sidebarCollapsed: !get().sidebarCollapsed }),
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
+  openFolderPicker: (sessionId, mode = 'browse') => set({ folderPicker: { sessionId, mode } }),
+  closeFolderPicker: () => set({ folderPicker: null }),
 
   async refreshChanges() {
     const session = get().sessions.find((s) => s.id === get().activeSessionId)

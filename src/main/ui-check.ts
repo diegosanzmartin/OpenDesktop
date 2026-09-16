@@ -23,14 +23,21 @@ function writePage(): string {
   writeFileSync(
     page,
     `<!doctype html><html><head><meta charset="utf-8">${styles}<script>
+      /*
+       * Counted rather than flagged. Setting the result directly was useless:
+       * the suite writes its own failure count at the end of the run, so any
+       * error raised before then was overwritten with a pass. A page that
+       * throws has something wrong with it whatever the assertions say.
+       */
+      window.__pageErrors = 0
       window.onerror = (message, source, line, _c, error) => {
         console.log('PAGE ERROR: ' + message + ' @' + source + ':' + line)
         if (error && error.stack) console.log(error.stack)
-        window.__uiCheck = 1
+        window.__pageErrors++
       }
       window.addEventListener('unhandledrejection', (event) => {
         console.log('UNHANDLED: ' + (event.reason && (event.reason.stack || event.reason.message)))
-        window.__uiCheck = 1
+        window.__pageErrors++
       })
     </script></head><body><script src="./ui-check.js"></script></body></html>`,
     'utf8'
@@ -58,7 +65,9 @@ void app.whenReady().then(async () => {
     console.log(`the page failed to load: ${code} ${description}`)
   })
 
-  await win.loadFile(writePage())
+  // A screenshot of one dialog, for the times a design is the specification.
+  const shot = process.env.OPENDESKTOP_SHOT
+  await win.loadFile(writePage(), shot ? { search: `shot=${shot}` } : undefined)
 
   // The page sets this when it is finished, pass or fail.
   const failures = await new Promise<number>((resolve) => {
@@ -79,6 +88,13 @@ void app.whenReady().then(async () => {
         .catch(() => undefined)
     }, 150)
   })
+
+  if (shot) {
+    const image = await win.webContents.capturePage()
+    const path = join(OUT, `${shot}.png`)
+    writeFileSync(path, image.toPNG())
+    console.log(`wrote ${path}`)
+  }
 
   app.exit(failures > 0 ? 1 : 0)
 })

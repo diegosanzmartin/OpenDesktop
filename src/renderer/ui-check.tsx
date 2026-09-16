@@ -21,6 +21,7 @@ import { DocumentCard } from './src/components/DocumentCard'
 import { Composer } from './src/components/Composer'
 import { ContextGauge } from './src/components/ContextGauge'
 import { ModelsTab } from './src/components/ModelsTab'
+import { FolderPicker } from './src/components/FolderPicker'
 
 const failures: string[] = []
 let checks = 0
@@ -47,6 +48,25 @@ function section(name: string): void {
  */
 const REPLIES: Record<string, unknown> = {
   stat: { size: 9614, modifiedAt: 0 },
+  browse: {
+    path: '/home/user/w/sec',
+    home: '/home/user',
+    parent: '/home/user/w',
+    dirs: ['acme--global--core', 'docs', 'services']
+  },
+  findDirs: {
+    root: '/home/user',
+    truncated: false,
+    builtAt: 0,
+    dirs: [
+      '/home/user/w',
+      '/home/user/w/sec',
+      '/home/user/w/sec/acme--global--core',
+      '/home/user/w/sec/acme--global--core/acme--global--core~identity',
+      '/home/user/w/sec/acme--global--core/docs',
+      '/home/user/other/identity-notes'
+    ]
+  },
   changes: { isRepo: false, root: '', branch: '', files: [], added: 0, removed: 0 },
   previewUrl: 'http://127.0.0.1/none',
   accepted: true,
@@ -366,7 +386,10 @@ async function run(): Promise<void> {
       panel?.textContent
     )
     check('and there is no third option to choose', !(panel?.textContent ?? '').includes('Direct mode'))
-    document.body.querySelectorAll('div[style*="bottom"]').forEach((node) => node.remove())
+    // Closed the way a person closes it. Removing the portal by hand left
+    // React holding a node that was no longer there, which it then threw over.
+    chipIn(plain)?.click()
+    await settle()
 
     const saved = REPLIES.status
     REPLIES.status = { state: 'missing', message: 'not on the PATH' }
@@ -496,11 +519,106 @@ async function run(): Promise<void> {
     useStore.setState({ config: before })
   }
 
+  section('the remote folder picker')
+  {
+    const remote = { ...session, id: 's-remote', environmentId: 'wk', cwd: '/home/user/w/sec' }
+    useStore.setState({
+      sessions: [remote],
+      activeSessionId: remote.id,
+      folderPicker: { sessionId: remote.id, mode: 'browse' }
+    })
+
+    const host = mount(<FolderPicker />, 900)
+    await settle()
+    const text = host.textContent ?? ''
+    check('it says what it is picking, and where', text.includes('Select remote folder'), text.slice(0, 80))
+    check('the path is in a box you can type into', (host.querySelector('input') as HTMLInputElement)?.value === '/home/user/w/sec')
+    check(
+      'the breadcrumb is the path, split up',
+      ['home', 'user', 'w', 'sec'].every((part) => text.includes(part)),
+      text
+    )
+    check('there is a way up', text.includes('..'))
+    check(
+      'and the folders below are listed',
+      text.includes('acme--global--core') && text.includes('services'),
+      text
+    )
+    check('with both ways out', text.includes('Cancel') && text.includes('Select folder'))
+    check(
+      'and no OS dialog offered for a machine it cannot see',
+      !text.includes('Browse…'),
+      text
+    )
+
+    // The other half: fzf over every directory under home.
+    const searchTab = [...host.querySelectorAll('button')].find(
+      (button) => button.textContent === 'Search'
+    ) as HTMLButtonElement
+    check('the two halves are offered as such', Boolean(searchTab))
+    searchTab.click()
+    await settle()
+
+    const box = host.querySelector('input') as HTMLInputElement
+    check('search puts the cursor in a query box', Boolean(box))
+    check('and says what it is searching under', (host.textContent ?? '').includes('under /home/user'))
+
+    // Typing four letters, the way the deep folder would actually be found.
+    const react = Object.keys(box).find((key) => key.startsWith('__reactProps')) as string
+    ;(box as unknown as Record<string, { onChange: (e: unknown) => void }>)[react].onChange({
+      target: { value: 'hgsj' }
+    })
+    await settle()
+    const results = host.textContent ?? ''
+    check(
+      'four initials find the folder six levels down',
+      results.includes('acme--global--core~identity'),
+      results
+    )
+    check(
+      'and what matched is marked in it',
+      host.innerHTML.includes('text-brand'),
+      host.innerHTML.slice(0, 200)
+    )
+    check('the keys are written down rather than guessed at', results.includes('↑↓ move'))
+    check('and it says how much of the tree matched', /\bof 6\b/.test(results), results)
+
+    // Back to browsing, and ⌘R forward again.
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await settle()
+    check('escape steps back to browsing before it closes', (host.textContent ?? '').includes('Go'))
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'r', metaKey: true }))
+    await settle()
+    check('and ⌘R goes straight to the search', (host.textContent ?? '').includes('↑↓ move'))
+
+    useStore.setState({ folderPicker: null, sessions: [session], activeSessionId: session.id })
+  }
+
   console.log(`\n${checks - failures.length}/${checks} checks passed`)
   if (failures.length > 0) {
     console.log(`\nfailed:\n${failures.map((f) => `  - ${f}`).join('\n')}`)
   }
-  ;(window as unknown as { __uiCheck: number }).__uiCheck = failures.length
+  /*
+   * A last frame for the eye, when asked for. The assertions above say the
+   * dialog contains the right things; they cannot say it looks right, and this
+   * one was drawn from a picture.
+   */
+  if (new URLSearchParams(location.search).get('shot') === 'picker') {
+    const shot = { ...session, id: 's-shot', environmentId: 'wk', cwd: '/home/user/w/sec' }
+    useStore.setState({
+      sessions: [shot],
+      activeSessionId: shot.id,
+      folderPicker: { sessionId: shot.id, mode: 'browse' }
+    })
+    mount(<FolderPicker />)
+    await settle()
+  }
+
+  // Anything the page threw counts too, even when every assertion held: an
+  // uncaught error is a broken render that happened to miss what was checked.
+  const thrown = (window as unknown as { __pageErrors?: number }).__pageErrors ?? 0
+  if (thrown > 0) console.log(`\nand ${thrown} error${thrown === 1 ? '' : 's'} reached the page`)
+  ;(window as unknown as { __uiCheck: number }).__uiCheck = failures.length + thrown
 }
 
 void run().catch((err: Error) => {

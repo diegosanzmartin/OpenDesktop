@@ -8,6 +8,7 @@ import { RightDock } from './components/RightDock'
 import { ChatView } from './components/ChatView'
 import { SettingsPane } from './components/SettingsPane'
 import { BoardView } from './components/BoardView'
+import { FolderPicker } from './components/FolderPicker'
 
 function Toasts(): ReactNode {
   const toasts = useStore((s) => s.toasts)
@@ -79,6 +80,7 @@ export default function App(): ReactNode {
   const bootstrap = useStore((s) => s.bootstrap)
   const applyEvent = useStore((s) => s.applyEvent)
   const toggleSidebar = useStore((s) => s.toggleSidebar)
+  const openFolderPicker = useStore((s) => s.openFolderPicker)
 
   useEffect(() => {
     const unsubscribe = window.opendesktop.onEvent(applyEvent)
@@ -91,11 +93,26 @@ export default function App(): ReactNode {
       if ((event.metaKey || event.ctrlKey) && event.key === 'b') {
         event.preventDefault()
         toggleSidebar()
+        return
+      }
+      /*
+       * Straight into the search half of the folder picker. The folder a
+       * session runs in is the setting people change most and the one buried
+       * deepest — six segments of path, on a machine the native dialog cannot
+       * see — so it gets a key of its own.
+       */
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'r') {
+        const current = useStore.getState()
+        const id = current.activeSessionId
+        if (current.view !== 'board' && id && !current.folderPicker) {
+          event.preventDefault()
+          openFolderPicker(id, 'search')
+        }
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [toggleSidebar])
+  }, [toggleSidebar, openFolderPicker])
 
   if (!ready) {
     return (
@@ -128,6 +145,7 @@ export default function App(): ReactNode {
       </div>
 
       <SettingsOverlay />
+      <FolderPicker />
       <Toasts />
     </div>
   )

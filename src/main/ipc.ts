@@ -14,6 +14,7 @@ import {
 import { invalidateProviderCache, listModels } from './providers'
 import { getRuntime, resetRuntimes, testEnvironment } from './runtime'
 import { cachedRtkStatus, forgetRtkStatus, rtkStatus } from './rtk'
+import { browse, dirIndex, forgetDirIndex, searchRoot } from './browse'
 import { meterSnapshot, resetMeter } from './meter'
 import { listSshAliases } from './runtime/ssh'
 import * as store from './store'
@@ -79,6 +80,7 @@ async function reloadConfigDependents(config: AppConfig): Promise<void> {
   // An environment may now point somewhere else entirely, so what was probed
   // on the old one says nothing about the new one.
   forgetRtkStatus()
+  forgetDirIndex()
   await resetRuntimes()
   bus.emit({ type: 'config.updated', config })
 }
@@ -508,6 +510,22 @@ export function registerIpc(): void {
     const target = path || (await runtime.homeDir())
     return { path: target, entries: await runtime.list(target) }
   })
+  /* The folder picker: one call per step while browsing, one call for a whole
+     tree when searching. See src/main/browse.ts for why they differ. */
+  ipcMain.handle('fs:browse', async (_e, environmentId: string, path: string) =>
+    browse(getRuntime(environmentId), path)
+  )
+  ipcMain.handle(
+    'fs:findDirs',
+    async (_e, environmentId: string, cwd: string, refresh?: boolean) => {
+      const runtime = getRuntime(environmentId)
+      await runtime.connect()
+      const home = (await runtime.homeDir()) || '/'
+      const root = searchRoot(cwd, home)
+      return dirIndex(environmentId, runtime, root, refresh === true)
+    }
+  )
+
   ipcMain.handle('fs:read', async (_e, environmentId: string, path: string) => {
     const runtime = getRuntime(environmentId)
     await runtime.connect()

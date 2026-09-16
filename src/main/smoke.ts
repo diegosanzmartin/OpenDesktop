@@ -43,6 +43,8 @@ import { runTurn } from './agent/runner'
 import { resolveApproval } from './approvals'
 import * as providers from './providers'
 import { getRuntime } from './runtime'
+import { browse, dirIndex, forgetDirIndex, normalizePath, searchRoot } from './browse'
+import { fuzzyFilter, fuzzyMatch, highlightRuns } from '@shared/fuzzy'
 import type { ExecOptions, ExecResult, Runtime } from './runtime'
 import {
   BULK_READER_INSTRUCTIONS,
@@ -3654,6 +3656,171 @@ async function main(): Promise<void> {
     history.clearHistory(planned.id)
     resetMeter()
     saveConfig(defaultConfig())
+  }
+
+  section('finding a folder by typing part of it')
+  {
+    const ranked = (candidates: string[], query: string): string[] =>
+      fuzzyFilter(candidates, query).map((match) => match.value)
+
+    check('the letters have to be there, in order', fuzzyMatch('/home/user/work', 'hmwk') !== null)
+    check('and out of order they are not a match', fuzzyMatch('/home/user/work', 'kwmh') === null)
+    check('a letter that is missing fails the whole thing', fuzzyMatch('/home/user', 'hz') === null)
+    check('an empty query matches everything', fuzzyMatch('/anything', '')?.score === 0)
+    check('case is ignored for matching', fuzzyMatch('/Home/User', 'hu') !== null)
+
+    // The folder from the screenshot, typed the way anyone would type it.
+    const deep = '/home/user/w/sec/acme--global--core/acme--global--core~identity'
+    const match = fuzzyMatch(deep, 'hgsj')
+    check('initials find a long hyphenated name', match !== null, deep)
+    check(
+      'and they land on the word starts, not the first letters going',
+      match !== null && match.positions.every((at) => 'hgsj'.includes(deep[at].toLowerCase())),
+      match?.positions
+    )
+
+    const tree = [
+      '/home/user/w/sec',
+      '/home/user/w/sec/acme--global--core',
+      '/home/user/w/sec/acme--global--core/acme--global--core~identity',
+      '/home/user/w/sec/acme--global--core/docs',
+      '/home/user/other/identity-notes',
+      '/home/user/src/main/store'
+    ]
+    check(
+      'the closest name wins, not the first one down the list',
+      ranked(tree, 'identity')[0] === '/home/user/other/identity-notes',
+      ranked(tree, 'identity')
+    )
+    check(
+      'a query spanning segments still finds the deep one',
+      ranked(tree, 'soarjump')[0] ===
+        '/home/user/w/sec/acme--global--core/acme--global--core~identity',
+      ranked(tree, 'soarjump')
+    )
+    check(
+      'the last segment counts for more than a parent',
+      ranked(['/a/docs/x', '/a/x/docs'], 'docs')[0] === '/a/x/docs',
+      ranked(['/a/docs/x', '/a/x/docs'], 'docs')
+    )
+    check(
+      'and the shorter of two equal matches wins',
+      ranked(['/home/user/w', '/home/user/w/sec/deep/deeper'], 'w')[0] === '/home/user/w'
+    )
+    check(
+      'a run of letters together beats the same letters scattered',
+      (fuzzyMatch('/a/store', 'store')?.score ?? 0) > (fuzzyMatch('/s/t/o/r/e', 'store')?.score ?? 0)
+    )
+    check('results are capped', fuzzyFilter(Array.from({ length: 500 }, (_, i) => `/d${i}`), 'd', 10).length === 10)
+    check(
+      'equal scores come back in a stable order',
+      ranked(['/b/x', '/a/x'], 'x').join() === ['/a/x', '/b/x'].join(),
+      ranked(['/b/x', '/a/x'], 'x')
+    )
+
+    const runs = highlightRuns('abcd', [0, 1, 3])
+    check('highlighting is by run, not by letter', runs.length === 3, runs)
+    check('and loses nothing', runs.map((run) => run.text).join('') === 'abcd')
+    check('with the hit letters marked', runs[0].hit && !runs[1].hit && runs[2].hit)
+    check('nothing matched is one plain run', highlightRuns('abc', []).length === 1)
+  }
+
+  section('paths on the other machine')
+  {
+    check('a relative path hangs off where you are', normalizePath('sec', '/home/u', '/home/u/w') === '/home/u/w/sec')
+    check('a tilde is home', normalizePath('~', '/home/u', '/tmp') === '/home/u')
+    check('and so is a tilde with a path after it', normalizePath('~/w/sec', '/home/u', '/tmp') === '/home/u/w/sec')
+    check('dot-dot goes up', normalizePath('..', '/home/u', '/home/u/w/sec') === '/home/u/w')
+    check('twice goes up twice', normalizePath('../..', '/home/u', '/home/u/w/sec') === '/home/u')
+    check('past the root it stops', normalizePath('../../../../../..', '/home/u', '/tmp') === '/')
+    check('doubled and trailing slashes are collapsed', normalizePath('/a//b/c/', '/home/u', '/') === '/a/b/c')
+    check('a dot is nothing', normalizePath('/a/./b', '/home/u', '/') === '/a/b')
+    check('nothing typed leaves you where you were', normalizePath('   ', '/home/u', '/home/u/w') === '/home/u/w')
+
+    check('a search starts at home when you are under it', searchRoot('/home/u/w/sec', '/home/u') === '/home/u')
+    check('home itself counts as under it', searchRoot('/home/u', '/home/u') === '/home/u')
+    check(
+      'and somewhere else entirely starts where you are',
+      searchRoot('/opt/app', '/home/u') === '/opt/app'
+    )
+    check('a lookalike prefix is not under home', searchRoot('/home/ubuntu', '/home/u') === '/home/ubuntu')
+  }
+
+  section('walking a tree that is not on this machine')
+  {
+    const root = join(tmpdir(), 'opendesktop-browse')
+    rmSync(root, { recursive: true, force: true })
+    for (const path of [
+      'w/sec/acme--global--core/acme--global--core~identity',
+      'w/sec/acme--global--core/docs',
+      'w/tools',
+      '.hidden',
+      'w/app/node_modules/react/lib',
+      'w/app/.git/objects'
+    ]) {
+      mkdirSync(join(root, path), { recursive: true })
+    }
+    writeFileSync(join(root, 'w/notes.md'), 'a file, not a folder')
+
+    const local = getRuntime('local')
+    const listing = await browse(local, join(root, 'w'))
+    check('the listing is of where it was asked about', listing.path === join(root, 'w'), listing.path)
+    check(
+      'only directories come back',
+      listing.dirs.join() === ['app', 'sec', 'tools'].join(),
+      listing.dirs
+    )
+    check('and there is a parent to go up to', listing.parent === root, listing.parent)
+    check('it knows where home is, for the house icon', listing.home.length > 1)
+
+    const hidden = await browse(local, root)
+    check('dotfolders are listed last, not hidden', hidden.dirs[hidden.dirs.length - 1] === '.hidden', hidden.dirs)
+
+    const nowhere = await browse(local, join(root, 'w/notes.md'))
+    check('a file is not a folder, and it says so', /not a directory/.test(nowhere.error ?? ''), nowhere.error)
+    check('and it falls back to home rather than to nothing', nowhere.path === nowhere.home)
+
+    const missing = await browse(local, join(root, 'w/does-not-exist'))
+    check('nor is a path that is not there', Boolean(missing.error))
+
+    forgetDirIndex()
+    const index = await dirIndex('local', local, root)
+    check('the search index has the deep folder in it', index.dirs.includes(join(root, 'w/sec/acme--global--core/acme--global--core~identity')), index.dirs.length)
+    check('and the root itself', index.dirs.includes(root))
+    check('it is not truncated at this size', !index.truncated)
+    check(
+      'node_modules is not in it — nobody is looking for that',
+      !index.dirs.some((dir) => dir.includes('node_modules')),
+      index.dirs.filter((dir) => dir.includes('node_modules'))
+    )
+    check('nor is .git', !index.dirs.some((dir) => dir.includes('.git')))
+    check(
+      'and typing four letters finds the deep one',
+      fuzzyFilter(index.dirs, 'hgsj')[0]?.value ===
+        join(root, 'w/sec/acme--global--core/acme--global--core~identity'),
+      fuzzyFilter(index.dirs, 'hgsj')
+        .slice(0, 3)
+        .map((match) => match.value)
+    )
+
+    /*
+     * Cached: the second keystroke must not cost a round trip. Counted against
+     * a fake target, because the real one cannot be asked how many times it
+     * was asked.
+     */
+    forgetDirIndex()
+    const counted = fakeRuntime(() => ({ stdout: '/a\n/a/b\n' }))
+    await dirIndex('fake-env', counted.runtime, '/a')
+    await dirIndex('fake-env', counted.runtime, '/a')
+    check('the tree is read once, not once per keystroke', counted.commands.length === 1, counted.commands.length)
+    const again = await dirIndex('fake-env', counted.runtime, '/a', true)
+    check('and again when asked to refresh', counted.commands.length === 2 && again.dirs.length === 2)
+    forgetDirIndex('fake-env')
+    await dirIndex('fake-env', counted.runtime, '/a')
+    check('forgetting an environment drops its tree', counted.commands.length === 3)
+
+    forgetDirIndex()
+    rmSync(root, { recursive: true, force: true })
   }
 
   // Leave no smoke sessions behind.
