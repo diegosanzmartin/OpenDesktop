@@ -674,6 +674,11 @@ async function run(): Promise<void> {
 
     const idle = mount(<ChatView session={session} />, 900)
     await settle()
+    check(
+      'a finished answer from the manager names nobody',
+      !(idle.textContent ?? '').includes('Manager'),
+      idle.textContent
+    )
     const buttons = (host: HTMLElement): HTMLButtonElement[] =>
       [...host.querySelectorAll('button')].filter((button) =>
         /^(Copy|Rewind|Fork)/.test(button.getAttribute('title') ?? '')

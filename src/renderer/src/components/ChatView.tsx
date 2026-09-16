@@ -267,7 +267,12 @@ function StatusLine({
       {/* Absent when the model has no price declared: nothing, not "$0.00". */}
       {message.usage?.cost !== undefined ? <span>· {formatCost(message.usage.cost)}</span> : null}
       {rate !== null ? <span>· {rate} tok/s</span> : null}
-      <span>· {done ? (agentName ?? 'Manager') : activityOf(message, blocks)}</span>
+      {/* The manager ran it, as it runs almost everything, so there is nothing
+          worth saying: the line ends on the numbers. A named agent is the case
+          where whose answer this is genuinely tells you something. */}
+      {done ? (agentName ? <span>· {agentName}</span> : null) : (
+        <span>· {activityOf(message, blocks)}</span>
+      )}
     </div>
   )
 }
