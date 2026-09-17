@@ -553,6 +553,56 @@ async function run(): Promise<void> {
       text
     )
 
+    /*
+     * Nothing may run off the side.
+     *
+     * The model rows were a label on the left and their controls on the right,
+     * with the control side set not to shrink — so once a model had a billing
+     * select, an allowance, a period and two sliders, the row was wider than
+     * the panel: the page scrolled sideways and the label column collapsed
+     * until "Claude Opus 5" wrapped one word per line. Measured rather than
+     * eyeballed, at the width the settings pane actually gets and at a narrow
+     * one.
+     */
+    check(
+      'the settings page does not run off the side',
+      host.scrollWidth <= host.clientWidth + 1,
+      { scroll: host.scrollWidth, client: host.clientWidth }
+    )
+    const narrow = mount(<ModelsTab />, 620)
+    await settle()
+    check(
+      'nor when the pane is narrow',
+      narrow.scrollWidth <= narrow.clientWidth + 1,
+      { scroll: narrow.scrollWidth, client: narrow.clientWidth }
+    )
+    check(
+      'and nothing is painted past the right edge of the pane',
+      (() => {
+        const edge = host.getBoundingClientRect().right
+        const spill = [...host.querySelectorAll('*')].filter(
+          (el) => el.getBoundingClientRect().right > edge + 1
+        )
+        return spill.length === 0
+      })(),
+      [...host.querySelectorAll('*')]
+        .filter((el) => el.getBoundingClientRect().right > host.getBoundingClientRect().right + 1)
+        .slice(0, 4)
+        .map((el) => `${el.tagName}.${(el.className || '').toString().slice(0, 40)}`)
+    )
+    check(
+      'and a model name stays on one line rather than wrapping per word',
+      (() => {
+        const name = [...host.querySelectorAll('span')].find(
+          (span) => span.textContent === 'P · Brain'
+        )
+        return name ? name.getBoundingClientRect().height < 30 : false
+      })(),
+      [...host.querySelectorAll('span')]
+        .find((span) => span.textContent === 'P · Brain')
+        ?.getBoundingClientRect().height
+    )
+
     const sliders = host.querySelectorAll('button[aria-label$="of 5"]')
     check('the judgements are coarse on purpose — five steps', sliders.length === 20, sliders.length)
 
@@ -834,6 +884,73 @@ async function run(): Promise<void> {
    * dialog contains the right things; they cannot say it looks right, and this
    * one was drawn from a picture.
    */
+  if (new URLSearchParams(location.search).get('shot') === 'models') {
+    // Everything mounted above is still in the page, so the shot would be of
+    // whatever happened to be at the top of it.
+    document.body.innerHTML = ''
+    useStore.setState({
+      config: {
+        ...useStore.getState().config!,
+        provider: {
+          anthropic: {
+            id: 'anthropic',
+            npm: '@ai-sdk/anthropic',
+            name: 'Anthropic',
+            options: { apiKey: '{secret:anthropic}' },
+            allowance: { usd: 400, period: 'month' },
+            models: {
+              'claude-opus-5': {
+                id: 'claude-opus-5',
+                name: 'Claude Opus 5',
+                price: { input: 5, output: 25 },
+                billing: 'allowance',
+                iq: 5,
+                cost: 4
+              },
+              'claude-sonnet-5': {
+                id: 'claude-sonnet-5',
+                name: 'Claude Sonnet 5',
+                price: { input: 2, output: 10 },
+                billing: 'allowance',
+                iq: 4,
+                cost: 3
+              },
+              'claude-haiku-4-5': {
+                id: 'claude-haiku-4-5',
+                name: 'Claude Haiku 4.5',
+                price: { input: 1, output: 5 },
+                billing: 'allowance',
+                iq: 3,
+                cost: 2
+              }
+            }
+          },
+          helmcode: {
+            id: 'helmcode',
+            npm: '@ai-sdk/openai-compatible',
+            name: 'Helmcode',
+            options: { baseURL: 'https://api.helmcode.com/v1', apiKey: '{secret:helmcode}' },
+            models: {
+              'glm5.3-flash': {
+                id: 'glm5.3-flash',
+                name: 'GLM 5.3 Flash',
+                billing: 'flat',
+                iq: 3,
+                cost: 1
+              }
+            }
+          }
+        }
+      }
+    })
+    const shotHost = mount(<ModelsTab />, 900)
+    await settle()
+    // The part worth looking at is the model rows, which are below the fold.
+    const cost = [...shotHost.querySelectorAll('h2')].find((h) => h.textContent === 'Cost')
+    cost?.scrollIntoView({ block: 'start' })
+    await settle()
+  }
+
   if (new URLSearchParams(location.search).get('shot') === 'picker') {
     const shot = { ...session, id: 's-shot', environmentId: 'wk', cwd: '/home/user/w/sec' }
     useStore.setState({
