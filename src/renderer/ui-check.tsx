@@ -12,7 +12,7 @@
 import './src/styles.css'
 import React from 'react'
 import { createRoot } from 'react-dom/client'
-import type { ApprovalRequest, Block, Message, Session } from '@shared/types'
+import type { AppEvent, ApprovalRequest, Block, Message, Session } from '@shared/types'
 import { useStore } from './src/state/store'
 import { BlockCard } from './src/components/BlockCard'
 import { ApprovalCard } from './src/components/ApprovalCard'
@@ -23,6 +23,7 @@ import { ContextGauge } from './src/components/ContextGauge'
 import { ModelsTab } from './src/components/ModelsTab'
 import { RoutingTab } from './src/components/RoutingTab'
 import { FolderPicker } from './src/components/FolderPicker'
+import { LocalModelSection } from './src/components/LocalModelSection'
 import { ChatView } from './src/components/ChatView'
 
 const failures: string[] = []
@@ -77,16 +78,58 @@ const REPLIES: Record<string, unknown> = {
   messages: [],
   blocks: [],
   buffer: '',
-  status: { available: true, names: [], failed: [], hints: {} }
+  status: { available: true, names: [], failed: [], hints: {} },
+  /*
+   * Keyed by path, so two bridges that both answer `status()` can answer
+   * differently. The local model's row is the reason: it reads a status of its
+   * own, and getting the keychain's back made the section render as nothing.
+   */
+  'local.status': {
+    stage: 'absent',
+    supported: true,
+    spec: {
+      id: 'qwen2.5-3b-instruct',
+      name: 'Qwen2.5 3B Instruct',
+      bytes: 2_104_932_768,
+      contextWindow: 32_768,
+      ramBytes: 3_400_000_000,
+      blurb: 'Answers straight away and calls tools.'
+    },
+    runtime: { installed: false, build: 'b11026' },
+    model: { installed: false, bytes: 0 },
+    diskBytes: 0
+  }
+}
+
+/** Whatever the page has subscribed to the bus with, so a test can push. */
+const listeners: ((event: AppEvent) => void)[] = []
+
+function pushEvent(event: AppEvent): void {
+  for (const listener of listeners) listener(event)
 }
 
 function stubBridge(): void {
-  const node = (name: string): unknown =>
+  const node = (path: string): unknown =>
     new Proxy(function stub() {} as unknown as Record<string, unknown>, {
-      get: (_target, key) => (key === 'then' ? undefined : node(String(key))),
-      apply: () => Promise.resolve(REPLIES[name] ?? null)
+      get: (_target, key) =>
+        key === 'then' ? undefined : node(path ? `${path}.${String(key)}` : String(key)),
+      // The full path first, then the bare method name, so every reply that
+      // was written before paths existed still answers.
+      apply: (_target, _this, args: unknown[]) => {
+        // The one call that is not a request for a value: a subscription, whose
+        // listener has to be kept if anything pushed is to arrive.
+        if (path === 'onEvent' && typeof args[0] === 'function') {
+          const listener = args[0] as (event: AppEvent) => void
+          listeners.push(listener)
+          return () => {
+            const at = listeners.indexOf(listener)
+            if (at >= 0) listeners.splice(at, 1)
+          }
+        }
+        return Promise.resolve(REPLIES[path] ?? REPLIES[path.split('.').pop() ?? ''] ?? null)
+      }
     })
-  ;(window as unknown as { opendesktop: unknown }).opendesktop = node('root')
+  ;(window as unknown as { opendesktop: unknown }).opendesktop = node('')
 }
 
 const session: Session = {
@@ -939,6 +982,111 @@ async function run(): Promise<void> {
     useStore.setState({ messages: {} })
   }
 
+
+  section('the model that runs on this machine')
+  {
+    /*
+     * The row is the whole feature as far as anyone using it is concerned:
+     * what it will cost in gigabytes before it is pressed, how far it has got
+     * while it downloads, and where it is answering once it is up. Each of
+     * those is a different branch, so each one is mounted.
+     */
+    const host = mount(<LocalModelSection />, 900)
+    await settle()
+    const offered = host.textContent ?? ''
+    check(
+      'it says what it is and that nothing else has to be installed',
+      offered.includes('On this machine') && offered.includes('no key, no account'),
+      offered.slice(0, 120)
+    )
+    check(
+      'the size is on the button, before anything is downloaded',
+      offered.includes('Install (2.1 GB)'),
+      offered.slice(-160)
+    )
+    check(
+      'and the memory it wants while it answers is said too',
+      offered.includes('3.4 GB'),
+      offered
+    )
+    check(
+      'nothing is configured yet, so there is nothing to say about it',
+      !offered.includes('How it is configured')
+    )
+
+    // An interrupted download is the common case for two gigabytes on a
+    // laptop, and it is resumed: the row offers what is left, not the lot.
+    pushEvent({
+      type: 'local.status',
+      status: {
+        ...(REPLIES['local.status'] as object),
+        model: { installed: false, bytes: 0, partialBytes: 1_500_000_000 }
+      }
+    } as AppEvent)
+    await settle()
+    const resumable = host.textContent ?? ''
+    check(
+      'a download that was interrupted is offered as what is left of it',
+      resumable.includes('Resume (605 MB)') && resumable.includes('1.5 GB of the weights'),
+      resumable.slice(-220)
+    )
+
+    const downloading = mount(<LocalModelSection />, 900)
+    await settle()
+    // The bar comes from the event the main process pushes, not from a poll.
+    const push = (status: unknown): void =>
+      pushEvent({ type: 'local.status', status } as AppEvent)
+    push({
+      stage: 'installing',
+      supported: true,
+      spec: (REPLIES['local.status'] as { spec: unknown }).spec,
+      runtime: { installed: true, build: 'b11026' },
+      model: { installed: false, bytes: 1_000_000_000 },
+      diskBytes: 1_011_000_000,
+      progress: {
+        what: 'model',
+        label: 'Qwen2.5 3B Instruct',
+        received: 1_052_466_384,
+        total: 2_104_932_768
+      }
+    })
+    await settle()
+    const mid = downloading.textContent ?? ''
+    check(
+      'a download reports how far it has got, in both halves of the row',
+      mid.includes('The weights — 1.1 GB of 2.1 GB') && mid.includes('50%'),
+      mid
+    )
+    check(
+      'and says the bytes are checked before anything runs',
+      mid.includes('checksum'),
+      mid
+    )
+
+    push({
+      stage: 'running',
+      supported: true,
+      spec: (REPLIES['local.status'] as { spec: unknown }).spec,
+      runtime: { installed: true, build: 'b11026', version: '11026' },
+      model: { installed: true, bytes: 2_104_932_768 },
+      diskBytes: 2_140_000_000,
+      port: 51763
+    })
+    await settle()
+    const up = downloading.textContent ?? ''
+    check(
+      'once it is up the row says where, and offers to stop it',
+      up.includes('127.0.0.1:51763') && up.includes('Stop'),
+      up
+    )
+    check(
+      'and explains what the app configured, rather than asking for it',
+      up.includes('How it is configured') && up.includes('local/qwen2.5-3b-instruct'),
+      up
+    )
+    check('with the build it is running', up.includes('llama.cpp b11026'), up)
+  }
+
   console.log(`\n${checks - failures.length}/${checks} checks passed`)
   if (failures.length > 0) {
     console.log(`\nfailed:\n${failures.map((f) => `  - ${f}`).join('\n')}`)
@@ -1008,6 +1156,45 @@ async function run(): Promise<void> {
       }
     })
     mount(<ModelsTab />, 900)
+    await settle()
+    // The local row in the state worth looking at: installed and answering.
+    pushEvent({
+      type: 'local.status',
+      status: {
+        stage: 'running',
+        supported: true,
+        spec: (REPLIES['local.status'] as { spec: never }).spec,
+        runtime: { installed: true, build: 'b11026', version: '11026' },
+        model: { installed: true, bytes: 2_104_932_768 },
+        diskBytes: 2_140_000_000,
+        port: 51763
+      }
+    } as AppEvent)
+    await settle()
+  }
+
+  // The local row on its own, in the state that has the most to say.
+  if (new URLSearchParams(location.search).get('shot') === 'local') {
+    document.body.innerHTML = ''
+    mount(<LocalModelSection />, 900)
+    await settle()
+    pushEvent({
+      type: 'local.status',
+      status: {
+        stage: 'installing',
+        supported: true,
+        spec: (REPLIES['local.status'] as { spec: never }).spec,
+        runtime: { installed: true, build: 'b11026' },
+        model: { installed: false, bytes: 1_262_959_660 },
+        diskBytes: 1_298_000_000,
+        progress: {
+          what: 'model',
+          label: 'Qwen2.5 3B Instruct',
+          received: 1_262_959_660,
+          total: 2_104_932_768
+        }
+      }
+    } as AppEvent)
     await settle()
   }
 

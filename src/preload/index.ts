@@ -17,6 +17,7 @@ import type {
 } from '@shared/types'
 import type { Savings } from '@shared/savings'
 import type { DiscoveredModel } from '@shared/catalog'
+import type { LocalModelStatus } from '@shared/local-model'
 
 const api = {
   config: {
@@ -70,6 +71,17 @@ const api = {
   meter: {
     get: (): Promise<Record<string, MeterEntry>> => ipcRenderer.invoke('meter:get'),
     reset: (): Promise<Record<string, MeterEntry>> => ipcRenderer.invoke('meter:reset')
+  },
+  /** The model that runs on this machine, and the sidecar that serves it. */
+  local: {
+    status: (): Promise<LocalModelStatus> => ipcRenderer.invoke('local:status'),
+    install: (modelId?: string): Promise<LocalModelStatus> =>
+      ipcRenderer.invoke('local:install', modelId),
+    start: (modelId?: string): Promise<LocalModelStatus> =>
+      ipcRenderer.invoke('local:start', modelId),
+    stop: (): Promise<LocalModelStatus> => ipcRenderer.invoke('local:stop'),
+    remove: (modelId?: string): Promise<LocalModelStatus> =>
+      ipcRenderer.invoke('local:remove', modelId)
   },
   rtk: {
     status: (

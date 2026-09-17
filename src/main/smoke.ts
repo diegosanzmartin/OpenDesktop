@@ -35,7 +35,7 @@ import { createServer } from 'node:http'
 import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as store from './store'
@@ -115,6 +115,24 @@ import { approvalDetail, approvalQuestion } from '@shared/approvals'
 import { mentionToken, mentionedAgents, splitMentions } from '@shared/mentions'
 import { extensionOf, fileSize, isDocument } from '@shared/documents'
 import { costOf, formatCost } from '@shared/cost'
+import {
+  LLAMA_BINARIES,
+  LLAMA_BUILD,
+  LOCAL_BASE_URL,
+  LOCAL_MODELS,
+  formatBytes,
+  isLocalProvider,
+  llamaBinaryFor,
+  llamaUrl,
+  localSpec,
+  modelUrl
+} from '@shared/local-model'
+import {
+  downloadVerified,
+  localProviderConfig,
+  unpackRuntime,
+  unsafeEntry
+} from './local-model'
 import { budgetFor, contextShare } from '@shared/context'
 import { MANAGER_AGENT, isManager } from '@shared/types'
 import { familyOf, highlight, isShell, looksLikePath, terminalPayload } from '@shared/highlight'
@@ -5923,6 +5941,349 @@ async function main(): Promise<void> {
 
     rmSync(room, { recursive: true, force: true })
     forgetRtkStatus()
+  }
+
+
+  section('a model that runs on this machine')
+  {
+    providers.setModelResolverOverride(null)
+
+    /*
+     * The pinned data first, because everything else trusts it. An asset name
+     * that does not exist, or a hash that is not a hash, is a failed install
+     * minutes into a download — and none of it is discoverable at runtime,
+     * which is the whole point of pinning it.
+     */
+    for (const binary of LLAMA_BINARIES) {
+      check(
+        `${binary.platform}/${binary.arch} is pinned to one verifiable asset`,
+        /^[0-9a-f]{64}$/.test(binary.sha256) &&
+          binary.bytes > 1_000_000 &&
+          binary.asset.includes(LLAMA_BUILD) &&
+          llamaUrl(binary).startsWith('https://github.com/ggml-org/llama.cpp/releases/download/'),
+        binary
+      )
+    }
+    check(
+      'this machine has a build',
+      Boolean(llamaBinaryFor(process.platform, process.arch)),
+      `${process.platform}/${process.arch}`
+    )
+    check(
+      'a platform llama.cpp does not build for is simply not offered',
+      llamaBinaryFor('freebsd', 'riscv64') === undefined
+    )
+    for (const spec of LOCAL_MODELS) {
+      check(
+        `${spec.id} is pinned to a file with a size and a hash`,
+        /^[0-9a-f]{64}$/.test(spec.sha256) &&
+          spec.bytes > 100_000_000 &&
+          modelUrl(spec) === `https://huggingface.co/${spec.repo}/resolve/main/${spec.file}`,
+        spec.id
+      )
+    }
+    check('the default model is the first one', localSpec().id === LOCAL_MODELS[0].id)
+    check('and one can be asked for by name', localSpec('qwen3-4b').id === 'qwen3-4b')
+    check(
+      'an unknown name falls back rather than crashing',
+      localSpec('nope').id === LOCAL_MODELS[0].id
+    )
+
+    check(
+      'an archive entry that writes outside its directory is refused',
+      ['/etc/cron.d/x', 'a/../../b', 'C:\\windows\\x', '../x'].every(unsafeEntry),
+      ['/etc/cron.d/x', 'a/../../b', 'C:\\windows\\x', '../x'].map(unsafeEntry)
+    )
+    check(
+      'and an ordinary entry is not',
+      !unsafeEntry(`llama-${LLAMA_BUILD}/llama-server`) && !unsafeEntry('dir/libggml.dylib')
+    )
+
+    const room = join(tmpdir(), `opendesktop-local-${Date.now()}`)
+    mkdirSync(join(room, 'serve'), { recursive: true })
+
+    // A stand-in for a release, in the shape the installer expects: one
+    // directory, one llama-server, one library beside it.
+    const staging = join(room, `llama-${LLAMA_BUILD}`)
+    mkdirSync(staging, { recursive: true })
+    writeFileSync(join(staging, 'llama-server'), '#!/bin/sh\necho "version: 0.4.1-dev (build 11026)"\n')
+    writeFileSync(join(staging, 'libggml.dylib'), 'not really a library')
+    const archive = join(room, 'serve', 'release.tar.gz')
+    await new Promise<void>((done, broke) => {
+      const tar = spawn('tar', ['-czf', archive, '-C', room, `llama-${LLAMA_BUILD}`])
+      tar.on('close', (code) => (code === 0 ? done() : broke(new Error(`tar exited ${code}`))))
+    })
+    const archiveBytes = statSync(archive).size
+    const archiveHash = createHash('sha256').update(readFileSync(archive)).digest('hex')
+
+    const served = createServer((req, res) => {
+      const body = readFileSync(archive)
+      const range = /bytes=(\d+)-/.exec(req.headers.range ?? '')
+      if (range) {
+        const from = Number(range[1])
+        res.writeHead(206, {
+          'content-range': `bytes ${from}-${body.length - 1}/${body.length}`,
+          'content-length': String(body.length - from)
+        })
+        res.end(body.subarray(from))
+        return
+      }
+      res.writeHead(200, { 'content-length': String(body.length) })
+      res.end(body)
+    })
+    await new Promise<void>((done) => served.listen(0, '127.0.0.1', () => done()))
+    const servedPort = (served.address() as { port: number }).port
+    const servedUrl = `http://127.0.0.1:${servedPort}/release.tar.gz`
+
+    // What the renderer draws a progress bar from.
+    const reported: number[] = []
+    const watching = bus.subscribe((event) => {
+      if (event.type === 'local.status' && event.status.progress) {
+        reported.push(event.status.progress.received)
+      }
+    })
+
+    const target = join(room, 'downloaded.tar.gz')
+    await downloadVerified(
+      servedUrl,
+      target,
+      { bytes: archiveBytes, sha256: archiveHash },
+      { what: 'runtime', label: 'the stand-in runtime' }
+    )
+    check(
+      'a download that matches its hash is kept',
+      existsSync(target) && statSync(target).size === archiveBytes
+    )
+    check('and the partial file is not left behind', !existsSync(`${target}.part`))
+    check(
+      'progress was reported while it ran, up to the whole file',
+      reported.length > 0 && reported[reported.length - 1] === archiveBytes,
+      reported.slice(-3)
+    )
+
+    /*
+     * The same download, expected to be something else. This is the check that
+     * stands between a compromised mirror and an executable on the machine, so
+     * it is not enough that it fails: nothing may be left behind to run later.
+     */
+    const tampered = join(room, 'tampered.tar.gz')
+    const refused = await downloadVerified(
+      servedUrl,
+      tampered,
+      { bytes: archiveBytes, sha256: '0'.repeat(64) },
+      { what: 'runtime', label: 'a tampered runtime' }
+    ).then(
+      () => null,
+      (err: Error) => err
+    )
+    check('a download that does not match its hash is refused', refused !== null, refused?.message)
+    check(
+      'and says so in terms of the checksum rather than of the network',
+      /checksum/.test(refused?.message ?? ''),
+      refused?.message
+    )
+    check(
+      'nothing is left on disk to be run later',
+      !existsSync(tampered) && !existsSync(`${tampered}.part`)
+    )
+
+    // An interrupted download: half the bytes already there, and a server that
+    // honours the range. The hash still has to match — resuming is the easiest
+    // way to end up with the right length and the wrong content.
+    const resumed = join(room, 'resumed.tar.gz')
+    writeFileSync(`${resumed}.part`, readFileSync(archive).subarray(0, Math.floor(archiveBytes / 2)))
+    await downloadVerified(
+      servedUrl,
+      resumed,
+      { bytes: archiveBytes, sha256: archiveHash },
+      { what: 'runtime', label: 'an interrupted runtime' }
+    )
+    check(
+      'an interrupted download is finished rather than started again',
+      existsSync(resumed) &&
+        createHash('sha256').update(readFileSync(resumed)).digest('hex') === archiveHash
+    )
+    watching()
+
+    // Unpacking: the listing is checked before anything is written, and what
+    // comes back is the binary rather than the directory holding it.
+    const unpacked = join(room, 'unpacked')
+    const serverPath = await unpackRuntime(target, unpacked)
+    check('unpacking answers with the server binary itself', serverPath.endsWith('llama-server'), serverPath)
+    check('and the libraries beside it came too', existsSync(join(serverPath, '..', 'libggml.dylib')))
+
+    if (existsSync('/etc/hosts')) {
+      const nasty = join(room, 'nasty.tar.gz')
+      await new Promise<void>((done) => {
+        const tar = spawn('tar', ['-P', '-czf', nasty, '/etc/hosts'], { stdio: 'ignore' })
+        tar.on('close', () => done())
+      })
+      const blocked = await unpackRuntime(nasty, join(room, 'blocked')).then(
+        () => null,
+        (err: Error) => err
+      )
+      check(
+        'an archive holding an absolute path is not extracted at all',
+        blocked !== null && !existsSync(join(room, 'blocked', 'etc')),
+        blocked?.message
+      )
+    }
+
+    served.close()
+
+    /*
+     * What the app declares for itself. A local model has to arrive
+     * configured — that is the whole difference between this and installing
+     * Ollama — so the provider, the model, its window and how it is paid for
+     * are decided here rather than typed by anybody.
+     */
+    const spec = localSpec()
+    const declared = localProviderConfig(undefined, spec)
+    check(
+      'the local provider is declared as an OpenAI-compatible endpoint',
+      declared.npm === '@ai-sdk/openai-compatible'
+    )
+    check(
+      'pointed at the sidecar rather than at a port that will have moved',
+      declared.options.baseURL === LOCAL_BASE_URL && isLocalProvider(declared)
+    )
+    check(
+      'and with no apiKey key at all, which is not the same as an empty one',
+      !('apiKey' in declared.options),
+      declared.options
+    )
+    check(
+      'the model comes with the window it will actually be served with',
+      declared.models[spec.id]?.contextWindow === spec.contextWindow,
+      declared.models[spec.id]
+    )
+    check(
+      'declared as flat rate and free, because both are true',
+      declared.models[spec.id]?.billing === 'flat' &&
+        declared.models[spec.id]?.price?.input === 0 &&
+        declared.models[spec.id]?.price?.output === 0
+    )
+    check(
+      'a second install does not overwrite what was adjusted by hand',
+      localProviderConfig(
+        { ...declared, models: { [spec.id]: { ...declared.models[spec.id], iq: 4, name: 'Mine' } } },
+        spec
+      ).models[spec.id].iq === 4
+    )
+
+    const withLocal = normalizeConfig({
+      model: `local/${spec.id}`,
+      provider: {
+        local: declared,
+        anthropic: {
+          id: 'anthropic',
+          npm: '@ai-sdk/anthropic',
+          name: 'Anthropic',
+          options: { apiKey: 'sk-test' },
+          models: {
+            big: { id: 'big', name: 'Big', iq: 5, cost: 4, price: { input: 5, output: 25 } }
+          }
+        }
+      }
+    } as unknown as Record<string, unknown>)
+
+    check(
+      'a local model costs nothing, and nothing is a number rather than a blank',
+      costOf(withLocal, `local/${spec.id}`, { input: 40_000, output: 2_000 }) === 0
+    )
+    const delegated = pickModel(withLocal, 'delegate')
+    check(
+      'reading is delegated to the model that is already paid for',
+      delegated?.ref === `local/${spec.id}`,
+      delegated
+    )
+    const planned = pickModel(withLocal, 'plan')
+    check(
+      'and a plan is not asked of a 3B model just because it is free',
+      planned?.ref === 'anthropic/big',
+      planned
+    )
+
+    /*
+     * And what happens when there is already a flat-rate model that is better:
+     * nothing. Both are free at the margin, so the tie is broken on capability
+     * and the local one sits there — which is the point of having it. It is
+     * what still works when nothing else is paid for, not a downgrade applied
+     * to every turn.
+     */
+    const withBoth = normalizeConfig({
+      model: 'helmcode/glm5.3-flash',
+      provider: {
+        local: declared,
+        helmcode: {
+          id: 'helmcode',
+          npm: '@ai-sdk/openai-compatible',
+          name: 'Helmcode',
+          options: { baseURL: 'https://api.helmcode.com/v1', apiKey: 'set' },
+          models: {
+            'glm5.3-flash': { id: 'glm5.3-flash', name: 'GLM 5.3 Flash', billing: 'flat', iq: 3, cost: 1 }
+          }
+        }
+      }
+    } as unknown as Record<string, unknown>)
+    check(
+      'a better model that is also already paid for keeps the work',
+      pickModel(withBoth, 'delegate')?.ref === 'helmcode/glm5.3-flash',
+      pickModel(withBoth, 'delegate')
+    )
+    check(
+      'and the local one takes it over the moment that key is empty',
+      pickModel(
+        normalizeConfig({
+          provider: {
+            local: declared,
+            helmcode: {
+              id: 'helmcode',
+              npm: '@ai-sdk/openai-compatible',
+              name: 'Helmcode',
+              options: { baseURL: 'https://api.helmcode.com/v1', apiKey: '' },
+              models: {
+                'glm5.3-flash': { id: 'glm5.3-flash', name: 'GLM 5.3 Flash', billing: 'flat', iq: 3, cost: 1 }
+              }
+            }
+          }
+        } as unknown as Record<string, unknown>),
+        'delegate'
+      )?.ref === `local/${spec.id}`
+    )
+
+    /*
+     * The one error a local provider must never produce is the missing-key
+     * one: it has no key, so the app has to say what is actually wrong —
+     * nothing is installed — instead of sending somebody to look for an
+     * environment variable that was never involved.
+     */
+    const unresolvable = await providers
+      .resolveModel(withLocal, `local/${spec.id}`)
+      .then(() => null, (err: Error) => err)
+    check(
+      'resolving a local model with nothing installed says exactly that',
+      unresolvable !== null && /not installed|not downloaded/.test(unresolvable.message),
+      unresolvable?.message
+    )
+    check(
+      'and never blames a missing API key',
+      !/API key/i.test(unresolvable?.message ?? ''),
+      unresolvable?.message
+    )
+
+    check(
+      'a provider reached over the network is not mistaken for a local one',
+      !isLocalProvider({ options: { baseURL: 'https://api.helmcode.com/v1' } }) &&
+        !isLocalProvider({ options: {} })
+    )
+    check(
+      'sizes are written the way they are read',
+      formatBytes(2_104_932_768) === '2.1 GB' && formatBytes(11_156_751) === '11 MB',
+      [formatBytes(2_104_932_768), formatBytes(11_156_751)]
+    )
+
+    rmSync(room, { recursive: true, force: true })
   }
 
   // Leave no smoke sessions behind.

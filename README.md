@@ -122,6 +122,42 @@ it is labelled that way in the UI. At nine tenths and again when it is gone, the
 app says so once per period rather than at every turn. A model that declares its
 own `allowance` is judged on its own spend instead of the key's.
 
+### A model on this machine
+
+**Providers & keys** ends with *On this machine*: one row, one button, and a model that runs
+here with no key and no account. Pressing it downloads llama.cpp's `llama-server` for this
+platform and one curated GGUF, verifies both, declares the provider, fills in the model and
+starts the server — which is how you find out it worked without pressing anything else. Nothing
+else is installed: no Ollama, no launch agent, no second app to keep running, because the
+server is this app's own child process and goes when it does.
+
+|  | Where it goes |
+| --- | --- |
+| Runtime | `~/.opendesktop/llama/<build>/` (an 11 MB download, ~27 MB once unpacked) |
+| Weights | `~/.opendesktop/models/<file>.gguf` (2.1 GB for the default model) |
+
+Both downloads are pinned: the build, the asset names, the byte counts and the SHA-256s are
+written into the app, so a download that does not match the thing this version was built
+against is deleted rather than executed — and moving to a newer llama.cpp is an app update
+rather than a silent change under someone's feet. An interrupted download resumes, and what is
+already on disk is re-hashed rather than assumed. An archive containing an absolute path or a
+`..` is refused before anything is extracted.
+
+The provider is declared for you as `local/<model>`, pointed at `local://llama` rather than at
+a port: the server takes a free one each time it starts, and the address is substituted when a
+model is resolved — which is also what starts it. So the first turn routed here waits a few
+seconds for the weights to load and every turn after it does not. It is given a fresh API key
+per start, because localhost is shared with everything else on the machine. Fifteen minutes
+with nothing asking and it shuts down again, giving the memory back.
+
+It is declared as **flat rate** at a price of zero, both of which are true, so at the margin it
+is the cheapest thing the router knows about — and at `iq` 2 it only wins work a small model can
+actually do. With a stronger flat-rate model configured, that means it mostly sits there, which
+is the intended outcome: it is the thing that still works when nothing else is paid for.
+
+`pnpm local:check` does the whole thing for real — install, start, a completion through the
+normal resolver, and the tokens per second it managed — and leaves the config as it found it.
+
 ### API keys
 
 A key pasted into **Models & providers** is encrypted with Electron's `safeStorage` — on
@@ -427,3 +463,7 @@ src/shared/      Types shared across all three
 State is written to `~/.local/share/opendesktop/`: `sessions/` holds the UI transcript,
 `history/` the model-facing transcript. They are deliberately separate — the UI one is shaped
 for reading, the model one is what goes back on the next turn.
+
+Anything the app downloads for itself lives apart from that, under `~/.opendesktop/`: `bin/` for
+rtk, `llama/` for the local model's runtime and `models/` for its weights. Large, replaceable
+and safe to delete — none of it is state.

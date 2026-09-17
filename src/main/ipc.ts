@@ -17,6 +17,13 @@ import { getRuntime, resetRuntimes, testEnvironment } from './runtime'
 import { cachedRtkStatus, forgetRtkStatus, rtkStatus } from './rtk'
 import { browse, dirIndex, forgetDirIndex, searchRoot } from './browse'
 import { installRtk } from './rtk'
+import {
+  installLocalModel,
+  localStatus,
+  removeLocalModel,
+  startLocalModel,
+  stopLocalModel
+} from './local-model'
 import { meterSnapshot, resetMeter } from './meter'
 import { logLine, logPath } from './log'
 import { listSshAliases } from './runtime/ssh'
@@ -205,6 +212,31 @@ export function registerIpc(): void {
     logLine(result.ok ? 'info' : 'warn', `rtk install on ${environmentId}: ${result.message}`)
     bus.emit({ type: 'toast', level: result.ok ? 'info' : 'error', message: result.message })
     return result
+  })
+
+  /*
+   * The model that runs on this machine.
+   *
+   * Install is one call on purpose: it fetches the runtime, fetches the
+   * weights, verifies both, declares the provider and fills in the model, so
+   * the only thing the page has to know is that it takes a few minutes. Every
+   * one of these answers with the whole status, and the same status is pushed
+   * on the bus while a download is running.
+   */
+  ipcMain.handle('local:status', () => localStatus())
+  ipcMain.handle('local:install', async (_e, modelId?: string) => {
+    const status = await installLocalModel(modelId)
+    // It declared a provider while we were waiting, so what was resolved
+    // before is a provider list that did not have it in it.
+    invalidateProviderCache()
+    return status
+  })
+  ipcMain.handle('local:start', (_e, modelId?: string) => startLocalModel(modelId))
+  ipcMain.handle('local:stop', () => stopLocalModel('you stopped it'))
+  ipcMain.handle('local:remove', (_e, modelId?: string) => {
+    const status = removeLocalModel(modelId)
+    invalidateProviderCache()
+    return status
   })
 
   /* ---------- models & environments ---------- */

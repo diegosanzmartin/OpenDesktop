@@ -4,7 +4,9 @@ import { createAnthropic } from '@ai-sdk/anthropic'
 import { createGoogleGenerativeAI } from '@ai-sdk/google'
 import type { LanguageModel } from 'ai'
 import type { AppConfig } from '@shared/types'
+import { isLocalProvider } from '@shared/local-model'
 import { loadConfig } from './config'
+import { ensureLocalModel } from './local-model'
 
 export interface ResolvedModel {
   providerId: string
@@ -55,11 +57,32 @@ async function providerFor(
     )
   }
 
-  const key = `${providerId}:${JSON.stringify(provider.options)}:${provider.npm}`
+  const options: Record<string, unknown> = { ...provider.options }
+
+  /*
+   * The model that runs on this machine is reached like any other
+   * OpenAI-compatible endpoint, and the address is the one thing about it that
+   * cannot be written down: the sidecar takes a free port each time it starts.
+   * So the config holds `local://llama` and it is substituted here — which is
+   * also what starts the server, since this is the moment it is about to be
+   * used. The key is generated per start and never stored anywhere.
+   */
+  if (isLocalProvider(provider)) {
+    const live = await ensureLocalModel()
+    options.baseURL = live.baseURL
+    options.apiKey = live.apiKey
+    // Its own fetch, so a request counts as the model being used and the idle
+    // timer does not stop a server in the middle of a long turn.
+    options.fetch = live.fetch
+  }
+
+  // Keyed on the options as resolved, so a sidecar that came back on another
+  // port is a different instance rather than a cached one pointing at a
+  // port nothing is listening on any more.
+  const key = `${providerId}:${JSON.stringify(options)}:${provider.npm}`
   const cached = cache.get(key)
   if (cached) return cached
 
-  const options: Record<string, unknown> = { ...provider.options }
   if (provider.npm === '@ai-sdk/openai-compatible') {
     options.name = provider.id
     // An OpenAI-compatible endpoint reports no token usage while streaming
@@ -103,7 +126,13 @@ export async function resolveModel(config: AppConfig, ref: string): Promise<Reso
   if (!apiKey && config.provider[providerId]?.npm !== '@ai-sdk/openai-compatible') {
     // Other providers read their own env vars; only warn for compat providers below.
   }
-  if (!apiKey && config.provider[providerId]?.npm === '@ai-sdk/openai-compatible') {
+  const localProvider = config.provider[providerId]
+    ? isLocalProvider(config.provider[providerId])
+    : false
+
+  // A local server needs no key from anybody: it is handed a fresh one at
+  // every start, which `providerFor` above has already injected.
+  if (!apiKey && !localProvider && config.provider[providerId]?.npm === '@ai-sdk/openai-compatible') {
     /*
      * Never the value, and never a guess at the cause. This used to say "make
      * sure that environment variable is exported" whatever the placeholder

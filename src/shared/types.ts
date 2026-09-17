@@ -2,6 +2,7 @@
 
 import type { LegacyMode, Savings } from './savings'
 import type { Billing } from './routing'
+import type { LocalModelStatus } from './local-model'
 
 export type BlockStatus = 'pending' | 'awaiting-approval' | 'running' | 'success' | 'error' | 'canceled'
 
@@ -620,3 +621,9 @@ export type AppEvent =
   | { type: 'terminal.data'; terminalId: string; chunk: string }
   | { type: 'terminal.exit'; terminalId: string; code: number }
   | { type: 'toast'; level: 'info' | 'warn' | 'error'; message: string }
+  /**
+   * The state of the model that runs on this machine: what is downloaded,
+   * how far a download has got, and whether the server is up. A progress bar
+   * cannot be polled into existence, and the install is minutes long.
+   */
+  | { type: 'local.status'; status: LocalModelStatus }

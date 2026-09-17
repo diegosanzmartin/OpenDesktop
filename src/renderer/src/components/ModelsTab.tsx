@@ -15,6 +15,7 @@ import {
 } from '@shared/routing'
 import { useStore } from '../state/store'
 import { Hint, IconButton, Row, RowInput, RowSelect, RowSlider, Section } from './settings-ui'
+import { LocalModelSection } from './LocalModelSection'
 import { limitLabel, money, spendLabel, useConfigDraft, useSpend } from '../lib/settings'
 
 const PRESETS = PROVIDER_PRESETS
@@ -815,6 +816,8 @@ export function ModelsTab(): ReactNode {
           <Row label={<Hint>Add one to make a model selectable.</Hint>} />
         </Section>
       )}
+
+      <LocalModelSection />
     </>
   )
 }
