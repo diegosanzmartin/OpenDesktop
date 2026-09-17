@@ -534,7 +534,19 @@ export function Composer({ session }: { session: Session }): ReactNode {
 
   const submit = (): void => {
     const value = text.trim()
-    if ((!value && attachments.length === 0) || busy) return
+    if (!value && attachments.length === 0) return
+    /*
+     * Sending while it works queues the message rather than refusing it: the
+     * thought is now, and the turn may have ten minutes left. Attachments wait
+     * for a turn of their own — a file only means something alongside the
+     * message it came with, and that message is going later.
+     */
+    if (busy) {
+      setText('')
+      setMenu(null)
+      void send(value, [])
+      return
+    }
     setText('')
     setMenu(null)
     setAttachError(null)
@@ -715,6 +727,16 @@ export function Composer({ session }: { session: Session }): ReactNode {
           </button>
           </div>
         </div>
+
+        {busy && (text.trim() || (session.queuedFollowUps?.length ?? 0) > 0) ? (
+          <div className="text-ink-500 mt-1.5 px-1 text-[11.5px]">
+            {text.trim()
+              ? '↵ adds this to the queue — it goes as the next turn when this one stops.'
+              : `${session.queuedFollowUps?.length} message${
+                  (session.queuedFollowUps?.length ?? 0) === 1 ? '' : 's'
+                } queued — they go when this turn stops.`}
+          </div>
+        ) : null}
 
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 px-1">
           <button

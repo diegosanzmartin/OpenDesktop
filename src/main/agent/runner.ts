@@ -41,6 +41,23 @@ export function isRunning(sessionId: string): boolean {
   return controllers.has(sessionId)
 }
 
+/**
+ * Adds something to say to a turn that is already running.
+ *
+ * It is not delivered mid-turn. The model is in the middle of a step with a
+ * prefix it has already been charged for, and splicing a message into that is
+ * how a tool call ends up answered by the wrong turn. It goes as the next turn
+ * instead, the moment this one stops — which is what the person meant by
+ * typing it, and what other clients do with the same gesture.
+ */
+export function queueFollowUp(sessionId: string, text: string): void {
+  const session = store.getSession(sessionId)
+  if (!session || !text.trim()) return
+  store.updateSession(sessionId, {
+    queuedFollowUps: [...(session.queuedFollowUps ?? []), text.trim()]
+  })
+}
+
 export function stop(sessionId: string): void {
   cancelSessionApprovals(sessionId)
   controllers.get(sessionId)?.abort()
@@ -769,8 +786,13 @@ export async function runTurn(input: TurnInput): Promise<string> {
   const sayBudgetStop = (): void => {
     if (!budgetStop || budgetSaid) return
     budgetSaid = true
+    // The whole sentence in the transcript, where there is room to read it; a
+    // short one on the card, which is a line in a column.
     store.pushPart(session.id, assistant.id, { type: 'error', text: budgetStop })
-    store.updateSession(session.id, { status: 'blocked', blockedReason: budgetStop })
+    store.updateSession(session.id, {
+      status: 'blocked',
+      blockedReason: 'Stopped at its own ceiling — reply to carry on, or raise it under Routing.'
+    })
     bus.emit({ type: 'toast', level: 'warn', message: budgetStop })
   }
 
@@ -802,6 +824,11 @@ export async function runTurn(input: TurnInput): Promise<string> {
   /** The first step's numbers, which say whether the prefix carried over. */
   let firstStepInput = 0
   let firstStepCacheRead = 0
+
+  /** What this turn has actually been charged for, cache reads excluded. */
+  const spent = (): number => Math.max(0, usedInput - cacheRead) + usedOutput
+  const cacheShareLabel = (): string =>
+    usedInput > 0 ? `${Math.round((cacheRead / usedInput) * 100)}%` : '0%'
 
   const creditSession = (input: number, output: number, cost: number | null): void => {
     const deltaInput = Math.max(0, input - creditedInput)
@@ -949,6 +976,36 @@ export async function runTurn(input: TurnInput): Promise<string> {
       tools,
       temperature: agent.temperature,
       stopWhen: stepCountIs(config.maxSteps),
+      /*
+       * Told before it is cut off.
+       *
+       * A hard stop is a bad way to end a turn: whatever the agent was halfway
+       * through is halfway through, and the user gets a sentence about limits
+       * instead of an answer. Past 60% of what the turn may spend it is told
+       * what is left, at the end of the messages so the prefix — and the
+       * cache — is untouched. The ceiling stays as the backstop it should be.
+       */
+      prepareStep: ({ messages: soFar, stepNumber }) => {
+        const ceiling = config.maxTurnTokens ?? 0
+        if (ceiling <= 0 || stepNumber === 0) return {}
+        const used = spent()
+        if (used < ceiling * 0.6) return {}
+        const left = Math.max(0, ceiling - used)
+        return {
+          messages: [
+            ...soFar,
+            {
+              role: 'user',
+              content:
+                `<budget>This turn has been charged for ${used.toLocaleString('en-US')} tokens of ` +
+                `the ${ceiling.toLocaleString('en-US')} it may spend; about ` +
+                `${left.toLocaleString('en-US')} are left. Bring what you are doing to a close and ` +
+                `report what you have — findings, what is still open, and what you would do next. ` +
+                `Do not start anything new, and do not re-read what you have already read.</budget>`
+            }
+          ]
+        }
+      },
       // Providers emit text in lumps of wildly varying size — a whole paragraph
       // in one chunk, then three characters. Re-chunking by word at a steady
       // cadence makes the transcript read as it is written instead of jumping.
@@ -1069,15 +1126,26 @@ export async function runTurn(input: TurnInput): Promise<string> {
           })
           creditSession(usedInput, usedOutput, so_far)
 
+          /*
+           * What the turn is charged for, not what it resent.
+           *
+           * Every step resends the conversation, and on a provider that caches
+           * the prefix almost all of that comes back as a cache read at a tenth
+           * of the price or none at all. Counting the raw total stopped a real
+           * investigation at "787,625 tokens" that had actually been charged
+           * for 59,107 of them — 92% of its input was cache. The ceiling exists
+           * to end a runaway, and a runaway is measured in what it spends.
+           */
           const ceiling = config.maxTurnTokens ?? 0
-          const spentSoFar = usedInput + usedOutput
+          const spentSoFar = spent()
           if (ceiling > 0 && !budgetStop) {
             if (spentSoFar >= ceiling) {
               budgetStop =
                 `This turn stopped at its ceiling: ${spentSoFar.toLocaleString('en-US')} tokens ` +
-                `across ${steps} steps, against a limit of ${ceiling.toLocaleString('en-US')} ` +
-                `(maxTurnTokens). Nothing is lost — reply to carry on, or raise the limit in ` +
-                `Settings if this is ordinary work for this project.`
+                `charged across ${steps} steps — ${usedInput.toLocaleString('en-US')} sent, ` +
+                `${cacheShareLabel()} of it served from cache — against a limit of ` +
+                `${ceiling.toLocaleString('en-US')} (maxTurnTokens). Nothing is lost: reply to ` +
+                `carry on, or raise the limit under Routing & limits if this is ordinary work here.`
               logLine('warn', `turn ${session.id} hit maxTurnTokens (${spentSoFar} >= ${ceiling})`)
               controller.abort()
             } else if (!budgetWarned && spentSoFar > ceiling * 0.6) {
@@ -1087,8 +1155,9 @@ export async function runTurn(input: TurnInput): Promise<string> {
                 type: 'toast',
                 level: 'warn',
                 message:
-                  `This turn has spent ${spentSoFar.toLocaleString('en-US')} tokens of its ` +
-                  `${ceiling.toLocaleString('en-US')} ceiling.`
+                  `This turn has been charged for ${spentSoFar.toLocaleString('en-US')} tokens of ` +
+                  `its ${ceiling.toLocaleString('en-US')} ceiling (${usedInput.toLocaleString('en-US')} ` +
+                  `sent, ${cacheShareLabel()} from cache).`
               })
             }
           }
@@ -1235,6 +1304,23 @@ export async function runTurn(input: TurnInput): Promise<string> {
     controllers.delete(session.id)
     if (store.getSession(session.id)?.status === 'running') store.setSessionStatus(session.id, 'idle')
     store.flush()
+
+    /*
+     * Whatever was typed while this was running goes now, as its own turn.
+     *
+     * After the controller is released, so the turn it starts is not refused
+     * for the session already running; and not for a subagent, whose parent is
+     * the conversation a person is typing into.
+     */
+    const waiting = store.getSession(session.id)?.queuedFollowUps
+    if (waiting && waiting.length > 0 && (input.depth ?? 0) === 0) {
+      store.updateSession(session.id, { queuedFollowUps: undefined })
+      const text = waiting.join('\n\n')
+      logLine('info', `turn ${session.id} picking up ${waiting.length} queued message(s)`)
+      void runTurn({ sessionId: session.id, userText: text }).catch(() => {
+        // runTurn records its own failures; nothing to add here.
+      })
+    }
   }
 
   return input.collectFinalText ? finalText : ''

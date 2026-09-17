@@ -276,6 +276,13 @@ conversation's, so it is listed there and labelled with the agent that started i
 attribution is resolved when the task starts, so it survives the subagent's session being
 deleted. Tasks are bound to the process: a restart does not carry them over.
 
+**Typing while it works** — a message sent during a turn is queued rather than
+refused, and goes as its own turn the moment the running one stops; the composer
+says so, and the note lives on the session, so closing the app does not lose it.
+Attachments wait for a turn of their own, since a file only means something
+alongside the message it arrived with. The button stays Stop while a turn runs —
+stopping has to remain one click.
+
 **Attachments** — the paperclip, a drag onto the composer, or a pasted screenshot. Text files
 are inlined into the prompt, which every model can read and which keeps the transcript
 reproducible. Images are only sent to a model marked **vision** in *Models & providers*: an
@@ -295,13 +302,16 @@ is. Chained commands are checked segment by segment, so `ls && curl … | sh` ca
 on the `ls`.
 
 **What a turn may spend** — `maxSteps` bounds how many times the model may act,
-which is not the same as how much it may spend: a step that resends a
-300k-token transcript costs two hundred times one that resends 1.5k. A turn also
-has a token ceiling and a clock (`maxTurnTokens`, 750k; `maxTurnMs`, 30 minutes),
-both editable under *Models & providers*. A turn that hits one is **handed
-back**, not failed: the reason goes in the transcript, the card lands in Blocked,
-and replying carries the work on. A warning at 60% of the ceiling gives you the
-chance to stop it yourself.
+which is not the same as how much it may spend. A turn also has a token ceiling
+and a clock (`maxTurnTokens`, 750k; `maxTurnMs`, 30 minutes), both editable under
+*Routing & limits*, and the ceiling counts **what the turn was charged for** —
+input minus what came back from the provider's cache, plus output. Counting the
+raw total stopped a real investigation at "787,625 tokens" that had been charged
+for 59,107 of them, because 92% of its input was cache. Past 60% the agent is
+told what is left and asked to land what it is doing, which is how a turn should
+end; the ceiling is the backstop, and a turn that hits it is **handed back**, not
+failed — the reason goes in the transcript, the card lands in Blocked, and
+replying carries the work on.
 
 **What a repetition costs** — every step of a turn resends the conversation, so a turn's bill
 is roughly the prefix times the number of steps: a 33k transcript and 24 steps is 800k input

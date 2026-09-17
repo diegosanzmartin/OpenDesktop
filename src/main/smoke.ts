@@ -8,6 +8,7 @@
 import { MockLanguageModelV4 } from 'ai/test'
 import type { LanguageModel, ModelMessage } from 'ai'
 import {
+  DATA_DIR,
   defaultConfig,
   loadConfig,
   normalizeConfig,
@@ -41,7 +42,7 @@ import * as store from './store'
 import * as history from './history'
 import { dehydrate, estimateTokens, safeBoundary, shouldCompact } from './history'
 import { bus } from './bus'
-import { isRunning, runTurn, stop } from './agent/runner'
+import { isRunning, queueFollowUp, runTurn, stop } from './agent/runner'
 import { forkFrom, rewind } from './rewind'
 import { resolveApproval } from './approvals'
 import * as providers from './providers'
@@ -409,6 +410,50 @@ function expensiveLoopingModel(perStep: number): LanguageModel {
       }
     }
   })
+}
+
+/** A looping model whose input is mostly served from the provider's cache. */
+function cachingLoopModel(input: number, cached: number): LanguageModel {
+  let call = 0
+  return new MockLanguageModelV4({
+    doStream: async () => {
+      call++
+      const payload = JSON.stringify({ command: 'printf step', description: 'go round again' })
+      const done = call > 6
+      return {
+        stream: new ReadableStream({
+          start(controller) {
+            controller.enqueue({ type: 'stream-start', warnings: [] })
+            controller.enqueue({ type: 'response-metadata', id: `c-${call}`, modelId: 'mock' })
+            if (done) {
+              controller.enqueue({ type: 'text-start', id: 'ct' })
+              controller.enqueue({ type: 'text-delta', id: 'ct', delta: 'finished' })
+              controller.enqueue({ type: 'text-end', id: 'ct' })
+            } else {
+              controller.enqueue({ type: 'tool-input-start', id: `c-${call}`, toolName: 'bash' })
+              controller.enqueue({ type: 'tool-input-delta', id: `c-${call}`, delta: payload })
+              controller.enqueue({ type: 'tool-input-end', id: `c-${call}` })
+              controller.enqueue({
+                type: 'tool-call',
+                toolCallId: `c-${call}`,
+                toolName: 'bash',
+                input: payload
+              })
+            }
+            controller.enqueue({
+              type: 'finish' as const,
+              finishReason: { unified: done ? 'stop' : 'tool-calls', raw: done ? 'stop' : 'tool-calls' },
+              usage: {
+                inputTokens: { total: input, noCache: input - cached, cacheRead: cached, cacheWrite: 0 },
+                outputTokens: { total: 50, text: 50, reasoning: 0 }
+              }
+            })
+            controller.close()
+          }
+        })
+      }
+    }
+  }) as unknown as LanguageModel
 }
 
 /** The same, but reporting the input it wants — for the budget's arithmetic. */
@@ -4090,6 +4135,18 @@ async function main(): Promise<void> {
     const spent = stopped.usage.input + stopped.usage.output
     check('a turn that will not stop is stopped', spent >= 120_000, stopped.usage)
     check(
+      'and the reason says what it was charged for, not only what it resent',
+      (stopped.blockedReason ?? '').includes('own ceiling') &&
+        store
+          .listMessages(runaway.id)
+          .some((message) =>
+            message.parts.some(
+              (part) => part.type === 'error' && (part.text ?? '').includes('charged across')
+            )
+          ),
+      stopped.blockedReason
+    )
+    check(
       'and well before maxSteps would have done it',
       store.listBlocks(runaway.id).length < (defaultConfig().maxSteps ?? 60),
       store.listBlocks(runaway.id).length
@@ -4100,9 +4157,9 @@ async function main(): Promise<void> {
       stopped.status
     )
     check(
-      'the reason says what happened and what to do',
-      (stopped.blockedReason ?? '').includes('maxTurnTokens') &&
-        (stopped.blockedReason ?? '').includes('reply to carry on'),
+      'the card says what happened and what to do, in a line',
+      (stopped.blockedReason ?? '').includes('reply to carry on') &&
+        (stopped.blockedReason ?? '').length < 120,
       stopped.blockedReason
     )
     check(
@@ -4123,6 +4180,124 @@ async function main(): Promise<void> {
 
     store.deleteSession(runaway.id)
     history.clearHistory(runaway.id)
+    saveConfig(defaultConfig())
+  }
+
+  section('typing while it works')
+  {
+    /*
+     * Sending during a turn used to be refused in silence — the message was
+     * dropped and the thought with it. It queues instead, survives a restart
+     * because it is on the session, and goes as its own turn the moment the
+     * running one stops.
+     */
+    const talking = store.createSession({
+      title: 'follow-ups',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: 'build',
+      model: 'mock/mock',
+      autoApprove: true
+    })
+    history.clearHistory(talking.id)
+
+    queueFollowUp(talking.id, 'also check the second host')
+    queueFollowUp(talking.id, '  ')
+    queueFollowUp(talking.id, 'and the third')
+    check(
+      'what is typed mid-turn waits on the session',
+      (store.getSession(talking.id)?.queuedFollowUps ?? []).length === 2,
+      store.getSession(talking.id)?.queuedFollowUps
+    )
+    // Flushed the way the app flushes, then read back: a note typed mid-turn
+    // must survive the app being closed on top of it.
+    store.flush()
+    check(
+      'and it is on disk, not only in the process',
+      JSON.parse(
+        readFileSync(join(DATA_DIR, 'sessions', `${talking.id}.json`), 'utf8')
+      ).session.queuedFollowUps.length === 2
+    )
+
+    providers.setModelResolverOverride(() => ({
+      providerId: 'mock',
+      modelId: 'mock',
+      label: 'Mock',
+      model: replyingModel('answered')
+    }))
+    await runTurn({ sessionId: talking.id, userText: 'first question' })
+    // The follow-up turn is started from the finally block, so it is in flight
+    // rather than finished when runTurn returns.
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    providers.setModelResolverOverride(null)
+
+    check(
+      'when the turn ends they go as the next one',
+      (store.getSession(talking.id)?.queuedFollowUps ?? []).length === 0,
+      store.getSession(talking.id)?.queuedFollowUps
+    )
+    check(
+      'joined into one message, in the order they were typed',
+      store
+        .listMessages(talking.id)
+        .some(
+          (message) =>
+            message.role === 'user' &&
+            message.parts.some(
+              (part) =>
+                (part.text ?? '').includes('also check the second host') &&
+                (part.text ?? '').includes('and the third')
+            )
+        ),
+      store.listMessages(talking.id).map((m) => m.role)
+    )
+
+    store.deleteSession(talking.id)
+    history.clearHistory(talking.id)
+  }
+
+  section('a turn that resends is not a turn that spends')
+  {
+    /*
+     * A real investigation was stopped at "787,625 tokens" having been charged
+     * for 59,107 of them: 92% of its input came back as a cache read, because
+     * every step resends the conversation and the provider serves the prefix
+     * from cache. The ceiling exists to end a runaway, and a runaway is
+     * measured in what it spends.
+     */
+    saveConfig({ ...defaultConfig(), maxTurnTokens: 60_000, autoApprove: true })
+    const cachedSession = store.createSession({
+      title: 'cached',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: 'build',
+      model: 'mock/mock',
+      autoApprove: true
+    })
+    history.clearHistory(cachedSession.id)
+    providers.setModelResolverOverride(() => ({
+      providerId: 'mock',
+      modelId: 'mock',
+      label: 'Mock',
+      // 50k of input a step, 48k of it served from cache: 2k charged.
+      model: cachingLoopModel(50_000, 48_000)
+    }))
+    await runTurn({ sessionId: cachedSession.id, userText: 'go' })
+    providers.setModelResolverOverride(null)
+
+    const after = store.getSession(cachedSession.id)!
+    check(
+      'a turn whose input is mostly cache runs to the end of its steps',
+      after.status !== 'blocked',
+      { status: after.status, reason: after.blockedReason }
+    )
+    check(
+      'even though what it resent is many times the ceiling',
+      after.usage.input > 200_000,
+      after.usage
+    )
+    store.deleteSession(cachedSession.id)
+    history.clearHistory(cachedSession.id)
     saveConfig(defaultConfig())
   }
 

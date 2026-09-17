@@ -391,6 +391,15 @@ export interface Session {
    * throws that away; if it is not, shrinking it is free.
    */
   cacheShare?: number
+  /**
+   * What was typed while the turn was still running.
+   *
+   * Sending used to be refused outright, which is the wrong answer to "I have
+   * one more thing you should know": the thought is gone by the time the turn
+   * ends. They queue here instead, survive a restart, and go as the next turn
+   * the moment this one stops.
+   */
+  queuedFollowUps?: string[]
   /** Parent session when this was spawned by a `task` tool call. */
   parentSessionId?: string
   /** Short label for a subagent session, shown on its subchat. */

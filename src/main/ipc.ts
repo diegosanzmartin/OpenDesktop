@@ -22,7 +22,7 @@ import { logLine, logPath } from './log'
 import { listSshAliases } from './runtime/ssh'
 import * as store from './store'
 import * as history from './history'
-import { compactNow, isRunning, runTurn, stop } from './agent/runner'
+import { compactNow, isRunning, queueFollowUp, runTurn, stop } from './agent/runner'
 import { forkFrom, rewind } from './rewind'
 import { deniedSegment, listPending, resolveApproval, type ApprovalAnswer } from './approvals'
 import { previewOrigin, previewUrl } from './preview'
@@ -505,6 +505,16 @@ export function registerIpc(): void {
               : session.title
         })
         void tick()
+        return true
+      }
+
+      /*
+       * Typing while it works is not an error. The message waits and goes as
+       * the next turn the moment this one stops — the alternative was a silent
+       * refusal, and the thought being gone by the time the turn ended.
+       */
+      if (isRunning(sessionId)) {
+        queueFollowUp(sessionId, text)
         return true
       }
 
