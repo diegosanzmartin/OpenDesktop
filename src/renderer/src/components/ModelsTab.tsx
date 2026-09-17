@@ -1,53 +1,23 @@
 import clsx from 'clsx'
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Check, CircleAlert, Eye, EyeOff, Plus, Trash2 } from 'lucide-react'
-import type { AppConfig, MeterEntry, ProviderConfig } from '@shared/types'
-import { formatCost } from '@shared/cost'
+import type { ProviderConfig, ProviderModelConfig } from '@shared/types'
 import { PROVIDER_PRESETS, mergeDiscovered, presetFor } from '@shared/catalog'
-import { SWITCHES, savingsOf, type Savings } from '@shared/savings'
 import {
   BILLINGS,
   allowanceFor,
   allowanceUsed,
   capability,
   costTier,
-  pickModel,
   type Allowance,
   type Billing,
   type Spent
 } from '@shared/routing'
 import { useStore } from '../state/store'
-import { Hint, IconButton, Row, RowInput, RowSelect, RowSlider, Section, Toggle } from './settings-ui'
+import { Hint, IconButton, Row, RowInput, RowSelect, RowSlider, Section } from './settings-ui'
+import { limitLabel, money, spendLabel, useConfigDraft, useSpend } from '../lib/settings'
 
 const PRESETS = PROVIDER_PRESETS
-
-/**
- * A price as typed. An empty box means unknown, which is not the same as free,
- * so it stays undefined rather than becoming 0.
- */
-function money(value: string): number | undefined {
-  const cleaned = value.replace(/[^0-9.]/g, '')
-  if (!cleaned) return undefined
-  const parsed = Number(cleaned)
-  return Number.isFinite(parsed) ? parsed : undefined
-}
-
-/** A limit as a sentence: money, tokens, or both when both are set. */
-function limitLabel(allowance: Allowance): string {
-  const parts: string[] = []
-  if (allowance.usd) parts.push(formatCost(allowance.usd))
-  if (allowance.tokens) parts.push(`${allowance.tokens.toLocaleString('en-US')} tokens`)
-  return `${parts.join(' / ') || 'no limit'} per ${allowance.period === 'day' ? 'day' : 'month'}`
-}
-
-/** What has gone against that limit, in whichever unit the limit is set in. */
-function spendLabel(spent: Spent, allowance: Allowance): string {
-  if (allowance.usd) return `${formatCost(spent.cost ?? 0)} of ${formatCost(allowance.usd)} used`
-  if (allowance.tokens) {
-    return `${spent.tokens.toLocaleString('en-US')} of ${allowance.tokens.toLocaleString('en-US')} used`
-  }
-  return `${spent.tokens.toLocaleString('en-US')} counted here`
-}
 
 /** The API key row. The value only ever travels one way: into the keychain. */
 function ApiKeyRow({ providerId, onStored }: { providerId: string; onStored: () => void }): ReactNode {
@@ -174,13 +144,16 @@ function ProviderSection({
   provider,
   onChange,
   onKeyStored,
-  keySpend
+  keySpend,
+  spentFor
 }: {
   provider: ProviderConfig
   onChange: (next: ProviderConfig) => void
   onKeyStored: () => void
   /** What this key has spent against its own limit, when it has one. */
   keySpend?: { allowance: Allowance; spent: Spent } | null
+  /** What one model has spent against whichever allowance covers it. */
+  spentFor: (ref: string) => Spent
 }): ReactNode {
   const patch = (next: Partial<ProviderConfig>): void => onChange({ ...provider, ...next })
   const patchOptions = (next: Record<string, unknown>): void =>
@@ -377,110 +350,260 @@ function ProviderSection({
       {models.length === 0 ? (
         <Row label={<Hint>No models yet — add one to make this provider selectable.</Hint>} />
       ) : (
-        models.map((model, index) => (
-          <Row key={index}>
-            <div className="flex w-full items-center gap-1.5">
-              <input
-                value={model.id}
-                spellCheck={false}
-                placeholder="model-id"
-                onChange={(event) => {
-                  const next = models.slice()
-                  next[index] = { ...model, id: event.target.value }
-                  setModels(next)
-                }}
-                className="border-ink-800 bg-ink-850 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 w-[34%] rounded-lg border px-2.5 py-1.5 font-mono text-[12px] outline-none"
-              />
-              <input
-                value={model.name}
-                placeholder="Display name"
-                onChange={(event) => {
-                  const next = models.slice()
-                  next[index] = { ...model, name: event.target.value }
-                  setModels(next)
-                }}
-                className="border-ink-800 bg-ink-850 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 min-w-0 flex-1 rounded-lg border px-2.5 py-1.5 text-[12px] outline-none"
-              />
-              <input
-                value={model.contextWindow ? String(model.contextWindow) : ''}
-                placeholder="context"
-                inputMode="numeric"
-                onChange={(event) => {
-                  const next = models.slice()
-                  const parsed = Number(event.target.value.replace(/\D/g, ''))
-                  next[index] = { ...model, contextWindow: parsed || undefined }
-                  setModels(next)
-                }}
-                className="border-ink-800 bg-ink-850 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 w-[84px] rounded-lg border px-2.5 py-1.5 font-mono text-[12px] outline-none"
-              />
-              <input
-                value={model.price?.input !== undefined ? String(model.price.input) : ''}
-                placeholder="$ in"
-                inputMode="decimal"
-                title="Price per million input tokens"
-                onChange={(event) => {
-                  const next = models.slice()
-                  next[index] = { ...model, price: { ...model.price, input: money(event.target.value) } }
-                  setModels(next)
-                }}
-                className="border-ink-800 bg-ink-850 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 w-[64px] rounded-lg border px-2 py-1.5 font-mono text-[12px] outline-none"
-              />
-              <input
-                value={model.price?.output !== undefined ? String(model.price.output) : ''}
-                placeholder="$ out"
-                inputMode="decimal"
-                title="Price per million output tokens"
-                onChange={(event) => {
-                  const next = models.slice()
-                  next[index] = { ...model, price: { ...model.price, output: money(event.target.value) } }
-                  setModels(next)
-                }}
-                className="border-ink-800 bg-ink-850 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 w-[64px] rounded-lg border px-2 py-1.5 font-mono text-[12px] outline-none"
-              />
-              <button
-                type="button"
-                title={
-                  model.vision
-                    ? 'Images are sent to this model'
-                    : 'Mark this model as able to read images'
-                }
-                onClick={() => {
-                  const next = models.slice()
-                  next[index] = { ...model, vision: !model.vision }
-                  setModels(next)
-                }}
-                className={clsx(
-                  'rounded-md border px-2 py-1.5 text-[11px]',
-                  model.vision
-                    ? 'border-ok/40 bg-ok/10 text-ok'
-                    : 'border-ink-800 text-ink-600 hover:text-ink-300'
-                )}
-              >
-                vision
-              </button>
-              <IconButton
-                title="Remove model"
-                tone="danger"
-                onClick={() => setModels(models.filter((_, i) => i !== index))}
-              >
-                <Trash2 className="h-4 w-4" />
-              </IconButton>
+        models.map((model, index) => {
+          const ref = `${provider.id}/${model.id}`
+          const billing: Billing = model.billing ?? 'pay-as-you-go'
+          const spend = spentFor(ref)
+          const limit = allowanceFor({ provider: { [provider.id]: provider } } as never, provider.id, model)
+          const fraction = allowanceUsed(limit, spend)
+          const patchModel = (next: Partial<ProviderModelConfig>): void =>
+            patch({ models: { ...provider.models, [model.id]: { ...model, ...next } } })
+
+          return (
+            /*
+             * Everything about one model in one block.
+             *
+             * Its id and price used to be here and its billing, allowance and
+             * two judgements in a separate section listing every model of every
+             * provider — so setting up one model meant editing it in two places
+             * on the same page, and the comparison view nobody was editing was
+             * the one that overflowed. The comparison is on the routing page
+             * now, read-only; this is where a model is configured.
+             */
+            <div
+              key={index}
+              className="border-ink-800/70 flex flex-col gap-2 border-b py-3.5"
+            >
+              <div className="flex flex-wrap items-center gap-1.5">
+                <input
+                  value={model.id}
+                  spellCheck={false}
+                  placeholder="model-id"
+                  onChange={(event) => {
+                    const next = models.slice()
+                    next[index] = { ...model, id: event.target.value }
+                    setModels(next)
+                  }}
+                  className="border-ink-800 bg-ink-850 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 w-[30%] min-w-[150px] rounded-lg border px-2.5 py-1.5 font-mono text-[12px] outline-none"
+                />
+                <input
+                  value={model.name}
+                  placeholder="Display name"
+                  onChange={(event) => {
+                    const next = models.slice()
+                    next[index] = { ...model, name: event.target.value }
+                    setModels(next)
+                  }}
+                  className="border-ink-800 bg-ink-850 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 min-w-[120px] flex-1 rounded-lg border px-2.5 py-1.5 text-[12px] outline-none"
+                />
+                <input
+                  value={model.contextWindow ? String(model.contextWindow) : ''}
+                  placeholder="context"
+                  inputMode="numeric"
+                  title="Advertised context window, for the token gauge"
+                  onChange={(event) => {
+                    const next = models.slice()
+                    const parsed = Number(event.target.value.replace(/\D/g, ''))
+                    next[index] = { ...model, contextWindow: parsed || undefined }
+                    setModels(next)
+                  }}
+                  className="border-ink-800 bg-ink-850 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 w-[84px] rounded-lg border px-2.5 py-1.5 font-mono text-[12px] outline-none"
+                />
+                <input
+                  value={model.price?.input !== undefined ? String(model.price.input) : ''}
+                  placeholder="$ in"
+                  inputMode="decimal"
+                  title="Price per million input tokens"
+                  onChange={(event) => {
+                    const next = models.slice()
+                    next[index] = { ...model, price: { ...model.price, input: money(event.target.value) } }
+                    setModels(next)
+                  }}
+                  className="border-ink-800 bg-ink-850 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 w-[64px] rounded-lg border px-2 py-1.5 font-mono text-[12px] outline-none"
+                />
+                <input
+                  value={model.price?.output !== undefined ? String(model.price.output) : ''}
+                  placeholder="$ out"
+                  inputMode="decimal"
+                  title="Price per million output tokens"
+                  onChange={(event) => {
+                    const next = models.slice()
+                    next[index] = { ...model, price: { ...model.price, output: money(event.target.value) } }
+                    setModels(next)
+                  }}
+                  className="border-ink-800 bg-ink-850 text-ink-200 placeholder:text-ink-600 focus:border-ink-600 w-[64px] rounded-lg border px-2 py-1.5 font-mono text-[12px] outline-none"
+                />
+                <button
+                  type="button"
+                  title={
+                    model.vision
+                      ? 'Images are sent to this model'
+                      : 'Mark this model as able to read images'
+                  }
+                  onClick={() => {
+                    const next = models.slice()
+                    next[index] = { ...model, vision: !model.vision }
+                    setModels(next)
+                  }}
+                  className={clsx(
+                    'rounded-md border px-2 py-1.5 text-[11px]',
+                    model.vision
+                      ? 'border-ok/40 bg-ok/10 text-ok'
+                      : 'border-ink-800 text-ink-600 hover:text-ink-300'
+                  )}
+                >
+                  vision
+                </button>
+                <IconButton
+                  title="Remove model"
+                  tone="danger"
+                  onClick={() => setModels(models.filter((_, i) => i !== index))}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </IconButton>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                <RowSelect
+                  value={billing}
+                  onChange={(event) => patchModel({ billing: event.target.value as Billing })}
+                  options={BILLINGS.map((kind) => ({ value: kind.id, label: kind.label }))}
+                />
+
+                {billing === 'flat' ? (
+                  <div className="flex items-center gap-1.5">
+                    <RowInput
+                      mono
+                      width="w-[76px]"
+                      placeholder="$"
+                      value={model.monthlyCost !== undefined ? String(model.monthlyCost) : ''}
+                      onChange={(value) => patchModel({ monthlyCost: money(value) })}
+                    />
+                    <Hint>/ month</Hint>
+                  </div>
+                ) : null}
+
+                {billing === 'allowance' ? (
+                  provider.allowance && !model.allowance ? (
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                      <Hint tone={(fraction ?? 0) >= 0.9 ? 'warn' : 'muted'}>
+                        shares this key&apos;s {limitLabel(provider.allowance)} —{' '}
+                        {spendLabel(spend, provider.allowance)}
+                        {fraction === null ? '' : ` · ${Math.round(fraction * 100)}%`}
+                      </Hint>
+                      <button
+                        type="button"
+                        className="text-ink-400 hover:text-ink-200 text-[11.5px] underline decoration-dotted underline-offset-2"
+                        onClick={() =>
+                          patchModel({
+                            allowance: {
+                              period: provider.allowance!.period,
+                              usd: provider.allowance!.usd,
+                              tokens: provider.allowance!.tokens
+                            }
+                          })
+                        }
+                      >
+                        give it its own
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                      <RowInput
+                        mono
+                        width="w-[92px]"
+                        placeholder="tokens"
+                        value={model.allowance?.tokens !== undefined ? String(model.allowance.tokens) : ''}
+                        onChange={(value) => {
+                          const parsed = Number(value.replace(/\D/g, ''))
+                          patchModel({
+                            allowance: {
+                              ...model.allowance,
+                              period: model.allowance?.period ?? 'month',
+                              tokens: parsed || undefined
+                            }
+                          })
+                        }}
+                      />
+                      <Hint>or</Hint>
+                      <RowInput
+                        mono
+                        width="w-[76px]"
+                        placeholder="$"
+                        value={model.allowance?.usd !== undefined ? String(model.allowance.usd) : ''}
+                        onChange={(value) =>
+                          patchModel({
+                            allowance: {
+                              ...model.allowance,
+                              period: model.allowance?.period ?? 'month',
+                              usd: money(value)
+                            }
+                          })
+                        }
+                      />
+                      <RowSelect
+                        value={model.allowance?.period ?? 'month'}
+                        onChange={(event) =>
+                          patchModel({
+                            allowance: {
+                              ...model.allowance,
+                              period: event.target.value as 'day' | 'month'
+                            }
+                          })
+                        }
+                        options={[
+                          { value: 'month', label: 'per month' },
+                          { value: 'day', label: 'per day' }
+                        ]}
+                      />
+                      <Hint tone={(fraction ?? 0) >= 0.9 ? 'warn' : 'muted'}>
+                        {model.allowance
+                          ? `its own — ${spendLabel(spend, model.allowance)}`
+                          : 'no limit set'}
+                        {fraction === null ? '' : ` · ${Math.round(fraction * 100)}%`}
+                      </Hint>
+                      {provider.allowance && model.allowance ? (
+                        <button
+                          type="button"
+                          className="text-ink-400 hover:text-ink-200 text-[11.5px] underline decoration-dotted underline-offset-2"
+                          onClick={() => patchModel({ allowance: undefined })}
+                        >
+                          share the key&apos;s instead
+                        </button>
+                      ) : null}
+                    </div>
+                  )
+                ) : null}
+
+                <div className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-2">
+                  <RowSlider
+                    title="What this model costs relative to the others. A flat rate or an unspent allowance is treated as the cheapest whatever this says, because the next token really is free."
+                    low="cheap"
+                    high="dear"
+                    value={costTier(model)}
+                    onChange={(cost) => patchModel({ cost })}
+                  />
+                  <RowSlider
+                    title="How capable this model is — the IQ the router weighs against cost. Reading and boilerplate go to the cheapest model that clears the bar; a plan goes to the best there is."
+                    low="modest"
+                    high="strong"
+                    value={capability(model)}
+                    onChange={(iq) => patchModel({ iq })}
+                  />
+                </div>
+              </div>
             </div>
-          </Row>
-        ))
+          )
+        })
       )}
     </>
   )
 }
 
 export function ModelsTab(): ReactNode {
-  const config = useStore((s) => s.config)
-  const refreshConfig = useStore((s) => s.refreshConfig)
   const refreshSecrets = useStore((s) => s.refreshSecrets)
-
-  const [draft, setDraft] = useState<AppConfig | null>(config)
-  const [error, setError] = useState<string | null>(null)
-  const [saved, setSaved] = useState(false)
+  const { draft, setDraft, saved, error, setError } = useConfigDraft()
+  const { spentFor } = useSpend(draft)
   const [selected, setSelected] = useState<string>('')
 
   /**
@@ -490,104 +613,6 @@ export function ModelsTab(): ReactNode {
    */
   const [creating, setCreating] = useState<ProviderConfig | null>(null)
   const [newId, setNewId] = useState('')
-
-  const lastSaved = useRef<string | null>(null)
-
-  useEffect(() => {
-    if (!config) return
-    if (lastSaved.current === JSON.stringify(config)) return
-    setDraft(config)
-  }, [config])
-
-  const dirty = useMemo(() => JSON.stringify(draft) !== JSON.stringify(config), [draft, config])
-
-  /** Every `provider/model` the document declares, for the rows and pickers below. */
-  const declaredModels = useMemo(
-    () =>
-      Object.values(draft?.provider ?? {}).flatMap((provider) =>
-        Object.values(provider.models).map((model) => ({
-          ref: `${provider.id}/${model.id}`,
-          providerId: provider.id,
-          modelId: model.id,
-          label: `${provider.name} · ${model.name || model.id}`
-        }))
-      ),
-    [draft]
-  )
-
-  /**
-   * What has been spent on each model, so an allowance has something to count
-   * against. Local: no provider reports a balance back, so this is what this
-   * app has used and is labelled as such.
-   */
-  const [meter, setMeter] = useState<Record<string, MeterEntry>>({})
-  useEffect(() => {
-    // An empty object when the answer is missing: the rows below index into
-    // this, and a settings page that throws because nothing has been spent yet
-    // would be a poor trade for one saved line.
-    void window.opendesktop.meter.get().then((next) => setMeter(next ?? {}))
-  }, [])
-
-  // The routing as it stands, shown rather than described: the settings above
-  // are two judgements per model, and this is what they add up to.
-  /**
-   * What counts against this model's allowance: its own spend, or its whole
-   * key's when the limit belongs to the key. Money as well as tokens, since a
-   * $400-a-month key is measured in one and not the other.
-   */
-  const spentFor = useMemo(() => {
-    if (!draft) return () => ({ tokens: 0, cost: 0 })
-    return (ref: string): Spent => {
-      const slash = ref.indexOf('/')
-      const providerId = slash === -1 ? ref : ref.slice(0, slash)
-      const provider = draft.provider[providerId]
-      const model = provider?.models[ref.slice(slash + 1)]
-      const period = (model ? allowanceFor(draft, providerId, model)?.period : undefined) ?? 'month'
-      const ownScope = model?.allowance !== undefined || provider?.allowance === undefined
-      const pick = (entry?: MeterEntry): Spent =>
-        period === 'day'
-          ? { tokens: entry?.day ?? 0, cost: entry?.dayCost ?? 0 }
-          : { tokens: entry?.month ?? 0, cost: entry?.monthCost ?? 0 }
-
-      if (ownScope) return pick(meter[ref])
-      const total: Spent = { tokens: 0, cost: 0 }
-      for (const [key, entry] of Object.entries(meter)) {
-        if (!key.startsWith(`${providerId}/`)) continue
-        const part = pick(entry)
-        total.tokens += part.tokens
-        total.cost = (total.cost ?? 0) + (part.cost ?? 0)
-      }
-      return total
-    }
-  }, [draft, meter])
-
-  const delegate = useMemo(
-    () => (draft ? pickModel(draft, 'delegate', { spent: spentFor }) : null),
-    [draft, spentFor]
-  )
-  const planner = useMemo(
-    () => (draft ? pickModel(draft, 'plan', { spent: spentFor }) : null),
-    [draft, spentFor]
-  )
-  const savings: Savings = savingsOf(draft)
-
-  useEffect(() => {
-    if (!draft || !dirty) return
-    const timer = setTimeout(() => {
-      const payload = JSON.stringify(draft)
-      void window.opendesktop.config
-        .save(draft)
-        .then(() => {
-          lastSaved.current = payload
-          setError(null)
-          setSaved(true)
-          setTimeout(() => setSaved(false), 1600)
-          return refreshConfig()
-        })
-        .catch((err: Error) => setError(err.message))
-    }, 700)
-    return () => clearTimeout(timer)
-  }, [draft, dirty, refreshConfig])
 
   // Whatever the picker is on, falling back to the first real provider.
   const providers = useMemo(() => Object.values(draft?.provider ?? {}), [draft])
@@ -662,81 +687,12 @@ export function ModelsTab(): ReactNode {
   return (
     <>
       <Section
-        title="Models"
-        description="Providers, their keys and the models they offer."
+        title="Providers"
+        description="A provider is a key and the models it can reach. Everything about the one you pick is directly below; what the app does with them is under Routing."
         action={
           error ? <Hint tone="bad">{error}</Hint> : saved ? <Hint tone="ok">Saved</Hint> : null
         }
       >
-        <Row
-          label="Default model"
-          description="Used by new sessions, and by agents with no model of their own."
-        >
-          <RowSelect
-            value={draft.model}
-            onChange={(event) => setDraft({ ...draft, model: event.target.value })}
-            options={allModels.length ? allModels : [{ value: draft.model, label: draft.model }]}
-          />
-        </Row>
-
-        <Row
-          label="Tasks at once"
-          description="How many board tasks the scheduler runs in parallel. A task waiting on your approval does not count against this."
-        >
-          <RowInput
-            mono
-            width="w-[72px]"
-            value={String(draft.maxConcurrentTasks ?? 2)}
-            onChange={(value) => {
-              const parsed = Number(value.replace(/\D/g, ''))
-              setDraft({ ...draft, maxConcurrentTasks: Math.min(12, Math.max(1, parsed || 1)) })
-            }}
-          />
-        </Row>
-
-        <Row
-          label="Subagents at once"
-          description="How many subagents one agent may have working at the same time. Extra task calls wait for a slot rather than opening a stream the provider will throttle."
-        >
-          <RowInput
-            mono
-            width="w-[72px]"
-            value={String(draft.maxParallelSubagents ?? 4)}
-            onChange={(value) => {
-              const parsed = Number(value.replace(/\D/g, ''))
-              setDraft({ ...draft, maxParallelSubagents: Math.min(12, Math.max(1, parsed || 1)) })
-            }}
-          />
-        </Row>
-
-        <Row
-          label="A turn may spend"
-          description="Tokens across all of a turn's steps, and minutes on the clock, before it is stopped and handed back. Generous on purpose: these end a runaway, they do not ration ordinary work."
-        >
-          <div className="flex items-center gap-1.5">
-            <RowInput
-              mono
-              width="w-[96px]"
-              value={String(draft.maxTurnTokens ?? 750_000)}
-              onChange={(value) => {
-                const parsed = Number(value.replace(/\D/g, ''))
-                setDraft({ ...draft, maxTurnTokens: Math.max(10_000, parsed || 10_000) })
-              }}
-            />
-            <Hint>tokens ·</Hint>
-            <RowInput
-              mono
-              width="w-[64px]"
-              value={String(Math.round((draft.maxTurnMs ?? 1_800_000) / 60_000))}
-              onChange={(value) => {
-                const parsed = Number(value.replace(/\D/g, ''))
-                setDraft({ ...draft, maxTurnMs: Math.max(1, parsed || 1) * 60_000 })
-              }}
-            />
-            <Hint>minutes</Hint>
-          </div>
-        </Row>
-
         <Row label="Provider" description="Which one you are editing.">
           <RowSelect
             value={creating ? '__new__' : selected}
@@ -768,326 +724,6 @@ export function ModelsTab(): ReactNode {
               <Trash2 className="h-4 w-4" />
             </IconButton>
           ) : null}
-        </Row>
-      </Section>
-
-      <Section
-        title="Savings"
-        description="What a session does to keep its context and its bill down. Independent of each other, and either can be turned on or off for one session from the composer. Neither is the app as it has always worked."
-      >
-        {SWITCHES.map((entry) => (
-          <Row key={entry.id} label={entry.label} description={entry.blurb}>
-            <Toggle
-              checked={savings[entry.id]}
-              onChange={(next) =>
-                setDraft({ ...draft, savings: { ...(draft.savings ?? {}), [entry.id]: next } })
-              }
-            />
-          </Row>
-        ))}
-        <Row
-          label="Delegate reading to"
-          description="Left automatic, the cheapest model that clears the capability bar — which changes by itself when an allowance runs out."
-        >
-          <RowSelect
-            value={draft.shuntModel ?? ''}
-            onChange={(event) =>
-              setDraft({ ...draft, shuntModel: event.target.value || undefined })
-            }
-            options={[
-              {
-                value: '',
-                label: delegate ? `Automatic — ${delegate.label}` : 'Automatic'
-              },
-              ...declaredModels.map((model) => ({ value: model.ref, label: model.label }))
-            ]}
-          />
-        </Row>
-        <Row
-          label="Ask for a plan"
-          description="Who is asked how to do something hard. Left automatic, the most capable model declared — and the tool is not offered at all when that is the session's own model."
-        >
-          <RowSelect
-            value={draft.plannerModel ?? ''}
-            onChange={(event) =>
-              setDraft({ ...draft, plannerModel: event.target.value || undefined })
-            }
-            options={[
-              { value: '', label: planner ? `Automatic — ${planner.label}` : 'Automatic' },
-              ...declaredModels.map((model) => ({ value: model.ref, label: model.label }))
-            ]}
-          />
-        </Row>
-        <Row
-          label="Refuse whole-file reads over"
-          description="While delegation is on. A read with an offset or a limit is always allowed — that is the agent saying it knows what it needs."
-        >
-          <RowInput
-            mono
-            width="w-[72px]"
-            value={String(draft.shuntMinLines ?? 350)}
-            onChange={(value) => {
-              const parsed = Number(value.replace(/\D/g, ''))
-              setDraft({ ...draft, shuntMinLines: Math.min(5000, Math.max(20, parsed || 350)) })
-            }}
-          />
-          <Hint>lines</Hint>
-        </Row>
-      </Section>
-
-      <Section
-        title="Cost"
-        description="How each model is paid for, and the two judgements the router balances: what it costs relative to the others, and how capable it is. Nothing else can know either — a subscription model is free at the margin however expensive it looks, and no benchmark knows which of your models you actually trust."
-      >
-        {declaredModels.length === 0 ? (
-          <Row label={<Hint>No models declared yet.</Hint>} />
-        ) : (
-          declaredModels.map((entry) => {
-            const model = draft.provider[entry.providerId]?.models[entry.modelId]
-            if (!model) return null
-            const billing: Billing = model.billing ?? 'pay-as-you-go'
-            const patchModel = (next: Partial<typeof model>): void =>
-              setDraft({
-                ...draft,
-                provider: {
-                  ...draft.provider,
-                  [entry.providerId]: {
-                    ...draft.provider[entry.providerId],
-                    models: {
-                      ...draft.provider[entry.providerId].models,
-                      [entry.modelId]: { ...model, ...next }
-                    }
-                  }
-                }
-              })
-            // The limit in force for this model — its own, or the one on the
-            // key it shares with every other model under the same provider.
-            const keyLimit = draft.provider[entry.providerId]?.allowance
-            const effective = allowanceFor(draft, entry.providerId, model)
-            const spend = spentFor(entry.ref)
-            const fraction = allowanceUsed(effective, spend)
-            return (
-              /*
-               * A model is a block, not a row.
-               *
-               * As a row it was a name on the left and its settings on the
-               * right, and the settings did not fit: `shrink-0` on the control
-               * side pushed the panel wider than the window, the label column
-               * collapsed to nothing, and "Claude Opus 5" wrapped one word per
-               * line beside a strip of controls running off the edge. The
-               * identity gets its own line and the controls wrap under it.
-               */
-              <div
-                key={entry.ref}
-                className="border-ink-800/70 flex flex-col gap-2.5 border-b py-3.5"
-              >
-                <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                  <span className="text-ink-200 text-[13.5px]">{entry.label}</span>
-                  <span className="text-ink-500 font-mono text-[11px]">{entry.ref}</span>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-                  <RowSelect
-                    value={billing}
-                    onChange={(event) =>
-                      patchModel({ billing: event.target.value as Billing })
-                    }
-                    options={BILLINGS.map((kind) => ({ value: kind.id, label: kind.label }))}
-                  />
-
-                  {billing === 'flat' ? (
-                    <div className="flex items-center gap-1.5">
-                      <RowInput
-                        mono
-                        width="w-[76px]"
-                        placeholder="$"
-                        value={model.monthlyCost !== undefined ? String(model.monthlyCost) : ''}
-                        onChange={(value) => patchModel({ monthlyCost: money(value) })}
-                      />
-                      <Hint>/ month</Hint>
-                    </div>
-                  ) : null}
-
-                  {/*
-                   * Which limit is in force, said rather than implied.
-                   *
-                   * Three models under one key with an empty box each invites
-                   * typing the same number three times — which is three
-                   * separate budgets, not the shared one, and nothing on screen
-                   * said so. A model that shares the key's limit says that and
-                   * shows the key's spend; overriding it is a deliberate click.
-                   */}
-                  {billing === 'allowance' ? (
-                    keyLimit && !model.allowance ? (
-                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                        <Hint tone={(fraction ?? 0) >= 0.9 ? 'warn' : 'muted'}>
-                          shares the {draft.provider[entry.providerId]?.name || entry.providerId} key's{' '}
-                          {limitLabel(keyLimit)} — {spendLabel(spend, keyLimit)}
-                          {fraction === null ? '' : ` · ${Math.round(fraction * 100)}%`}
-                        </Hint>
-                        <button
-                          type="button"
-                          className="text-ink-400 hover:text-ink-200 text-[11.5px] underline decoration-dotted underline-offset-2"
-                          onClick={() =>
-                            patchModel({
-                              allowance: { period: keyLimit.period, usd: keyLimit.usd, tokens: keyLimit.tokens }
-                            })
-                          }
-                        >
-                          give it its own
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                        <RowInput
-                          mono
-                          width="w-[92px]"
-                          placeholder="tokens"
-                          value={model.allowance?.tokens !== undefined ? String(model.allowance.tokens) : ''}
-                          onChange={(value) => {
-                            const parsed = Number(value.replace(/\D/g, ''))
-                            patchModel({
-                              allowance: {
-                                ...model.allowance,
-                                period: model.allowance?.period ?? 'month',
-                                tokens: parsed || undefined
-                              }
-                            })
-                          }}
-                        />
-                        <Hint>or</Hint>
-                        <RowInput
-                          mono
-                          width="w-[76px]"
-                          placeholder="$"
-                          value={model.allowance?.usd !== undefined ? String(model.allowance.usd) : ''}
-                          onChange={(value) =>
-                            patchModel({
-                              allowance: {
-                                ...model.allowance,
-                                period: model.allowance?.period ?? 'month',
-                                usd: money(value)
-                              }
-                            })
-                          }
-                        />
-                        <RowSelect
-                          value={model.allowance?.period ?? 'month'}
-                          onChange={(event) =>
-                            patchModel({
-                              allowance: {
-                                ...model.allowance,
-                                period: event.target.value as 'day' | 'month'
-                              }
-                            })
-                          }
-                          options={[
-                            { value: 'month', label: 'per month' },
-                            { value: 'day', label: 'per day' }
-                          ]}
-                        />
-                        <Hint tone={(fraction ?? 0) >= 0.9 ? 'warn' : 'muted'}>
-                          {model.allowance
-                            ? `its own — ${spendLabel(spend, model.allowance)}`
-                            : 'no limit set'}
-                          {fraction === null ? '' : ` · ${Math.round(fraction * 100)}%`}
-                        </Hint>
-                        {keyLimit && model.allowance ? (
-                          <button
-                            type="button"
-                            className="text-ink-400 hover:text-ink-200 text-[11.5px] underline decoration-dotted underline-offset-2"
-                            onClick={() => patchModel({ allowance: undefined })}
-                          >
-                            share the key's instead
-                          </button>
-                        ) : null}
-                      </div>
-                    )
-                  ) : null}
-
-                  <div className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-2">
-                    <RowSlider
-                      title="What this model costs relative to the others. A flat rate or an unspent allowance is treated as the cheapest whatever this says, because the next token really is free."
-                      low="cheap"
-                      high="dear"
-                      value={costTier(model)}
-                      onChange={(cost) => patchModel({ cost })}
-                    />
-                    <RowSlider
-                      title="How capable this model is — the IQ the router weighs against cost. Reading and boilerplate go to the cheapest model that clears the bar; a plan goes to the best there is."
-                      low="modest"
-                      high="strong"
-                      value={capability(model)}
-                      onChange={(iq) => patchModel({ iq })}
-                    />
-                  </div>
-                </div>
-              </div>
-            )
-          })
-        )}
-        {delegate && planner ? (
-          <Row label={<Hint>As it stands</Hint>}>
-            <span className="text-ink-500 text-right text-[11.5px]">
-              reading and boilerplate → <span className="font-mono">{delegate.ref}</span>,{' '}
-              {delegate.why}
-              <br />
-              plans → <span className="font-mono">{planner.ref}</span>, {planner.why}
-            </span>
-          </Row>
-        ) : null}
-      </Section>
-
-      <Section
-        title="Context"
-        description="How much of a model's window a session may fill before its older half is summarised, and when tool output stops being resent."
-      >
-        <Row
-          label="Summarise at"
-          description="Share of the usable window — the model's context minus room for its reply — at which the older messages are replaced by a summary."
-        >
-          <RowInput
-            mono
-            width="w-[72px]"
-            value={String(Math.round((draft.compactAtFraction ?? 0.7) * 100))}
-            onChange={(value) => {
-              const parsed = Number(value.replace(/\D/g, ''))
-              setDraft({
-                ...draft,
-                compactAtFraction: Math.min(0.95, Math.max(0.2, (parsed || 70) / 100))
-              })
-            }}
-          />
-          <Hint>%</Hint>
-        </Row>
-        <Row
-          label="Keep verbatim"
-          description="Messages at the end of the transcript that a summary never touches."
-        >
-          <RowInput
-            mono
-            width="w-[72px]"
-            value={String(draft.keepRecentMessages ?? 8)}
-            onChange={(value) => {
-              const parsed = Number(value.replace(/\D/g, ''))
-              setDraft({ ...draft, keepRecentMessages: Math.min(40, Math.max(2, parsed || 8)) })
-            }}
-          />
-        </Row>
-        <Row
-          label="Drop tool output after"
-          description="Turns after which a command's output stops being resent, replaced by a note naming the call. Costs nothing and usually saves more than a summary."
-        >
-          <RowInput
-            mono
-            width="w-[72px]"
-            value={String(draft.dehydrateAfterTurns ?? 2)}
-            onChange={(value) => {
-              const parsed = Number(value.replace(/\D/g, ''))
-              setDraft({ ...draft, dehydrateAfterTurns: Math.min(20, Math.max(1, parsed || 2)) })
-            }}
-          />
-          <Hint>turns</Hint>
         </Row>
       </Section>
 
@@ -1130,6 +766,7 @@ export function ModelsTab(): ReactNode {
         <Section title={current.name || current.id}>
           <ProviderSection
             provider={current}
+            spentFor={spentFor}
             keySpend={
               current.allowance
                 ? {

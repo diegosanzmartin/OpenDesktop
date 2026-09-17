@@ -21,6 +21,7 @@ import { DocumentCard } from './src/components/DocumentCard'
 import { Composer } from './src/components/Composer'
 import { ContextGauge } from './src/components/ContextGauge'
 import { ModelsTab } from './src/components/ModelsTab'
+import { RoutingTab } from './src/components/RoutingTab'
 import { FolderPicker } from './src/components/FolderPicker'
 import { ChatView } from './src/components/ChatView'
 
@@ -532,25 +533,61 @@ async function run(): Promise<void> {
     const host = mount(<ModelsTab />, 900)
     await settle()
     const text = host.textContent ?? ''
-    check('the switches have a home of their own', text.includes('Savings'), text.slice(0, 120))
+    /*
+     * The two questions are two pages now: what models exist and what the app
+     * does with them. They used to share one, so the provider was picked at the
+     * top, its key was three sections below, and a fourth section listed every
+     * model of every provider — the one that overflowed.
+     */
     check(
-      'and each model carries the two judgements',
-      text.includes('Cost') && text.includes('cheap') && text.includes('strong'),
-      text.includes('Cost')
+      'the providers page is about providers, and says so',
+      text.includes('Providers') && text.includes('A provider is a key'),
+      text.slice(0, 160)
     )
     check(
-      'every way of paying is offered',
-      text.includes('Pay as you go') && text.includes('Flat rate') && text.includes('Included allowance')
+      'a model is configured where it lives, prices and all',
+      text.includes('Pay as you go') &&
+        text.includes('Flat rate') &&
+        text.includes('Included allowance') &&
+        text.includes('cheap') &&
+        text.includes('strong'),
+      text.includes('Included allowance')
     )
     check(
-      'and the routing says what it currently decides',
-      /reading and boilerplate → p\/cheap/.test(text) && /plans → p\/brain/.test(text),
-      text.slice(text.indexOf('As it stands'), text.indexOf('As it stands') + 200)
+      'and the routing settings are not on it',
+      !text.includes('Savings') && !text.includes('Summarise at') && !text.includes('Default model'),
+      text.slice(0, 200)
+    )
+
+    const routing = mount(<RoutingTab />, 900)
+    await settle()
+    const routingText = routing.textContent ?? ''
+    check('the switches have a home of their own', routingText.includes('Savings'))
+    check(
+      'the routing page says what it currently decides',
+      /reading and boilerplate → p\/cheap/.test(routingText) && /plans → p\/brain/.test(routingText),
+      routingText.slice(routingText.indexOf('What that decides'), routingText.indexOf('What that decides') + 200)
     )
     check(
       'with the reason, so the choice is not a mystery',
-      text.includes('already paid for'),
-      text
+      routingText.includes('already paid for'),
+      routingText
+    )
+    check(
+      'and it shows the tier the router uses rather than another set of sliders',
+      routingText.includes('flat rate') &&
+        /cost \d\/5/.test(routingText) &&
+        routing.querySelectorAll('button[aria-label$="of 5"]').length === 0,
+      routingText.slice(routingText.indexOf('As it stands'), routingText.indexOf('As it stands') + 220)
+    )
+    check(
+      'the ceilings are there too, since they are what the app may spend',
+      routingText.includes('A turn may spend') && routingText.includes('Subagents at once')
+    )
+    check(
+      'neither page runs off the side',
+      routing.scrollWidth <= routing.clientWidth + 1,
+      { scroll: routing.scrollWidth, client: routing.clientWidth }
     )
 
     /*
@@ -591,31 +628,37 @@ async function run(): Promise<void> {
         .map((el) => `${el.tagName}.${(el.className || '').toString().slice(0, 40)}`)
     )
     check(
-      'and a model name stays on one line rather than wrapping per word',
-      (() => {
-        const name = [...host.querySelectorAll('span')].find(
-          (span) => span.textContent === 'P · Brain'
-        )
-        return name ? name.getBoundingClientRect().height < 30 : false
-      })(),
-      [...host.querySelectorAll('span')]
-        .find((span) => span.textContent === 'P · Brain')
-        ?.getBoundingClientRect().height
+      'each model is one block, with its price and its billing together',
+      host.querySelectorAll('input[placeholder="model-id"]').length === 2 &&
+        host.querySelectorAll('input[placeholder="$ in"]').length === 2 &&
+        [...host.querySelectorAll('select')].filter((select) =>
+          (select.textContent ?? '').includes('Flat rate')
+        ).length === 2,
+      {
+        ids: host.querySelectorAll('input[placeholder="model-id"]').length,
+        prices: host.querySelectorAll('input[placeholder="$ in"]').length
+      }
     )
+
+    const sliders = host.querySelectorAll('button[aria-label$="of 5"]')
+    check('the judgements are coarse on purpose — five steps', sliders.length === 20, sliders.length)
 
     /*
      * Adding a provider must be a choice, not a data-entry exercise. The list
      * of providers is what the catalogue says, and picking Anthropic has to bring
      * its models with it — that is the whole difference between "add Anthropic"
-     * and "type three model ids and six prices".
+     * and "type three model ids and six prices". On its own mount, since
+     * clicking it replaces the page with the new-provider form.
      */
-    const addButton = [...host.querySelectorAll('button')].find(
+    const adder = mount(<ModelsTab />, 900)
+    await settle()
+    const addButton = [...adder.querySelectorAll('button')].find(
       (button) => button.getAttribute('title') === 'Add a provider'
     ) as HTMLElement | undefined
     check('there is a way to add a provider', Boolean(addButton))
     addButton?.click()
     await settle()
-    const adding = host.textContent ?? ''
+    const adding = adder.textContent ?? ''
     check(
       'the providers it knows are offered by name, not by npm package',
       adding.includes('Anthropic · Claude') && adding.includes('OpenAI · ChatGPT models'),
@@ -626,9 +669,6 @@ async function run(): Promise<void> {
       /\d+ models come with it/.test(adding),
       adding.slice(adding.indexOf('models come with it') - 60, adding.indexOf('models come with it') + 40)
     )
-
-    const sliders = host.querySelectorAll('button[aria-label$="of 5"]')
-    check('the judgements are coarse on purpose — five steps', sliders.length === 20, sliders.length)
 
     useStore.setState({ config: before })
   }
@@ -967,11 +1007,13 @@ async function run(): Promise<void> {
         }
       }
     })
-    const shotHost = mount(<ModelsTab />, 900)
+    mount(<ModelsTab />, 900)
     await settle()
-    // The part worth looking at is the model rows, which are below the fold.
-    const cost = [...shotHost.querySelectorAll('h2')].find((h) => h.textContent === 'Cost')
-    cost?.scrollIntoView({ block: 'start' })
+  }
+
+  if (new URLSearchParams(location.search).get('shot') === 'routing') {
+    document.body.innerHTML = ''
+    mount(<RoutingTab />, 900)
     await settle()
   }
 

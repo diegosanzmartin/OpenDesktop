@@ -53,9 +53,20 @@ launchd knew about appended rather than dropped.
 
 ## Configuration
 
-**Settings → Models & providers** is the place to do this from the UI: add or remove
-providers, edit the base URL and the AI SDK package, manage each provider's model list, set
-the default model, and paste the API key. Nothing there requires touching a file.
+Two settings pages, because these are two questions. **Providers & keys** is where a provider
+lives: pick it from the list and its id, package, base URL, **key**, spend limit and models are
+all directly underneath — each model with its context window, prices, vision flag, how it is
+paid for and the two judgements the router weighs. **Routing & limits** is what the app does
+with them: the default model, how many tasks and subagents run at once, what one turn may
+spend, the savings switches, the context thresholds, and a read-only summary of what those
+judgements currently decide. Nothing on either page requires touching a file.
+
+Adding a provider is one choice. Pick *Anthropic · Claude* and its models arrive with the
+prices Anthropic publishes; pick OpenAI, Google or an OpenAI-compatible endpoint and the model
+list comes from the key itself — **Ask the provider** lists what that key can see and fills in
+ids, names and context windows. Prices are never invented: no provider's model endpoint reports
+one, so anything this app does not publish itself is left empty, and empty means unknown rather
+than free.
 
 Everything is persisted to `~/.config/opendesktop/config.json`, which the **Config file** tab
 also exposes raw for anything the form does not cover. The provider block is the opencode

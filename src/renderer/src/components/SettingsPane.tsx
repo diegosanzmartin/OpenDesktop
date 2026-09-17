@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   Bot,
   Boxes,
+  Route,
   FileJson2,
   FolderOpen,
   Save,
@@ -12,12 +13,13 @@ import {
 } from 'lucide-react'
 import { useStore } from '../state/store'
 import { ModelsTab } from './ModelsTab'
+import { RoutingTab } from './RoutingTab'
 import { EnvironmentsTab } from './EnvironmentsTab'
 import { AgentsTab } from './AgentsTab'
 import { SkillsTab } from './SkillsTab'
 import { Hint, IconButton, Row, Section, Toggle } from './settings-ui'
 
-type Page = 'providers' | 'agents' | 'skills' | 'environments' | 'config'
+type Page = 'providers' | 'routing' | 'agents' | 'skills' | 'environments' | 'config'
 
 interface NavItem {
   id: Page
@@ -33,9 +35,17 @@ const GROUPS: { title: string; items: NavItem[] }[] = [
     items: [
       {
         id: 'providers',
-        label: 'Models',
+        label: 'Providers & keys',
         icon: <Boxes className="h-4 w-4" />,
-        keywords: 'provider api key endpoint openai anthropic helmcode vision context'
+        keywords:
+          'provider api key endpoint openai anthropic claude chatgpt gemini helmcode model price vision allowance limit'
+      },
+      {
+        id: 'routing',
+        label: 'Routing & limits',
+        icon: <Route className="h-4 w-4" />,
+        keywords:
+          'default model tasks subagents turn ceiling budget savings rtk shunt delegate planner context summarise compact'
       },
       {
         id: 'agents',
@@ -279,6 +289,7 @@ export function SettingsPane(): ReactNode {
           {page === 'skills' ? <SkillsTab /> : null}
           {page === 'environments' ? <EnvironmentsTab /> : null}
           {page === 'providers' ? <ModelsTab /> : null}
+          {page === 'routing' ? <RoutingTab /> : null}
         </div>
       </div>
     </div>
