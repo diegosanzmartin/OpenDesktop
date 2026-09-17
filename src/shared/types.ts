@@ -368,6 +368,16 @@ export interface Session {
    * denylist and anything set to `deny` are unaffected.
    */
   autoApprove?: boolean
+  /**
+   * How hard to try, 1 (faster) to 5 (smarter). Unset means 3.
+   *
+   * Two things follow from it, and only two, because those are the two this
+   * app can honestly change: how much the model may think before answering,
+   * for the models that take a reasoning setting, and how many steps a turn
+   * may spend. Everything else — which model, which tools — is chosen
+   * elsewhere and is not quietly rewritten by a slider.
+   */
+  effort?: number
   status: SessionStatus
   createdAt: number
   updatedAt: number
@@ -392,6 +402,31 @@ export interface Session {
    * throws that away; if it is not, shrinking it is free.
    */
   cacheShare?: number
+  /**
+   * What the last turn's request was actually made of, in tokens.
+   *
+   * Measured where it is built rather than estimated where it is drawn: the
+   * transcript, the tool schemas and the system prompt are three different
+   * things that grow for three different reasons, and a single "context: 37%"
+   * cannot say which of them to do something about. A conversation that is 90%
+   * tool schemas needs fewer tools, not a summary.
+   *
+   * Absent until a turn has run, because before that there is nothing to
+   * report and a guess would be worse than a blank.
+   */
+  contextParts?: {
+    /**
+     * What the provider charged for the whole first step, which is the one
+     * number here that is not an estimate.
+     */
+    total: number
+    /** The model-facing transcript: messages, tool calls and their output. */
+    messages: number
+    /** The agent's prompt and the rules, including whatever the switches added. */
+    system: number
+    /** Skills expanded into the message, when any were named. */
+    skills?: number
+  }
   /**
    * What was typed while the turn was still running.
    *

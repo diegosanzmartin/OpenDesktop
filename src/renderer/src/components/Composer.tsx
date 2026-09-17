@@ -19,6 +19,8 @@ import {
 import type { Attachment, Session, Skill } from '@shared/types'
 import { isManager } from '@shared/types'
 import { SWITCHES, savingsLabel, savingsOf, type Savings } from '@shared/savings'
+import { ContextMeter } from './ContextMeter'
+import { EffortDial } from './EffortDial'
 import { workerModelRef } from '@shared/routing'
 import { mentionToken } from '@shared/mentions'
 import { useStore } from '../state/store'
@@ -41,7 +43,7 @@ function Picker({
         title={title}
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="text-ink-400 hover:text-ink-200 cursor-pointer appearance-none bg-transparent pr-4 text-[12px] outline-none"
+        className="text-ink-400 hover:text-ink-200 cursor-pointer appearance-none bg-transparent pr-4 text-[11.5px] outline-none"
       >
         {options.map((option) => (
           <option key={option.value} value={option.value} className="bg-ink-850">
@@ -738,14 +740,24 @@ export function Composer({ session }: { session: Session }): ReactNode {
           </div>
         ) : null}
 
-        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 px-1">
+        {/*
+          * One line under the box, quieter than the box.
+          *
+          * Everything here is a fact about the session rather than about the
+          * message being written, so none of it should catch the eye on the
+          * way to the send key: 11.5px, ink-500, no borders, and the two
+          * things that open a panel are the only ones that respond to a
+          * hover. What you set rarely is on the left, what you watch is on
+          * the right.
+          */}
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 px-1">
           <button
             type="button"
             title={`${session.cwd} — click to change it, ⌘R to search for one`}
             onClick={() => openFolderPicker(session.id)}
-            className="text-ink-500 hover:text-ink-200 flex min-w-0 shrink items-center gap-1.5 text-[12px]"
+            className="text-ink-500 hover:text-ink-200 flex min-w-0 shrink items-center gap-1.5 text-[11.5px]"
           >
-            <FolderOpen className="h-3.5 w-3.5 shrink-0" />
+            <FolderOpen className="h-3 w-3 shrink-0" />
             <span className="truncate">{shortenPath(session.cwd, 26)}</span>
           </button>
 
@@ -756,18 +768,18 @@ export function Composer({ session }: { session: Session }): ReactNode {
               the moment it is typed. A named agent still says which one it is,
               because that is a chat where the answer is not obvious. */}
           {managed ? null : (
-            <span className="text-ink-500 shrink-0 text-[12px]">
+            <span className="text-ink-500 shrink-0 text-[11.5px]">
               {agent?.name ?? session.agentId}
             </span>
           )}
           {attachments.some((a) => a.kind === 'image') && !acceptsImages ? (
-            <span className="text-warn text-[11.5px]">
+            <span className="text-warn text-[11px]">
               this model is not set as vision-capable — images will not be sent
             </span>
           ) : !managed && agent?.description ? (
             // Hidden below ~620px: in the board's side panel the pickers matter
             // and the description does not.
-            <span className="text-ink-600 hidden max-w-[280px] truncate text-[11.5px] @[620px]:inline">
+            <span className="text-ink-600 hidden max-w-[240px] truncate text-[11px] @[620px]:inline">
               {agent.description}
             </span>
           ) : null}
@@ -786,7 +798,14 @@ export function Composer({ session }: { session: Session }): ReactNode {
 
           <ApprovalChip session={session} />
 
-          <div className="ml-auto flex min-w-0 items-center gap-3">
+          {/* The right-hand end: what is answering, how hard it is trying, and
+              how full its window is. In that order because that is the order
+              you ask about them in, and because the two that open a panel are
+              nearest the corner the panel comes out of. */}
+          <div className="ml-auto flex min-w-0 items-center gap-1.5">
+            {!model && models.length > 0 ? (
+              <span className="text-warn text-[11px]">unknown model</span>
+            ) : null}
             <Picker
               title="Model"
               value={session.model}
@@ -797,10 +816,9 @@ export function Composer({ session }: { session: Session }): ReactNode {
                   : [{ value: session.model, label: session.model }]
               }
             />
-            {busy ? <span className="bg-brand h-2 w-2 animate-pulse rounded-full" /> : null}
-            {!model && models.length > 0 ? (
-              <span className="text-warn text-[11px]">unknown model</span>
-            ) : null}
+            <EffortDial session={session} />
+            <ContextMeter session={session} />
+            {busy ? <span className="bg-brand h-1.5 w-1.5 animate-pulse rounded-full" /> : null}
           </div>
         </div>
       </div>

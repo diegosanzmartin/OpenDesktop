@@ -163,9 +163,22 @@ three — the other two it grepped for the wording of the question, or read a fi
 sixteen times. Qwen3 is a hybrid thinking model and is served with `--reasoning off`: left on,
 it spent an entire 256-token budget inside its reasoning channel and returned an empty answer.
 
-`pnpm local:check [model-id]` does the whole thing for real — install, start, a completion, and
-a whole turn through the agent loop with tools — and prints the tokens per second and the tool
-calls it took. It leaves the config as it found it.
+`pnpm local:check [model-id]` does the whole thing for real — install, start, a completion, a
+whole turn through the agent loop with tools, and, when two local models are installed, a
+**delegated read** where one drives and the other reads. It prints the tokens per second and
+the calls it took, and leaves the config as it found it.
+
+That last stage is what a local model is worth having for, and it took three fixes to make it
+work. `bulk_read` was missing from the slim harness, so a 4B model with a 16k window was asked
+about a 1,600-line file, had no way to read it, grepped instead and invented an answer.
+`readRefusal` exempted any read that named a range, on the reasoning that an agent asking for
+lines 900-950 knows what it needs — true of a frontier model, and false of a small one that
+fills in every optional parameter, so `offset: 0, limit: 2000` walked straight through the
+refusal it was meant to trip. And the delegation payload was capped at a constant 400,000
+characters, a number written when every cheap model was a hosted one with a 200k window: it is
+now sized from the **worker's** declared window, and the refusal says so in tokens. With all
+three in place: read refused, 600 lines delegated to the 3B, an accurate two-sentence answer
+back in the 4B's own words, and the file itself never in the conversation.
 
 ### Less harness for a smaller model
 
@@ -228,6 +241,37 @@ UI and in the request error, instead of looking like a missing key.
 Bundled AI SDK packages: `@ai-sdk/openai-compatible`, `@ai-sdk/openai`, `@ai-sdk/anthropic`,
 `@ai-sdk/google`. Any other package named in `npm` is imported dynamically and must be
 installed alongside the app.
+
+### Under the composer
+
+One line, quieter than the box above it, because none of it is about the message
+being written. What you set rarely is on the left — folder, agent, environment, the two
+switches — and what you watch is on the right: which model is answering, how hard it is
+trying, and a ring that fills as the conversation approaches a summary.
+
+The **ring** counts toward the summary rather than up to the window: full means now. A
+percentage is enough to know one is coming and not enough to do anything about it, so
+clicking it opens what the last request was actually made of — messages, tools and framing,
+the system prompt, skills — and how much room is left before the older half is replaced. The
+total is the provider's own count for the first step of the turn; the parts are this app's
+estimate of it, which is said on the panel rather than implied. A conversation that is nine
+tenths tool schemas needs fewer tools, not a summary, and that is the distinction the
+percentage could not make.
+
+The same panel carries **usage**, separately: every model this app has paid anything for this
+month, not only the one in the picker. A delegated read, a plan or a subagent is charged to
+whichever model did it, so this is where a shunt worker and the model on your own machine show
+up — the local one as `free`, which is the truth rather than `$0.00`.
+
+**Effort** is the dial beside it, from *Faster* to *Smarter*. It deliberately is not a second
+model picker: a slider that quietly moved the work to a better model would make the label next
+to it a lie. It moves the two things that belong to this turn of this model — how much it may
+think, for the models that take a reasoning setting, and how many steps it may spend — and the
+panel says which of the two is in force, because for most models it is only the second. Mark a
+model as *reasoning* under Providers & keys to have the dial reach it; Anthropic gets a
+thinking budget, OpenAI and Google their own spelling of the same thing, and an
+OpenAI-compatible endpoint gets `reasoning_effort`. A model that declares nothing is sent
+nothing rather than a guess that might fail the request.
 
 ## Remote execution over SSH
 

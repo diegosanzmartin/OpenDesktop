@@ -65,6 +65,9 @@ import {
   DEFAULT_MIN_LINES,
   bashReadTarget,
   packFiles,
+  MAX_PAYLOAD_CHARS,
+  payloadLimitFor,
+  payloadRefusal,
   readRefusal,
   stripFences
 } from './shunt'
@@ -116,6 +119,7 @@ import { mentionToken, mentionedAgents, splitMentions } from '@shared/mentions'
 import { extensionOf, fileSize, isDocument } from '@shared/documents'
 import { costOf, formatCost } from '@shared/cost'
 import { needsSlimHarness } from '@shared/routing'
+import { DEFAULT_EFFORT, canReason, effortLevel, reasoningOptions } from '@shared/effort'
 import {
   LLAMA_BINARIES,
   LLAMA_BUILD,
@@ -3358,13 +3362,83 @@ async function main(): Promise<void> {
       readRefusal({ path: '/p/small.ts', lines: DEFAULT_MIN_LINES }) === null
     )
     check(
-      'and so is a read that asked for a range',
-      readRefusal({ path: '/p/big.ts', lines: 4014, offset: 200 }) === null &&
-        readRefusal({ path: '/p/big.ts', lines: 4014, limit: 50 }) === null
+      'and so is a read that asked for a range inside the limit',
+      readRefusal({ path: '/p/big.ts', lines: 4014, offset: 200, limit: 50 }) === null &&
+        readRefusal({ path: '/p/big.ts', lines: 4014, limit: 50 }) === null &&
+        readRefusal({ path: '/p/big.ts', lines: 4014, offset: 3900 }) === null
+    )
+    /*
+     * The loophole a small model walked through. `offset: 0, limit: 2000` on a
+     * 1,600-line file is the whole-file read this refusal exists for, and the
+     * old exemption — any offset or limit at all — let it past: measured, a 4B
+     * model did exactly that, spent sixty-eight seconds on a window that could
+     * not hold a third of the file, and answered from whatever survived being
+     * truncated.
+     */
+    check(
+      'but a range that covers the file is the same read by another name',
+      readRefusal({ path: '/p/big.ts', lines: 1600, offset: 0, limit: 2000 }) !== null &&
+        readRefusal({ path: '/p/big.ts', lines: 1600, offset: 10 }) !== null,
+      readRefusal({ path: '/p/big.ts', lines: 1600, offset: 0, limit: 2000 })?.slice(0, 60)
+    )
+    check(
+      'and the refusal says how big a range it will allow',
+      /up to 350 lines is always/.test(readRefusal({ path: '/p/big.ts', lines: 4014 }) ?? ''),
+      readRefusal({ path: '/p/big.ts', lines: 4014 })?.slice(-120)
     )
     check(
       "the threshold is the session's own",
       readRefusal({ path: '/p/x.ts', lines: 100, minLines: 50 }) !== null
+    )
+
+    /*
+     * How much one delegation may carry, which is a property of the worker and
+     * used to be a constant. 400,000 characters was a guess written when every
+     * cheap model was a hosted one; a model on a laptop has 16k or 32k of
+     * window, and measured here a 1,631-line file sent to a 32k worker failed
+     * three times over — and on the run before that was silently truncated and
+     * summarised from whatever survived.
+     */
+    const windows = normalizeConfig({
+      provider: {
+        p: {
+          id: 'p',
+          npm: '@ai-sdk/openai-compatible',
+          name: 'P',
+          options: { apiKey: 'x' },
+          models: {
+            small: { id: 'small', name: 'Small', contextWindow: 32_768, maxOutputTokens: 4_096 },
+            big: { id: 'big', name: 'Big', contextWindow: 1_000_000, maxOutputTokens: 64_000 },
+            mystery: { id: 'mystery', name: 'Mystery' }
+          }
+        }
+      }
+    } as unknown as Record<string, unknown>)
+
+    const smallLimit = payloadLimitFor(windows, 'p/small')
+    check(
+      "a worker's window decides what it may be sent",
+      smallLimit > 50_000 && smallLimit < MAX_PAYLOAD_CHARS,
+      smallLimit
+    )
+    check(
+      'a wide window is still capped at the ceiling',
+      payloadLimitFor(windows, 'p/big') === MAX_PAYLOAD_CHARS
+    )
+    check(
+      'and an undeclared window is not treated as a small one',
+      payloadLimitFor(windows, 'p/mystery') === MAX_PAYLOAD_CHARS
+    )
+    const refusal = payloadRefusal({ chars: 240_000, limit: smallLimit, worker: 'p/small', files: 1 })
+    check(
+      'the refusal is in tokens and names the worker',
+      /60,000 tokens/.test(refusal) && /p\/small has room/.test(refusal),
+      refusal
+    )
+    check(
+      'and points at the way through rather than only saying no',
+      /offset and a limit/.test(refusal),
+      refusal
     )
 
     check('cat on a file is a read', bashReadTarget('cat src/Service.java') === 'src/Service.java')
@@ -6120,20 +6194,30 @@ async function main(): Promise<void> {
       slim.tools
     )
     check(
-      'and is not offered the expensive mistakes',
-      ['task', 'fetch', 'bulk_read', 'code_write'].every((name) => !slim.tools.includes(name)),
+      'and is not offered the two that multiply its own mistakes',
+      ['task', 'fetch'].every((name) => !slim.tools.includes(name)),
       slim.tools
     )
     check(
-      'but keeps the one that asks a stronger model for a plan',
-      slim.tools.includes('plan'),
+      'but keeps every route it has to a bigger model',
+      ['plan', 'bulk_read', 'code_write'].every((name) => slim.tools.includes(name)),
       slim.tools
     )
     check(
       'the strong model is offered everything it was before',
-      ['fetch', 'task', 'bulk_read', 'code_write'].every((name) => full.tools.includes(name)) &&
-        full.tools.length - slim.tools.length >= 3,
-      { full: full.tools, slim: slim.tools }
+      ['fetch', 'task', 'bulk_read', 'code_write'].every((name) => full.tools.includes(name)),
+      full.tools
+    )
+    /*
+     * Not a count: the strong model is the planner, so it is not offered `plan`
+     * either — asking itself how to do something is a round trip for its own
+     * judgement. The small model gets that tool and the strong one does not,
+     * which is the arrangement working rather than a discrepancy.
+     */
+    check(
+      'and the difference between them is exactly the two that were taken away',
+      full.tools.filter((name) => !slim.tools.includes(name)).join(',') === 'fetch,task',
+      full.tools.filter((name) => !slim.tools.includes(name))
     )
     check(
       'and the slim prompt is the shorter of the two by a long way',
@@ -6146,6 +6230,139 @@ async function main(): Promise<void> {
     store.deleteSession(small.id)
     history.clearHistory(big.id)
     history.clearHistory(small.id)
+    saveConfig(defaultConfig())
+  }
+
+  section('how hard to try, and where that lands')
+  {
+    /*
+     * The dial has one job that can fail silently: reaching the provider. So
+     * this captures what the model was actually handed — the provider options
+     * and the step ceiling — rather than trusting that a slider is wired up.
+     */
+    const sent: { options?: Record<string, unknown>; ceiling?: number }[] = []
+    const capture = (): LanguageModel =>
+      new MockLanguageModelV4({
+        doStream: async (params: Record<string, unknown>) => {
+          sent.push({ options: params.providerOptions as Record<string, unknown> | undefined })
+          return {
+            stream: new ReadableStream({
+              start(controller) {
+                controller.enqueue({ type: 'stream-start', warnings: [] })
+                controller.enqueue({ type: 'text-start', id: 't1' })
+                controller.enqueue({ type: 'text-delta', id: 't1', delta: 'ok' })
+                controller.enqueue({ type: 'text-end', id: 't1' })
+                controller.enqueue(finish('stop', 12, 3))
+                controller.close()
+              }
+            })
+          }
+        }
+      }) as unknown as LanguageModel
+
+    check(
+      'the middle of the scale is the default, and unset means the middle',
+      effortLevel(undefined).value === DEFAULT_EFFORT && effortLevel(3).label === 'Medium'
+    )
+    check(
+      'the ends are named for what they do',
+      effortLevel(1).label === 'Minimal' && effortLevel(5).label === 'Max'
+    )
+    check(
+      'a model that declares no reasoning is not sent a reasoning setting',
+      !canReason({ id: 'm', name: 'M' }) && canReason({ id: 'm', name: 'M', reasoning: true })
+    )
+    check(
+      'Anthropic gets a thinking budget, and never one below its minimum',
+      JSON.stringify(reasoningOptions('@ai-sdk/anthropic', 'anthropic', effortLevel(5))).includes(
+        '32768'
+      ) &&
+        JSON.stringify(
+          reasoningOptions('@ai-sdk/anthropic', 'anthropic', { ...effortLevel(2), budgetTokens: 10 })
+        ).includes('1024'),
+      reasoningOptions('@ai-sdk/anthropic', 'anthropic', effortLevel(5))
+    )
+    check(
+      'and at the bottom of the scale it is told not to think at all',
+      JSON.stringify(reasoningOptions('@ai-sdk/anthropic', 'anthropic', effortLevel(1))).includes(
+        'disabled'
+      )
+    )
+    check(
+      'OpenAI gets a word rather than a budget',
+      JSON.stringify(reasoningOptions('@ai-sdk/openai', 'openai', effortLevel(4))).includes(
+        '"reasoningEffort":"high"'
+      )
+    )
+    check(
+      'and an OpenAI-compatible endpoint gets the field under its own id',
+      JSON.stringify(reasoningOptions('@ai-sdk/openai-compatible', 'helmcode', effortLevel(4))) ===
+        '{"helmcode":{"reasoning_effort":"high"}}'
+    )
+
+    const thinking = normalizeConfig({
+      model: 'p/brain',
+      maxSteps: 60,
+      provider: {
+        p: {
+          id: 'p',
+          npm: '@ai-sdk/anthropic',
+          name: 'P',
+          options: { apiKey: 'x' },
+          models: {
+            brain: { id: 'brain', name: 'Brain', iq: 5, cost: 4, reasoning: true },
+            plain: { id: 'plain', name: 'Plain', iq: 4, cost: 2 }
+          }
+        }
+      }
+    } as unknown as Record<string, unknown>)
+    saveConfig(thinking)
+    providers.setModelResolverOverride((ref) => ({
+      providerId: 'p',
+      modelId: ref.split('/')[1],
+      label: ref,
+      model: capture()
+    }))
+
+    const hard = store.createSession({
+      title: 'effort',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: MANAGER_AGENT,
+      model: 'p/brain',
+      effort: 5,
+      autoApprove: true
+    })
+    history.clearHistory(hard.id)
+    await runTurn({ sessionId: hard.id, userText: 'think about it' })
+    check(
+      'a reasoning model is sent the budget the dial asked for',
+      JSON.stringify(sent[sent.length - 1]?.options ?? {}).includes('32768'),
+      sent[sent.length - 1]?.options
+    )
+
+    const plain = store.createSession({
+      title: 'effort plain',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: MANAGER_AGENT,
+      model: 'p/plain',
+      effort: 5,
+      autoApprove: true
+    })
+    history.clearHistory(plain.id)
+    await runTurn({ sessionId: plain.id, userText: 'just do it' })
+    check(
+      'and a model that declares nothing is sent nothing, rather than a guess',
+      sent[sent.length - 1]?.options === undefined,
+      sent[sent.length - 1]?.options
+    )
+
+    providers.setModelResolverOverride(null)
+    store.deleteSession(hard.id)
+    store.deleteSession(plain.id)
+    history.clearHistory(hard.id)
+    history.clearHistory(plain.id)
     saveConfig(defaultConfig())
   }
 

@@ -17,6 +17,7 @@ import {
 } from '@shared/types'
 import { savingsOf, type Savings } from '@shared/savings'
 import { allowanceFor, allowanceUsed, needsSlimHarness, pickModel } from '@shared/routing'
+import { canReason, effortLevel, reasoningOptions } from '@shared/effort'
 import { mentionToken, mentionedAgents } from '@shared/mentions'
 import { costOf, formatCost } from '@shared/cost'
 import { isAbort } from '@shared/errors'
@@ -164,29 +165,30 @@ function declaredModel(config: AppConfig, ref: string): ProviderModelConfig | un
 }
 
 /**
- * The tools a small model is not given, and why each one goes.
+ * The tools a small model is not given, and why only these two.
  *
  * Not a judgement about danger — the permission prompts do that, and they are
  * unchanged. This is about attention: every schema is one more thing to choose
- * between, and these are the ones a small model gets wrong expensively. `task`
- * is a 3B model deciding to hire three more of itself, each re-reading the
- * repository from nothing. `fetch` is the open internet reaching the model
- * least able to treat a web page as data. `bulk_read` and `code_write` hand
- * work down to a cheaper model, and there is nothing cheaper than this one.
+ * between. `task` is a 3B model deciding to hire three more of itself, each
+ * re-reading the repository from nothing, off a brief it is the least able to
+ * write. `fetch` is the open internet reaching the model least able to treat a
+ * web page as data rather than as instructions.
  *
- * `plan` deliberately stays. Asking a stronger model how to do something hard
- * is not a luxury for a weak model, it is the arrangement the savings switch
- * exists for — the cheap one drives, the expensive one is consulted — and it is
- * the only thing on this list that gets more useful as the model gets smaller.
- * Taking it away was the first thing tried here, and it broke the test that
- * says a modest model can ask for a plan, which is how that test earned its
- * keep.
+ * Everything that hands work to *another model* deliberately stays, and it took
+ * two measured failures to learn that. `plan` was on this list until it broke
+ * the test that says a modest model may ask a stronger one how to do something
+ * hard — which is the whole arrangement the savings switch exists for.
+ * `bulk_read` was on it until a 4B model with a 16k window was asked about a
+ * 1,567-line file, had no way to read it, grepped instead and invented an
+ * answer from what came back. A small model's way out of something too big for
+ * it is to give it to someone else, so those are the last tools to take away,
+ * not the first.
  *
- * What is left is the work a small model is for: run something, read something,
- * find something, change a line, ask for a plan. Nothing a person would expect
- * in a chat window has been removed.
+ * What is left is the work a small model is for — run something, read
+ * something, find something, change a line — plus every route it has to a
+ * bigger one.
  */
-const SLIM_WITHOUT = ['task', 'fetch', 'bulk_read', 'code_write'] as const
+const SLIM_WITHOUT = ['task', 'fetch'] as const
 
 /**
  * The same agent with fewer tools, and without the manager's brief.
@@ -1022,8 +1024,32 @@ export async function runTurn(input: TurnInput): Promise<string> {
      * asked of a frontier model and of the 3B on this machine gets the full brief from
      * one and three lines from the other.
      */
-    const slim = needsSlimHarness(declaredModel(config, modelRef))
+    const declared = declaredModel(config, modelRef)
+    const slim = needsSlimHarness(declared)
     const harness = slim ? slimHarness(agent) : agent
+
+    /*
+     * How hard to try, as the two things it can actually change.
+     *
+     * The reasoning setting only goes to a model that declares it has one: a
+     * provider sent an option it does not understand is a request that may
+     * simply fail, and a dial that breaks a turn is worse than a dial that
+     * does less than you hoped. Everything else it touches is the step
+     * ceiling, which every model has.
+     */
+    const effort = effortLevel(session.effort)
+    const thinks = canReason(declared)
+    const reasoning = thinks
+      ? reasoningOptions(
+          config.provider[modelRef.slice(0, modelRef.indexOf('/'))]?.npm ?? '',
+          modelRef.slice(0, modelRef.indexOf('/')),
+          effort
+        )
+      : undefined
+    const stepCeiling = Math.max(
+      1,
+      Math.round((slim ? Math.min(config.maxSteps, 12) : config.maxSteps) * effort.steps)
+    )
     const autoApprove = session.autoApprove ?? config.autoApprove ?? false
     const savings = await announceSavingsProblems({
       config,
@@ -1050,7 +1076,8 @@ export async function runTurn(input: TurnInput): Promise<string> {
     logLine(
       'info',
       `turn ${session.id} start agent=${agent.id} model=${modelRef} env=${session.environmentId}` +
-        `${slim ? ' harness=slim' : ''}` +
+        `${slim ? ' harness=slim' : ''} effort=${effort.label.toLowerCase()}` +
+        `${reasoning ? `(${effort.reasoning})` : ''} steps<=${stepCeiling}` +
         `${input.depth ? ` depth=${input.depth}` : ''} cwd=${session.cwd}`
     )
 
@@ -1094,6 +1121,10 @@ export async function runTurn(input: TurnInput): Promise<string> {
           model: config.agent[agentId]?.model ?? session.model,
           savings,
           autoApprove,
+          // The same work at the same effort: a subagent asked to think less
+          // than the conversation that delegated to it is a surprise nobody
+          // asked for.
+          effort: session.effort,
           parentSessionId: session.id
         })
         store.updateSession(child.id, { taskLabel: description })
@@ -1138,22 +1169,38 @@ export async function runTurn(input: TurnInput): Promise<string> {
     history.markTurn(session.id, asked.id)
     history.appendHistory(session.id, [userMessage])
 
+    /*
+     * What this request is made of, recorded before it is sent.
+     *
+     * Three things grow for three different reasons and only one of them is
+     * the conversation: a session that is nine tenths tool schemas needs fewer
+     * tools, not a summary, and "context: 37%" cannot tell anybody which of
+     * the two they are looking at. Measured from the strings actually handed
+     * over, by the same estimator the gauge uses, so the parts add up to the
+     * whole rather than to something near it.
+     */
+    const systemText =
+      systemPrompt(harness, {
+        cwd: session.cwd,
+        environmentLabel: runtime.label,
+        environmentKind: runtime.kind,
+        platform,
+        date: new Date().toISOString().slice(0, 10),
+        tools: Object.keys(tools),
+        slim
+      }) +
+      (slim ? '' : savingsGuidance(savings, planner === modelRef ? null : planner)) +
+      (input.coordinationNote ?? '')
+
+    const partOfPrefix = {
+      messages: history.estimateTokens(messages),
+      system: Math.round(systemText.length / 4),
+      ...(expanded.prompt ? { skills: Math.round(expanded.prompt.length / 4) } : {})
+    }
+
     const result = streamText({
       model: resolved.model,
-      system:
-        systemPrompt(harness, {
-          cwd: session.cwd,
-          environmentLabel: runtime.label,
-          environmentKind: runtime.kind,
-          platform,
-          date: new Date().toISOString().slice(0, 10),
-          tools: Object.keys(tools),
-          slim
-        }) +
-        // More policy, and the switches it explains are the ones a small model
-        // has no tools for anyway.
-        (slim ? '' : savingsGuidance(savings, planner === modelRef ? null : planner)) +
-        (input.coordinationNote ?? ''),
+      system: systemText,
       messages,
       tools,
       /*
@@ -1166,7 +1213,12 @@ export async function runTurn(input: TurnInput): Promise<string> {
        * attempted. Basic work wants the likeliest token, not an interesting
        * one. An agent that sets its own temperature still gets it.
        */
-      temperature: agent.temperature ?? (slim ? 0.2 : undefined),
+      /*
+       * ...except where thinking is on: Anthropic refuses a request that sets
+       * both, and it is the thinking that was asked for.
+       */
+      temperature: reasoning?.anthropic ? undefined : agent.temperature ?? (slim ? 0.2 : undefined),
+      ...(reasoning ? { providerOptions: reasoning } : {}),
       /*
        * A dozen steps for a small model, sixty for the others.
        *
@@ -1177,7 +1229,7 @@ export async function runTurn(input: TurnInput): Promise<string> {
        * forty-seven seconds of that into a bounded failure that says what
        * happened, which is the most useful thing it can be.
        */
-      stopWhen: stepCountIs(slim ? Math.min(config.maxSteps, 12) : config.maxSteps),
+      stopWhen: stepCountIs(stepCeiling),
       /*
        * Told before it is cut off.
        *
@@ -1311,6 +1363,22 @@ export async function runTurn(input: TurnInput): Promise<string> {
             firstStepInput = part.usage.inputTokens ?? 0
             firstStepCacheRead = part.usage.inputTokenDetails?.cacheReadTokens ?? 0
             firstStepTotal = firstStepInput
+            /*
+             * What the prefix was made of, now that the provider has said what
+             * the whole of it came to.
+             *
+             * The total is theirs and the parts are ours: the transcript and
+             * the system prompt can be measured from the strings that were
+             * sent, and what is left over is the tool schemas and the
+             * provider's own framing — which cannot be measured here at all,
+             * because a tool's schema is a zod object until the SDK converts
+             * it. Subtracting is honest about that; stringifying a closure
+             * would have reported a couple of hundred tokens for a dozen tools
+             * and looked precise doing it.
+             */
+            store.updateSession(session.id, {
+              contextParts: { ...partOfPrefix, total: firstStepInput }
+            })
           }
           lastStepInput = part.usage.inputTokens ?? lastStepInput
           usedInput += part.usage.inputTokens ?? 0

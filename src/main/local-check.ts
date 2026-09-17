@@ -10,13 +10,14 @@
  *
  * Run with: pnpm local:check
  */
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { generateText } from 'ai'
-import { formatBytes, localSpec, LOCAL_PROVIDER_ID } from '@shared/local-model'
-import { loadConfig, saveConfig, setAgentLoader } from './config'
+import { LOCAL_MODELS, LOCAL_PROVIDER_ID, formatBytes, localSpec } from '@shared/local-model'
+import { loadConfig, readConfigText, saveConfig, setAgentLoader, writeConfigText } from './config'
 import {
+  MODELS_DIR,
   disposeLocalModel,
   installLocalModel,
   localStatus,
@@ -28,6 +29,8 @@ import { resolveModel } from './providers'
 import { bus } from './bus'
 import { listAgents, seedBuiltins } from './agents'
 import { runTurn } from './agent/runner'
+import { resolveApproval } from './approvals'
+import { MANAGER_AGENT } from '@shared/types'
 import * as store from './store'
 import * as history from './history'
 
@@ -40,6 +43,14 @@ function check(label: string, condition: boolean, detail?: unknown): void {
   else {
     failures.push(label)
     console.log(`  FAIL ${label}${detail === undefined ? '' : ` — ${JSON.stringify(detail)}`}`)
+  }
+}
+
+function weightsOnDisk(spec: { file: string; bytes: number }): boolean {
+  try {
+    return statSync(join(MODELS_DIR, spec.file)).size === spec.bytes
+  } catch {
+    return false
   }
 }
 
@@ -193,6 +204,149 @@ async function main(): Promise<void> {
    * still going when the cap cut it off.
    */
   check('and stops rather than running on', said.length > 0 && said.length < 1500, said.length)
+
+  /*
+   * And the job this model is actually here for: a delegated read.
+   *
+   * With the savings switch on, a whole-file read longer than a few hundred
+   * lines is refused and handed to a cheaper model instead — the file goes
+   * there, the answer comes back, and the file never enters this conversation.
+   * That is what a local model is worth having for, and it needs two of them
+   * installed so the worker is not the model doing the asking.
+   */
+  const other = LOCAL_MODELS.find((entry) => entry.id !== spec.id && weightsOnDisk(entry))
+  if (!other) {
+    console.log(`       shunt: skipped — install a second local model to delegate to`)
+  } else {
+    const long = join(room, 'runner.ts')
+    const source = join(process.cwd(), 'src/main/agent/runner.ts')
+    if (!existsSync(source)) {
+      console.log('       shunt: skipped — run this from the repository')
+    } else {
+      /*
+       * Long enough to be refused, small enough for the worker to hold.
+       *
+       * The whole 1,600-line file was the first thing tried and it is too big
+       * for any local model: the read was refused, the delegation was refused
+       * because 60,000 tokens do not fit in a 32k window, and the model fell
+       * back to a ranged read — which is the system working correctly and
+       * tests nothing about delegating. 600 lines is over the 350-line
+       * threshold and about 7,000 tokens, which fits.
+       */
+      writeFileSync(long, readFileSync(source, 'utf8').split('\n').slice(0, 600).join('\n'))
+      const lines = readFileSync(long, 'utf8').split('\n').length
+
+      // Named by hand, because the router would otherwise pick whichever model
+      // is cheapest at the margin — and with a real key in the keychain that is
+      // a hosted model, not this one. This is the knob that says "delegate to
+      // the thing on my machine".
+      const before = readConfigText()
+      saveConfig({ ...loadConfig(), shuntModel: `${LOCAL_PROVIDER_ID}/${other.id}` })
+
+      /*
+       * The manager, because the read-only agent declares a fixed tool list
+       * that does not include `bulk_read` — which is why the first run of this
+       * check watched a 4B model grep a 1,568-line file three times and then
+       * invent an answer. And without auto-approval: nothing that changes
+       * anything is allowed through, so a small model let loose on a real
+       * repository can read and search and nothing else.
+       */
+      const shunted = store.createSession({
+        title: 'local shunt check',
+        cwd: room,
+        environmentId: 'local',
+        agentId: MANAGER_AGENT,
+        model: `${LOCAL_PROVIDER_ID}/${spec.id}`,
+        savings: { rtk: false, shunt: true }
+      })
+      const READ_ONLY = ['read', 'bulk_read', 'grep', 'glob', 'list']
+      const refused: string[] = []
+      const watching = bus.subscribe((event) => {
+        if (event.type !== 'approval.requested') return
+        const allowed = READ_ONLY.includes(event.request.tool)
+        if (!allowed) refused.push(event.request.tool)
+        resolveApproval(event.request.id, allowed ? 'always' : 'reject')
+      })
+      const shuntStarted = Date.now()
+      await runTurn({
+        sessionId: shunted.id,
+        /*
+         * A question that cannot be grepped. "How many steps may a turn take"
+         * was the first one tried and it taught the check nothing: the model
+         * grepped for "steps", found `let steps = 0`, and reported that as the
+         * answer. Delegation is for what has to be read whole.
+         */
+        userText:
+          'Read runner.ts and summarise what it is responsible for, in two sentences.'
+      })
+      const blocks = store.listBlocks(shunted.id)
+      // The last one, and its status: the first of two bulk_read calls in one
+      // run turned out to have failed, and reading the first block reported
+      // the "asking…" line it had got as far as printing.
+      const delegated = blocks.filter((block) => block.tool === 'bulk_read').slice(-1)[0]
+      const answered = (store.listMessages(shunted.id).slice(-1)[0]?.parts ?? [])
+        .filter((part) => part.type === 'text')
+        .map((part) => part.text ?? '')
+        .join(' ')
+        .trim()
+
+      console.log(
+        `       shunt: ${spec.name} drove, ${other.name} read ${lines} lines — ` +
+          `${blocks.length} call${blocks.length === 1 ? '' : 's'} (${blocks
+            .map((block) => block.tool)
+            .join(', ')}) in ${Math.round((Date.now() - shuntStarted) / 1000)}s`
+      )
+      console.log(
+        `       blocks: ${blocks.map((block) => `${block.tool}:${block.status}`).join(' ')}`
+      )
+      console.log(
+        `       delegated (${delegated?.status ?? 'none'}): ${String(delegated?.output ?? '(none)')
+          .replace(/\s+/g, ' ')
+          .slice(0, 320)}`
+      )
+      console.log(`       said (${answered.length} chars): ${answered.replace(/\s+/g, ' ').slice(0, 400)}`)
+
+      check(
+        'a file too long to read is delegated rather than read into the conversation',
+        Boolean(delegated),
+        blocks.map((block) => block.tool)
+      )
+      check(
+        'to the other local model, which is what shuntModel asked for',
+        JSON.stringify(delegated?.input ?? {}).includes('runner.ts') ||
+          String(delegated?.subtitle ?? '').includes(other.id),
+        { input: delegated?.input, subtitle: delegated?.subtitle }
+      )
+      /*
+       * That an answer came back, not that it is a good one. It is not: a 3B
+       * model handed 1,600 lines of runner.ts reported "logic for executing
+       * and managing test runners, likely used in a testing framework" —
+       * confident, fluent and from the filename. The mechanism is what this
+       * check is for; whether a given worker is worth delegating to is a
+       * judgement for whoever picks it, and the honest version of that
+       * judgement is in the README.
+       */
+      check(
+        'and an answer comes back, charged to the model that did the reading',
+        delegated?.status === 'success' &&
+          String(delegated?.output ?? '').includes(`${LOCAL_PROVIDER_ID}/${other.id}:`),
+        String(delegated?.output ?? '').slice(-160)
+      )
+      check(
+        'having kept the file itself out of the conversation',
+        /stayed out of this conversation/.test(String(delegated?.output ?? '')),
+        String(delegated?.output ?? '').slice(-120)
+      )
+
+      if (refused.length > 0) {
+        console.log(`       refused, as this check does not let it write: ${refused.join(', ')}`)
+      }
+      watching()
+      store.deleteSession(shunted.id)
+      history.clearHistory(shunted.id)
+      writeConfigText(before)
+    }
+  }
 
   // Nothing of this check outlives it: the app's own sessions are next door.
   store.deleteSession(turnSession.id)

@@ -20,7 +20,6 @@ import {
 import { activeSession, useStore, type DockTab } from '../state/store'
 import { folderName } from '../lib/format'
 import { formatCost } from '@shared/cost'
-import { ContextGauge } from './ContextGauge'
 import { EditableTitle } from './EditableTitle'
 import { DiffSquare } from './icons'
 
@@ -168,10 +167,11 @@ export function TopBar(): ReactNode {
           {folderName(session.cwd)}
         </span>
       ) : null}
-      {/* What this conversation has cost so far, when any model in it has a
-          price. Shown here because it is a fact about the session, like its
-          folder, rather than about any one turn. */}
-      {view === 'chat' && session ? <ContextGauge session={session} /> : null}
+      {/* The context gauge used to be here. It moved to the end of the line
+          under the composer, where the rest of what-is-answering-this lives,
+          and grew a panel: a percentage is enough to know a summary is coming
+          and not enough to do anything about it. What this conversation has
+          cost stays, because it is a fact about the session like its folder. */}
       {view === 'chat' && session && session.usage.cost > 0 ? (
         <span
           title="What this session has cost so far"

@@ -90,6 +90,8 @@ export function createSession(input: {
   model: string
   savings?: Partial<Savings>
   autoApprove?: boolean
+  /** How hard to try, 1 to 5. Unset means the middle. */
+  effort?: number
   parentSessionId?: string
 }): Session {
   const now = Date.now()
@@ -102,6 +104,7 @@ export function createSession(input: {
     model: input.model,
     savings: input.savings,
     autoApprove: input.autoApprove,
+    effort: input.effort,
     status: 'idle',
     createdAt: now,
     updatedAt: now,

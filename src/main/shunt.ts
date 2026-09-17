@@ -27,6 +27,7 @@
  */
 import { generateText } from 'ai'
 import type { AppConfig } from '@shared/types'
+import { budgetFor } from '@shared/context'
 import { resolveModel } from './providers'
 
 export { plannerModelRef, workerIsTheSameModel, workerModelRef } from '@shared/routing'
@@ -39,12 +40,50 @@ export { plannerModelRef, workerIsTheSameModel, workerModelRef } from '@shared/r
 export const DEFAULT_MIN_LINES = 350
 
 /**
- * As much as one delegation may carry. Upstream's number, for a different
- * reason: there it is what fits in a command line, here it is a guess at what
- * fits in a cheap model's window without being silently truncated at the far
- * end, where nobody would see it happen.
+ * The most one delegation may carry, whatever the worker is. Upstream's number,
+ * kept as a ceiling rather than as the answer.
  */
 export const MAX_PAYLOAD_CHARS = 400_000
+
+/**
+ * What this particular worker can be sent, in characters.
+ *
+ * A constant was a guess at "what fits in a cheap model's window", and the
+ * guess was written when every cheap model was a hosted one with a window of
+ * 200k. A model running on somebody's laptop has 16k or 32k, and 400,000
+ * characters of file is not a delegation it can refuse politely — measured
+ * here, a 1,631-line file sent to a 32k worker failed three times in a row,
+ * and on an earlier run was silently truncated and summarised from whatever
+ * survived, which is worse.
+ *
+ * Four characters to the token, four fifths of the usable window, so the
+ * question and the answer have somewhere to go. Falls back to the ceiling when
+ * the worker declares no window, since an unknown window is not a small one.
+ */
+export function payloadLimitFor(config: AppConfig, worker: string): number {
+  const usable = budgetFor(config, worker)
+  if (!usable) return MAX_PAYLOAD_CHARS
+  return Math.min(MAX_PAYLOAD_CHARS, Math.round(usable * 4 * 0.8))
+}
+
+/** What to say when the corpus does not fit, in terms of the worker's window. */
+export function payloadRefusal(input: {
+  chars: number
+  limit: number
+  worker: string
+  files: number
+}): string {
+  const tokens = Math.round(input.chars / 4)
+  const room = Math.round(input.limit / 4)
+  return (
+    `Those ${input.files} file${input.files === 1 ? '' : 's'} come to about ${tokens.toLocaleString('en-US')} ` +
+    `tokens, and ${input.worker} has room for about ${room.toLocaleString('en-US')} in one ` +
+    `delegation.\n\n` +
+    `Ask about fewer files at a time, or about one part of this one — a read with an offset and ` +
+    `a limit is always allowed, and a question about a section is usually the question anyway. ` +
+    `Sending it whole would either fail or be truncated somewhere nobody can see.`
+  )
+}
 
 /** Upstream's bulk-reader mode instructions, verbatim. */
 export const BULK_READER_INSTRUCTIONS =
@@ -88,9 +127,26 @@ export function readRefusal(input: {
   minLines?: number
 }): string | null {
   const minLines = input.minLines ?? DEFAULT_MIN_LINES
-  // The agent asked for a specific range, so it already knows what it needs.
-  if (input.offset !== undefined || input.limit !== undefined) return null
   if (input.lines <= minLines) return null
+
+  /*
+   * A range is exempt, because an agent asking for lines 900 to 950 already
+   * knows what it needs. What is not exempt is a range that covers the file:
+   * `offset: 0, limit: 2000` on a 1,600-line file is the whole-file read this
+   * refusal exists for, spelled differently.
+   *
+   * The exemption used to be "any offset or limit at all", which is true of a
+   * model that passes a range on purpose and false of a small one that fills
+   * in every optional parameter it is offered. Measured: a 4B model asked to
+   * summarise a 1,600-line file called read with offset 0 and a limit past the
+   * end of it, spent sixty-eight seconds on a window that could not hold a
+   * third of it, and answered from whatever survived the truncation — which is
+   * the failure this whole mechanism is here to prevent. Same reasoning as
+   * cat and head being refused: the same read by another route is the same
+   * read.
+   */
+  const asked = input.limit ?? input.lines - (input.offset ?? 0)
+  if (asked <= minLines) return null
 
   return (
     `${input.path} is ${input.lines} lines, over this session's limit of ${minLines} for ` +
@@ -99,7 +155,8 @@ export function readRefusal(input: {
     `and only its answer comes back here. Asking again with the same paths costs you ` +
     `nothing, so ask one question at a time rather than one question about everything.\n\n` +
     `If you need the exact text — to edit it, or to quote a line — read it again with an ` +
-    `offset and a limit for the part you need. That is always allowed.`
+    `offset and a limit for the part you need. A range of up to ${minLines} lines is always ` +
+    `allowed; a range that covers the file is this same read again.`
   )
 }
 

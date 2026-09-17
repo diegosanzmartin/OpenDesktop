@@ -19,7 +19,8 @@ import { ApprovalCard } from './src/components/ApprovalCard'
 import { Mentions } from './src/components/Markdown'
 import { DocumentCard } from './src/components/DocumentCard'
 import { Composer } from './src/components/Composer'
-import { ContextGauge } from './src/components/ContextGauge'
+import { ContextMeter } from './src/components/ContextMeter'
+import { EffortDial } from './src/components/EffortDial'
 import { ModelsTab } from './src/components/ModelsTab'
 import { RoutingTab } from './src/components/RoutingTab'
 import { FolderPicker } from './src/components/FolderPicker'
@@ -84,6 +85,11 @@ const REPLIES: Record<string, unknown> = {
    * differently. The local model's row is the reason: it reads a status of its
    * own, and getting the keychain's back made the section render as nothing.
    */
+  'meter.get': {
+    'helmcode/glm5.3-flash': { day: 412_000, month: 3_140_000, dayCost: 0, monthCost: 0 },
+    'anthropic/claude-sonnet-5': { day: 9_400, month: 148_000, dayCost: 0.21, monthCost: 3.42 },
+    'local/qwen3-4b': { day: 21_000, month: 64_000, dayCost: 0, monthCost: 0 }
+  },
   'local.status': {
     stage: 'absent',
     supported: true,
@@ -317,20 +323,25 @@ async function run(): Promise<void> {
     })
 
     const at = (contextTokens?: number): HTMLElement =>
-      mount(<ContextGauge session={{ ...session, contextTokens }} />)
+      mount(<ContextMeter session={{ ...session, contextTokens }} />)
 
+    // Half the window, and 71% of the way to a summary at 70% of it — the
+    // second is the number shown, because that is the thing about to happen.
     const half = at(94_000)
     await settle()
-    check('shows the share of the usable window', (half.textContent ?? '').includes('50%'), half.textContent)
-    check('and is calm well below the threshold', !half.innerHTML.includes('text-warn'))
+    check('shows how close the summary is', (half.textContent ?? '').includes('71%'), half.textContent)
+    check('and is calm below the threshold', !half.innerHTML.includes('text-warn'))
 
     const full = at(150_000)
     await settle()
     check('warns once past the point it will summarise', full.innerHTML.includes('text-warn'), full.textContent)
 
+    // A session with no measured context still shows the ring at zero: it is
+    // the way into the panel, and a control that appears only after the first
+    // turn is a control nobody finds.
     const silent = at(undefined)
     await settle()
-    check('says nothing before a turn has been measured', (silent.textContent ?? '') === '', silent.textContent)
+    check('reads zero before a turn has been measured', (silent.textContent ?? '').includes('0%'), silent.textContent)
 
     useStore.setState({
       config: {
@@ -1087,6 +1098,157 @@ async function run(): Promise<void> {
     check('with the build it is running', up.includes('llama.cpp b11026'), up)
   }
 
+
+  section('the context ring, and what it opens')
+  {
+    /*
+     * A percentage is enough to know a summary is coming and not enough to do
+     * anything about it: a conversation that is nine tenths tool schemas needs
+     * fewer tools and one that is nine tenths transcript needs a summary, and
+     * they look identical from the outside. So the ring is the glance and the
+     * panel is the answer.
+     */
+    useStore.setState({
+      config: {
+        ...useStore.getState().config!,
+        compactAtFraction: 0.7,
+        keepRecentMessages: 8,
+        provider: {
+          p: {
+            id: 'p',
+            npm: '@ai-sdk/openai-compatible',
+            name: 'P',
+            options: {},
+            models: { m: { id: 'm', name: 'M', contextWindow: 200_000, maxOutputTokens: 8_000 } }
+          }
+        }
+      }
+    })
+
+    const measured = {
+      ...session,
+      contextTokens: 94_000,
+      contextParts: { total: 96_000, messages: 78_000, system: 4_200, skills: 1_100 }
+    } as Session
+    const host = mount(<ContextMeter session={measured} />, 200)
+    await settle()
+    check(
+      'the ring counts down to the summary rather than up to the window',
+      (host.textContent ?? '').includes('71%'),
+      host.textContent
+    )
+    check('and nothing else is shown until it is asked', !(host.textContent ?? '').includes('Messages'))
+
+    const ring = host.querySelector('button')
+    ring?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await settle()
+    const panel = host.textContent ?? ''
+    check(
+      'clicking it says what the window is made of',
+      panel.includes('Context window') &&
+        panel.includes('Messages') &&
+        panel.includes('Tools and framing') &&
+        panel.includes('System prompt'),
+      panel.slice(0, 200)
+    )
+    check(
+      'with the part that is skills, when any were named',
+      panel.includes('Skills'),
+      panel
+    )
+    check(
+      'and how much room is left before it summarises',
+      panel.includes('Room until a summary'),
+      panel
+    )
+    check(
+      'the parts are labelled as this app’s estimate of a measured total',
+      /estimate of a total the provider charged/.test(panel),
+      panel
+    )
+    check(
+      'usage is its own section, not mixed into the window',
+      panel.includes('Usage this month'),
+      panel
+    )
+    check(
+      'and it lists every model that has been paid, this session’s or not',
+      panel.includes('helmcode/glm5.3-flash') &&
+        panel.includes('anthropic/claude-sonnet-5') &&
+        panel.includes('local/qwen3-4b'),
+      panel
+    )
+    check(
+      'a model that costs nothing says so rather than showing $0.00',
+      panel.includes('free'),
+      panel
+    )
+    check('and one that costs something shows what', panel.includes('$3.42'), panel)
+
+    // A session that has not run a turn yet: the ring is still there, because a
+    // control that appears later is a control nobody finds.
+    const fresh = mount(<ContextMeter session={{ ...session, contextTokens: 0 }} />, 200)
+    await settle()
+    fresh.querySelector('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await settle()
+    check(
+      'before a turn it says the parts are not measured yet',
+      /send one and this/.test(fresh.textContent ?? ''),
+      fresh.textContent
+    )
+  }
+
+  section('how hard to try')
+  {
+    const dial = mount(<EffortDial session={{ ...session, effort: 4 }} />, 200)
+    await settle()
+    check('the level is the whole label', (dial.textContent ?? '').trim() === 'High', dial.textContent)
+
+    dial.querySelector('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await settle()
+    const open = dial.textContent ?? ''
+    check('the ends of the dial are named', open.includes('Faster') && open.includes('Smarter'), open)
+    check(
+      'there is one stop per level',
+      dial.querySelectorAll('button').length === 1 + 5,
+      dial.querySelectorAll('button').length
+    )
+    check(
+      'and a model with no reasoning setting is told so, in so many words',
+      /declares no reasoning setting/.test(open) && /up to 60/.test(open),
+      open
+    )
+
+    // The same dial on a model that does reason: now it says what it will ask for.
+    const before = useStore.getState().config!
+    useStore.setState({
+      config: {
+        ...before,
+        provider: {
+          p: {
+            id: 'p',
+            npm: '@ai-sdk/anthropic',
+            name: 'P',
+            options: {},
+            models: { m: { id: 'm', name: 'M', contextWindow: 200_000, reasoning: true } }
+          }
+        }
+      }
+    })
+    const thinking = mount(<EffortDial session={{ ...session, effort: 5 }} />, 200)
+    await settle()
+    thinking.querySelector('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await settle()
+    const smart = thinking.textContent ?? ''
+    check('at the top of the scale it is Max', smart.includes('Max'), smart)
+    check(
+      'and it says what it will ask the model for',
+      /Thinking high/.test(smart) && /32k tokens/.test(smart),
+      smart
+    )
+    useStore.setState({ config: before })
+  }
+
   console.log(`\n${checks - failures.length}/${checks} checks passed`)
   if (failures.length > 0) {
     console.log(`\nfailed:\n${failures.map((f) => `  - ${f}`).join('\n')}`)
@@ -1171,6 +1333,109 @@ async function run(): Promise<void> {
       }
     } as AppEvent)
     await settle()
+  }
+
+  // The footer as it actually sits under the composer, with both panels open.
+  if (new URLSearchParams(location.search).get('shot') === 'footer') {
+    document.body.innerHTML = ''
+    useStore.setState({
+      config: {
+        ...useStore.getState().config!,
+        compactAtFraction: 0.7,
+        keepRecentMessages: 8,
+        maxSteps: 60,
+        provider: {
+          helmcode: {
+            id: 'helmcode',
+            npm: '@ai-sdk/openai-compatible',
+            name: 'Helmcode',
+            options: {},
+            models: {
+              'glm5.3-flash': {
+                id: 'glm5.3-flash',
+                name: 'GLM 5.3 Flash',
+                contextWindow: 200_000,
+                maxOutputTokens: 8_000
+              }
+            }
+          }
+        }
+      },
+      models: [{ ref: 'helmcode/glm5.3-flash', label: 'GLM 5.3 Flash', provider: 'Helmcode' }]
+    })
+    const shot = {
+      ...session,
+      model: 'helmcode/glm5.3-flash',
+      cwd: '/home/user/w/sec/acme--global--core',
+      contextTokens: 94_000,
+      effort: 4,
+      contextParts: { total: 96_400, messages: 78_000, system: 4_200 }
+    } as Session
+    // The composer where it lives — at the bottom — so the panels have the room
+    // above them that they have in the app.
+    const host = mount(
+      <div className="flex h-[620px] w-[820px] flex-col justify-end p-6">
+        <Composer session={shot} />
+      </div>
+    )
+    await settle()
+    // Both panels, so the shot shows what a click gets you.
+    for (const button of Array.from(host.querySelectorAll('button')).slice(-3)) {
+      const label = button.textContent ?? ''
+      if (label.includes('High') || label.includes('%')) {
+        button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+        await settle()
+      }
+    }
+  }
+
+  // The effort dial open, which is the other thing that line does.
+  if (new URLSearchParams(location.search).get('shot') === 'effort') {
+    document.body.innerHTML = ''
+    useStore.setState({
+      config: {
+        ...useStore.getState().config!,
+        maxSteps: 60,
+        provider: {
+          anthropic: {
+            id: 'anthropic',
+            npm: '@ai-sdk/anthropic',
+            name: 'Anthropic',
+            options: {},
+            models: {
+              'claude-sonnet-5': {
+                id: 'claude-sonnet-5',
+                name: 'Claude Sonnet 5',
+                contextWindow: 1_000_000,
+                maxOutputTokens: 128_000,
+                reasoning: true
+              }
+            }
+          }
+        }
+      },
+      models: [{ ref: 'anthropic/claude-sonnet-5', label: 'Claude Sonnet 5', provider: 'Anthropic' }]
+    })
+    const shot = {
+      ...session,
+      model: 'anthropic/claude-sonnet-5',
+      cwd: '/home/user/w/sec/acme--global--core',
+      contextTokens: 210_000,
+      effort: 4
+    } as Session
+    const host = mount(
+      <div className="flex h-[420px] w-[820px] flex-col justify-end p-6">
+        <Composer session={shot} />
+      </div>
+    )
+    await settle()
+    for (const button of Array.from(host.querySelectorAll('button'))) {
+      if ((button.textContent ?? '').trim() === 'High') {
+        button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+        await settle()
+        break
+      }
+    }
   }
 
   // The local row on its own, in the state that has the most to say.

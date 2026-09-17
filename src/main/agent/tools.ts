@@ -21,7 +21,8 @@ import {
   CODE_WRITER_INSTRUCTIONS,
   PLANNER_INSTRUCTIONS,
   plannerModelRef,
-  MAX_PAYLOAD_CHARS,
+  payloadLimitFor,
+  payloadRefusal,
   askWorker,
   bashReadTarget,
   packFiles,
@@ -879,10 +880,11 @@ export function createTools(ctx: ToolContext): ToolSet {
             async (block) => {
               const files = await gather(resolved)
               const corpus = packFiles(files)
-              if (corpus.length > MAX_PAYLOAD_CHARS) {
+              // What this worker can hold, not what a hosted one could.
+              const limit = payloadLimitFor(ctx.config, worker)
+              if (corpus.length > limit) {
                 throw new Error(
-                  `Those files come to ${corpus.length} characters, over the ${MAX_PAYLOAD_CHARS} ` +
-                    `a single delegation carries. Split them across two calls.`
+                  payloadRefusal({ chars: corpus.length, limit, worker, files: files.length })
                 )
               }
               store.appendBlockOutput(
@@ -1003,10 +1005,10 @@ export function createTools(ctx: ToolContext): ToolSet {
             async (block) => {
               const files = await gather(references)
               const corpus = packFiles(files)
-              if (corpus.length > MAX_PAYLOAD_CHARS) {
+              const limit = payloadLimitFor(ctx.config, worker)
+              if (corpus.length > limit) {
                 throw new Error(
-                  `Those references come to ${corpus.length} characters, over the ` +
-                    `${MAX_PAYLOAD_CHARS} a single delegation carries. Send fewer.`
+                  payloadRefusal({ chars: corpus.length, limit, worker, files: files.length })
                 )
               }
               store.appendBlockOutput(ctx.sessionId, block.id, `asking ${worker} to write it…\n\n`)
