@@ -14,8 +14,19 @@ const pending = new Map<string, Pending>()
 const sessionGrants = new Map<string, Set<string>>()
 
 export class PermissionDenied extends Error {
-  constructor(what: string) {
-    super(`Denied by the user: ${what}. Do not retry this; tell the user what you needed and why.`)
+  /**
+   * `why` is for a refusal that was not a person's: the denylist. An agent told
+   * only "not permitted" cannot tell a policy from a broken tool, and what it
+   * does next is try the same thing another way — so the rule that refused it is
+   * named, and the sentence says who refused.
+   */
+  constructor(what: string, why?: string) {
+    super(
+      why
+        ? `Refused by this machine's configuration (${why}): ${what}. Do not retry it and do not ` +
+          `work around it; tell the user what you needed and why.`
+        : `Denied by the user: ${what}. Do not retry this; tell the user what you needed and why.`
+    )
   }
 }
 
@@ -158,6 +169,8 @@ export interface PermissionDecision {
   mode: PermissionMode
   /** True when an allowlist entry short-circuits the prompt. */
   preapproved: boolean
+  /** The denylist pattern that refused it, when that is what happened. */
+  deniedBy?: string
 }
 
 export function decide(
@@ -168,8 +181,11 @@ export function decide(
   const mode = permissions[tool] ?? 'ask'
   if (command) {
     const segments = splitCommand(command)
-    if (segments.some((s) => matchesAny(s, permissions.denylist))) {
-      return { mode: 'deny', preapproved: false }
+    const pattern = permissions.denylist.find((entry) =>
+      segments.some((segment) => matchesAny(segment, [entry]))
+    )
+    if (pattern !== undefined) {
+      return { mode: 'deny', preapproved: false, deniedBy: `denylist pattern "${pattern}"` }
     }
     if (
       segments.length > 0 &&

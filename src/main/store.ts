@@ -151,7 +151,7 @@ export function setSessionStatus(id: string, status: SessionStatus): void {
 }
 
 /** Every session spawned by this one, however deep. */
-function descendantsOf(id: string): Session[] {
+export function descendantsOf(id: string): Session[] {
   const out: Session[] = []
   const queue = [id]
   const seen = new Set<string>([id])

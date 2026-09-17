@@ -9,6 +9,7 @@ import type {
   Permissions,
   ProviderConfig
 } from '@shared/types'
+import { rememberSecret } from '@shared/errors'
 
 /**
  * Everything the app stores lives under one root, and the root is overridable.
@@ -24,6 +25,35 @@ const ROOT = process.env.OPENDESKTOP_HOME
 export const CONFIG_DIR = ROOT ? join(ROOT, 'config') : join(homedir(), '.config', 'opendesktop')
 export const CONFIG_PATH = join(CONFIG_DIR, 'config.json')
 export const DATA_DIR = ROOT ? join(ROOT, 'data') : join(homedir(), '.local', 'share', 'opendesktop')
+
+/**
+ * Removals nobody ever means, as patterns.
+ *
+ * This list used to be one entry, `rm -rf /*`, and the patterns are globs — so
+ * it refused every `rm -rf` with an absolute path in it, `/tmp/build` included.
+ * Agents met it as "Not permitted by configuration", could not tell a policy
+ * from a broken tool, and left their scratch directories and a `node_modules`
+ * behind in the repository. What it was written to stop is the root, the system
+ * directories and the home directory; a path inside the project is what the
+ * approval prompt is for.
+ */
+const CATASTROPHIC = [
+  'rm -rf /',
+  // A single character after the slash: `/*` as the shell wrote it, and `/x`.
+  'rm -rf /?',
+  'rm -rf /Users*',
+  'rm -rf /System*',
+  'rm -rf /Library*',
+  'rm -rf /Applications*',
+  'rm -rf /etc*',
+  'rm -rf /usr*',
+  'rm -rf /var*',
+  'rm -rf /bin*',
+  'rm -rf /sbin*',
+  'rm -rf /opt*',
+  'rm -rf ~*',
+  'rm -rf $HOME*'
+]
 
 const DEFAULT_PERMISSIONS: Permissions = {
   bash: 'ask',
@@ -47,7 +77,7 @@ const DEFAULT_PERMISSIONS: Permissions = {
     'which *',
     'echo *'
   ],
-  denylist: ['rm -rf /*', ':(){*', 'mkfs*', 'dd if=*of=/dev/*', 'shutdown*', 'reboot*']
+  denylist: [...CATASTROPHIC, ':(){*', 'mkfs*', 'dd if=*of=/dev/*', 'shutdown*', 'reboot*']
 }
 
 const DEFAULT_PROVIDERS: Record<string, ProviderConfig> = {
@@ -85,6 +115,7 @@ export function defaultConfig(): AppConfig {
     permissions: DEFAULT_PERMISSIONS,
     maxSteps: 60,
     maxConcurrentTasks: 2,
+    maxParallelSubagents: 4,
     savings: { rtk: false, shunt: false },
     autoApprove: false,
     shuntMinLines: 350,
@@ -107,30 +138,86 @@ export function setSecretResolver(fn: (name: string) => string | undefined): voi
   secretResolver = fn
 }
 
+/**
+ * Placeholders that expanded to nothing, by name.
+ *
+ * A key that cannot be read and a key that was never set produce the same empty
+ * string, and the error the user saw named an environment variable whatever the
+ * placeholder actually said. Remembering which one came back empty is what lets
+ * the failure point at the right place.
+ */
+const unresolved = new Set<string>()
+
+export function unresolvedPlaceholders(): string[] {
+  return [...unresolved]
+}
+
 /** Expands `{env:VAR}`, `{file:/path}` and `{secret:NAME}` placeholders. */
 export function expandPlaceholders(value: string): string {
   return value
-    .replace(/\{secret:([A-Za-z0-9_.-]+)\}/g, (_m, name: string) => secretResolver(name) ?? '')
-    .replace(/\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, (_m, name: string) => process.env[name] ?? '')
+    .replace(/\{secret:([A-Za-z0-9_.-]+)\}/g, (_m, name: string) => {
+      const found = secretResolver(name)
+      if (!found) unresolved.add(`{secret:${name}}`)
+      return found ?? ''
+    })
+    .replace(/\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, (_m, name: string) => {
+      const found = process.env[name]
+      if (!found) unresolved.add(`{env:${name}}`)
+      return found ?? ''
+    })
     .replace(/\{file:([^}]+)\}/g, (_m, p: string) => {
       const target = p.startsWith('~') ? join(homedir(), p.slice(1)) : p
       try {
-        return readFileSync(target, 'utf8').trim()
+        const found = readFileSync(target, 'utf8').trim()
+        if (!found) unresolved.add(`{file:${p}}`)
+        return found
       } catch {
+        unresolved.add(`{file:${p}}`)
         return ''
       }
     })
 }
 
-function expandDeep<T>(value: T): T {
-  if (typeof value === 'string') return expandPlaceholders(value) as unknown as T
-  if (Array.isArray(value)) return value.map(expandDeep) as unknown as T
+/**
+ * Config keys whose value is a credential, whatever the value looks like.
+ *
+ * What is expanded under one of these is remembered, so it can be recognised
+ * and redacted later: the same key reaches a shell command's environment, and a
+ * command's output is not somewhere a key can be predicted by shape.
+ */
+const CREDENTIAL_KEY = /key|token|secret|password|passphrase|credential/i
+
+function expandDeep<T>(value: T, key?: string): T {
+  if (typeof value === 'string') {
+    const expanded = expandPlaceholders(value)
+    if (key && CREDENTIAL_KEY.test(key)) rememberSecret(expanded)
+    return expanded as unknown as T
+  }
+  if (Array.isArray(value)) return value.map((entry) => expandDeep(entry, key)) as unknown as T
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {}
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = expandDeep(v)
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = expandDeep(v, k)
     return out as T
   }
   return value
+}
+
+/**
+ * Replaces the over-broad `rm -rf /*` entry every config written before this
+ * carries, since it was shipped as a default rather than typed on purpose.
+ *
+ * Anything else in the list is left exactly as it is: a denylist is a standing
+ * instruction, and rewriting one somebody wrote would be a worse bug than the
+ * one this fixes.
+ */
+function upgradeDenylist(permissions: Permissions): Permissions {
+  const legacy = permissions.denylist.indexOf('rm -rf /*')
+  if (legacy === -1) return permissions
+  const rest = permissions.denylist.filter((entry) => entry !== 'rm -rf /*')
+  return {
+    ...permissions,
+    denylist: [...CATASTROPHIC.filter((entry) => !rest.includes(entry)), ...rest]
+  }
 }
 
 /**
@@ -142,7 +229,10 @@ export function normalizeConfig(raw: Record<string, unknown>): AppConfig {
   const merged: AppConfig = {
     ...base,
     ...(raw as Partial<AppConfig>),
-    permissions: { ...base.permissions, ...((raw.permissions as Partial<Permissions>) ?? {}) },
+    permissions: upgradeDenylist({
+      ...base.permissions,
+      ...((raw.permissions as Partial<Permissions>) ?? {})
+    }),
     // Only ever true when it says true: a config is hand-editable, and
     // "yes" or 1 must not be what turns the prompts off.
     autoApprove: raw.autoApprove === true,
@@ -256,6 +346,10 @@ export function loadConfig(force = false): AppConfig {
  */
 export function resolvedConfig(): AppConfig {
   const config = loadConfig()
+  // Rebuilt on every resolve, so a placeholder that has since been filled in
+  // stops being reported as empty — and one provider's failure never quotes
+  // another provider's missing variable.
+  unresolved.clear()
   return {
     ...config,
     provider: expandDeep(config.provider),

@@ -194,6 +194,38 @@ async function judge(config: AppConfig, input: { candidate: string; other: strin
 }
 
 /**
+ * What a task is, for the purpose of comparing it with another one.
+ *
+ * `launch()` clears `queuedPrompt` as a task starts — it has been sent, and a
+ * card that comes back to the queue later should carry on rather than replay it
+ * — so the running side of every comparison used to collapse to its title
+ * alone. The keyword prefilter then found nothing in common and the model was
+ * never asked: two tasks both rewriting README.md went past each other, and the
+ * second documented behaviour the first was in the middle of changing. Once the
+ * prompt is gone the transcript is what the task was asked to do.
+ */
+function brief(session: Session): string {
+  const asked =
+    session.queuedPrompt ??
+    store
+      .listMessages(session.id)
+      .find((message) => message.role === 'user')
+      ?.parts.find((part) => part.type === 'text')?.text
+  return `${session.title}${asked ? ` — ${asked.slice(0, 400)}` : ''}`
+}
+
+/**
+ * The same, plus the files it has already written — the strongest signal there
+ * is, and the one the prefilter most needs. Kept out of the cache key, because
+ * a task that writes a tenth file has not asked a new question, and the pair
+ * would otherwise be put to the model again every time one of them saves.
+ */
+function briefWithClaims(session: Session, text: string): string {
+  const paths = pathsWrittenBy(session.id).slice(0, 12)
+  return paths.length === 0 ? text : `${text} — files already changed: ${paths.join(', ')}`
+}
+
+/**
  * How a task about to start relates to the ones already running. Only tasks on
  * the same folder and environment are considered: two agents on different
  * machines cannot tread on each other.
@@ -203,8 +235,7 @@ export async function assessRelated(
   candidate: Session,
   running: Session[]
 ): Promise<Relatedness[]> {
-  const describe = (session: Session): string =>
-    `${session.title}${session.queuedPrompt ? ` — ${session.queuedPrompt.slice(0, 400)}` : ''}`
+  const describe = brief
 
   const peers = running.filter(
     (other) =>
@@ -217,7 +248,9 @@ export async function assessRelated(
   for (const other of peers) {
     const candidateText = describe(candidate)
     const otherText = describe(other)
-    if (!shareSurface(candidateText, otherText)) continue
+    const candidateFull = briefWithClaims(candidate, candidateText)
+    const otherFull = briefWithClaims(other, otherText)
+    if (!shareSurface(candidateFull, otherFull)) continue
 
     const key = answerKey(candidate.id, other.id, candidateText + otherText)
     if (answers.has(key)) {
@@ -228,8 +261,8 @@ export async function assessRelated(
 
     try {
       const verdict = await judge(config, {
-        candidate: candidateText,
-        other: otherText,
+        candidate: candidateFull,
+        other: otherFull,
         cwd: candidate.cwd
       })
       if (!verdict.related && !verdict.same_files) {

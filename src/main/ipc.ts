@@ -242,6 +242,19 @@ export function registerIpc(): void {
     store.updateSession(id, patch)
   )
   ipcMain.handle('session:delete', (_e, id: string) => {
+    /*
+     * The subagents go with it. A `task` call runs in its own session, and
+     * deleting only the parent left those behind as chats whose context no
+     * longer exists anywhere — two delegating tasks left five of them. Deepest
+     * first, so a grandchild is never orphaned by its parent going first.
+     */
+    for (const child of store.descendantsOf(id).reverse()) {
+      if (isRunning(child.id)) stop(child.id)
+      history.clearHistory(child.id)
+      killSessionTasks(child.id)
+      dropSessionAttachments(child.id)
+      store.deleteSession(child.id)
+    }
     if (isRunning(id)) stop(id)
     history.clearHistory(id)
     killSessionTasks(id)

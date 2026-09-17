@@ -4,6 +4,7 @@ import { createAnthropic } from '@ai-sdk/anthropic'
 import { createGoogleGenerativeAI } from '@ai-sdk/google'
 import type { LanguageModel } from 'ai'
 import type { AppConfig } from '@shared/types'
+import { unresolvedPlaceholders } from './config'
 
 export interface ResolvedModel {
   providerId: string
@@ -103,11 +104,24 @@ export async function resolveModel(config: AppConfig, ref: string): Promise<Reso
     // Other providers read their own env vars; only warn for compat providers below.
   }
   if (!apiKey && config.provider[providerId]?.npm === '@ai-sdk/openai-compatible') {
-    throw new Error(
-      `No API key resolved for provider "${providerId}". Its apiKey is "${
-        (config.provider[providerId]?.options.apiKey as string) ?? ''
-      }" — make sure that environment variable is exported where OpenDesktop runs.`
-    )
+    /*
+     * Never the value, and never a guess at the cause. This used to say "make
+     * sure that environment variable is exported" whatever the placeholder
+     * said — so a key sitting in the keychain that this build cannot read,
+     * which is what happens when the packaged app stored it and a dev run is
+     * asking, sent people looking for a variable that was never involved.
+     */
+    const empty = unresolvedPlaceholders()
+    const detail =
+      empty.length > 0
+        ? `Its apiKey reads ${empty.join(' and ')}, which came back empty. A {secret:…} is ` +
+          `encrypted against the application binary, so a key stored by the packaged app cannot ` +
+          `be read by a dev build or the other way round — re-enter it under Settings → Models & ` +
+          `providers, or point apiKey at {env:VAR} or {file:~/path} instead. An {env:VAR} has to ` +
+          `be exported where OpenDesktop itself is launched, which for a Finder launch means a ` +
+          `file your login shell reads.`
+        : 'Its apiKey is empty. Set it under Settings → Models & providers.'
+    throw new Error(`No API key for provider "${providerId}". ${detail}`)
   }
 
   return {

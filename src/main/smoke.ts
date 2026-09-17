@@ -48,8 +48,16 @@ import * as providers from './providers'
 import { getRuntime } from './runtime'
 import { browse, dirIndex, forgetDirIndex, normalizePath, searchRoot } from './browse'
 import { fuzzyFilter, fuzzyMatch, highlightRuns } from '@shared/fuzzy'
-import { describeError, isAbort, scrubSecrets } from '@shared/errors'
+import {
+  describeError,
+  forgetSecrets,
+  isAbort,
+  knownSecretValues,
+  rememberSecret,
+  scrubSecrets
+} from '@shared/errors'
 import { logError, logLine, logPath } from './log'
+import { toolEnvironment } from './tool-env'
 import type { ExecOptions, ExecResult, Runtime } from './runtime'
 import {
   BULK_READER_INSTRUCTIONS,
@@ -821,8 +829,21 @@ async function main(): Promise<void> {
   }))
 
   const events: string[] = []
+  /*
+   * A turn used to write its totals once, at the end, so a card that had been
+   * working for ten minutes showed a session that had spent nothing. Caught by
+   * watching for a session that has spent something while it is still running.
+   */
+  let spentWhileRunning = false
   const unsubscribe = bus.subscribe((event) => {
     events.push(event.type)
+    if (
+      event.type === 'session.updated' &&
+      event.session.status === 'running' &&
+      event.session.usage.output > 0
+    ) {
+      spentWhileRunning = true
+    }
     // The default config asks before running bash; answer as the user would.
     if (event.type === 'approval.requested') resolveApproval(event.request.id, 'once')
   })
@@ -851,6 +872,7 @@ async function main(): Promise<void> {
   check('the transcript links the block', assistant?.parts.some((p) => p.type === 'block' && p.blockId === blocks[0]?.id) === true)
   check('the session returned to idle', store.getSession(session.id)?.status === 'idle')
   check('usage was recorded', (store.getSession(session.id)?.usage.output ?? 0) > 0)
+  check('and was on the session before the turn ended, not only after it', spentWhileRunning)
   check('model history was kept', history.getHistory(session.id).length >= 3, history.getHistory(session.id).length)
   check('the block appears in global activity', store.allBlocks().some((b) => b.id === blocks[0]?.id))
   check('folders are indexed for filtering', store.knownFolders().includes(process.cwd()))
@@ -924,6 +946,21 @@ async function main(): Promise<void> {
     taskBlock?.output
   )
   check('the child produced its own transcript', store.listMessages(child?.id ?? '').length >= 2)
+
+  /*
+   * What the subagent spent is part of what the task cost. The card used to
+   * show the manager's own tokens only — a fraction of the real figure, and
+   * wrong in the direction that makes delegating look free.
+   */
+  const ownUsage = store.listMessages(parent.id).find((m) => m.role === 'assistant')?.usage
+  const childUsage = child ? store.getSession(child.id)?.usage : undefined
+  check("the subagent's own usage was recorded", (childUsage?.output ?? 0) > 0, childUsage)
+  check(
+    "and is added to the task that delegated it",
+    (store.getSession(parent.id)?.usage.output ?? 0) ===
+      (ownUsage?.output ?? 0) + (childUsage?.output ?? 0),
+    { task: store.getSession(parent.id)?.usage, own: ownUsage, subagent: childUsage }
+  )
   check(
     'the parent summarized afterwards',
     store
@@ -936,12 +973,26 @@ async function main(): Promise<void> {
   saveAgent(exploreAgent)
   loadConfig(true)
 
+  check(
+    'the parent knows its subagents, so deleting it can take them with it',
+    store.descendantsOf(parent.id).some((s) => s.id === child?.id),
+    store.descendantsOf(parent.id).map((s) => s.id)
+  )
+
   if (child) {
     store.deleteSession(child.id)
     history.clearHistory(child.id)
   }
   store.deleteSession(parent.id)
   history.clearHistory(parent.id)
+  check(
+    'and a transcript with no session left is swept up',
+    (() => {
+      history.appendHistory('ghost-session-id', [{ role: 'user', content: 'x' }])
+      const dropped = history.dropOrphans(store.listSessions().map((s) => s.id))
+      return dropped > 0 && history.getHistory('ghost-session-id').length === 0
+    })()
+  )
 
   /* ---------- the session list's filter, sort and group ---------- */
 
@@ -2602,6 +2653,41 @@ async function main(): Promise<void> {
     await tick()
     check('until the task it was about is forgotten', judgementCount() > 0, judgementCount())
 
+    /*
+     * What the running side of the comparison looks like.
+     *
+     * `launch()` clears `queuedPrompt` as a task starts, so a running task used
+     * to be described to the coordinator by its title alone — the prefilter
+     * found nothing in common and the model was never asked. Its transcript is
+     * what it was asked for once the prompt has been sent, and the files it has
+     * already written are the strongest signal of a collision there is.
+     */
+    store.addMessage({
+      sessionId: a.id,
+      role: 'user',
+      parts: [{ type: 'text', text: 'Rewrite README.md so the documented flags match the CLI' }]
+    })
+    let described = ''
+    setRelatednessJudge(async ({ other }) => {
+      described = other
+      return { related: true, same_files: true, reason: 'same file' }
+    })
+    store.updateSession(a.id, { queuedPrompt: undefined })
+    store.updateSession(b.id, { queuedPrompt: 'Add a Roadmap section to README.md', status: 'queued' })
+    forgetJudgements(a.id)
+    forgetJudgements(b.id)
+    await tick()
+    check(
+      'a running task is described by its transcript once its prompt has been sent',
+      described.includes('README.md'),
+      described
+    )
+    check(
+      'and by the files it has already changed',
+      described.includes('/tmp/x/main.tf'),
+      described
+    )
+
     setRelatednessJudge(null)
     store.updateSession(a.id, { status: 'idle' })
     deleteBoard(board.id)
@@ -3456,6 +3542,138 @@ async function main(): Promise<void> {
     check('and it can be started again', spentOn('p/m', 'month').tokens === 0)
   }
 
+  section("a command's output is not a place for a key")
+  {
+    const secret = 'A7hjQ2wZ-not-a-real-key-000'
+    rememberSecret(secret)
+    const { runtime } = fakeRuntime(() => ({
+      stdout: `PATH=/usr/bin\nHELMCODE_API_KEY=${secret}\nHOME=/home/fake`
+    }))
+    const session = store.createSession({
+      title: 'scrub',
+      cwd: '/tmp',
+      environmentId: 'local',
+      agentId: 'auto',
+      model: 'mock/mock'
+    })
+    const message = store.addMessage({ sessionId: session.id, role: 'assistant', parts: [] })
+    const ctx: ToolContext = {
+      config: defaultConfig(),
+      agent: { id: 'a', name: 'A', description: '', mode: 'primary' },
+      // Auto-approve, so this exercises the output path and not the prompt.
+      permissions: withoutPrompts(defaultConfig().permissions),
+      sessionId: session.id,
+      environmentId: 'local',
+      cwd: '/tmp',
+      runtime,
+      signal: new AbortController().signal,
+      savings: { rtk: false, shunt: false },
+      modelRef: 'mock/mock',
+      currentMessageId: () => message.id,
+      depth: 0
+    }
+    const bash = createTools(ctx).bash as unknown as {
+      execute: (input: unknown, options: unknown) => Promise<string>
+    }
+    const output = await bash.execute(
+      { command: 'env | grep -i key', description: 'look for a key' },
+      { toolCallId: 'c1', messages: [] }
+    )
+    check('what the model is handed carries no key', !output.includes(secret), output)
+    check('and the variable is still named, so the redaction reads', output.includes('HELMCODE_API_KEY=•••'))
+    check(
+      'nor does the block written to disk',
+      !(store.listBlocks(session.id)[0]?.output ?? '').includes(secret),
+      store.listBlocks(session.id)[0]?.output
+    )
+    forgetSecrets()
+    store.deleteSession(session.id)
+    history.clearHistory(session.id)
+  }
+
+  section('how many subagents one agent may have at once')
+  {
+    const { runtime } = fakeRuntime(() => ({ stdout: '' }))
+    const parentSession = store.createSession({
+      title: 'fanout',
+      cwd: '/tmp',
+      environmentId: 'local',
+      agentId: 'auto',
+      model: 'mock/mock'
+    })
+    const message = store.addMessage({
+      sessionId: parentSession.id,
+      role: 'assistant',
+      parts: []
+    })
+
+    /*
+     * The board's limit counts board tasks, and a manager's `task` calls are
+     * not board tasks: two cards with three subagents each opened seven streams
+     * against a provider configured for two. The slots are per agent, so the
+     * fan-out is bounded without a subagent's own children ever waiting on it.
+     */
+    const fanout = async (limit: number): Promise<{ peak: number; reports: string[] }> => {
+      let live = 0
+      let peak = 0
+      const ctx: ToolContext = {
+        config: {
+          ...defaultConfig(),
+          maxParallelSubagents: limit,
+          agent: {
+            helper: { id: 'helper', name: 'Helper', description: 'does a piece', mode: 'subagent' }
+          }
+        },
+        agent: { id: 'a', name: 'A', description: '', mode: 'primary' },
+        permissions: defaultConfig().permissions,
+        sessionId: parentSession.id,
+        environmentId: 'local',
+        cwd: '/tmp',
+        runtime,
+        signal: new AbortController().signal,
+        savings: { rtk: false, shunt: false },
+        modelRef: 'mock/mock',
+        currentMessageId: () => message.id,
+        depth: 0,
+        spawnSubagent: async () => {
+          live++
+          peak = Math.max(peak, live)
+          await new Promise((resolve) => setTimeout(resolve, 20))
+          live--
+          return { sessionId: 'child-session', report: 'piece done' }
+        }
+      }
+
+      const tools = createTools(ctx)
+      const task = tools.task as unknown as {
+        execute: (input: unknown, options: unknown) => Promise<string>
+      }
+      const call = (n: number): Promise<string> =>
+        task.execute(
+          { agent: 'helper', description: `piece ${n}`, prompt: 'do the piece' },
+          { toolCallId: `call-${n}`, messages: [] }
+        )
+      const reports = await Promise.all([call(1), call(2), call(3)])
+      return { peak, reports }
+    }
+
+    const single = await fanout(1)
+    check('with one slot, the subagents run one at a time', single.peak === 1, single.peak)
+    check('and all of them still run', single.reports.length === 3 && single.reports.every((r) => r.includes('piece done')), single.reports)
+
+    const three = await fanout(3)
+    check('with three slots, three run together', three.peak === 3, three.peak)
+    check(
+      'a waiting call is queued, not refused',
+      store.listBlocks(parentSession.id).filter((b) => b.tool === 'task' && b.status === 'success')
+        .length === 6,
+      store.listBlocks(parentSession.id).filter((b) => b.tool === 'task').map((b) => b.status)
+    )
+
+    store.deleteSession(parentSession.id)
+    history.clearHistory(parentSession.id)
+  }
+
   section('which tools each switch puts on the table')
   {
     const { runtime } = fakeRuntime(() => ({ stdout: '' }))
@@ -3936,6 +4154,39 @@ async function main(): Promise<void> {
       !describeError(Object.assign(new Error('x'), { url: 'https://h/v1/c?api_key=sk-secret' })).includes(
         'sk-secret'
       )
+    )
+
+    /*
+     * A key that looks like nothing in particular.
+     *
+     * The shapes above only catch keys that announce themselves. The app's own
+     * keys are known by value, because the place they turn up is a command's
+     * output — `env`, a verbose curl, a framework printing its config — and
+     * that output goes to the transcript on disk and to the model.
+     */
+    const plain = 'Zm9vYmFyOTk5MTIzNA'
+    check('an unremarkable value is not redacted on its own', scrubSecrets(plain) === plain)
+    rememberSecret(plain)
+    check(
+      'but it is once the config has resolved it as a credential',
+      scrubSecrets(`HELMCODE_API_KEY=${plain}`) === 'HELMCODE_API_KEY=•••',
+      scrubSecrets(`HELMCODE_API_KEY=${plain}`)
+    )
+    check('the name survives, so the redaction reads', scrubSecrets(plain) === '•••')
+    check('and it is known by value, for the environment filter', knownSecretValues().includes(plain))
+    check('something too short to be a key is not remembered', (() => {
+      rememberSecret('abc')
+      return !knownSecretValues().includes('abc')
+    })())
+
+    const stripped = toolEnvironment({ PATH: '/usr/bin', HELMCODE_API_KEY: plain, HOME: '/home/x' })
+    check('a command does not get the key in its environment', stripped.HELMCODE_API_KEY === undefined)
+    check('and gets everything else', stripped.PATH === '/usr/bin' && stripped.HOME === '/home/x')
+    forgetSecrets()
+    check('forgetting them leaves the shapes still covered', scrubSecrets(plain) === plain)
+    check(
+      'and an environment nobody claimed passes through whole',
+      Object.keys(toolEnvironment({ A: '1', B: '2' })).length === 2
     )
 
     const long = Object.assign(new Error('x'.repeat(2000)), {})

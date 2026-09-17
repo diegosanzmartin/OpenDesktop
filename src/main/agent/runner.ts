@@ -78,15 +78,24 @@ with \`task\`, even when you could have done it yourself. If they name an agent
 that is not on the list, say so rather than picking a different one.
 
 # How to decide
-Start by sizing the request.
+Start by sizing the request, knowing what delegating costs. A subagent cannot see
+this conversation, so it re-reads and re-derives everything from its brief:
+measured on this app, three one-file fixes split across three subagents cost
+about 2.4x the tokens and 2.5x the time of the same three fixes done here. Split
+for breadth you cannot cover in one thread of work — not to parallelise a
+handful of edits.
 
-- One coherent job, or anything that needs the thread of this conversation: do it
-  yourself with your own tools. Delegating a small change costs a round trip and
-  the subagent cannot see what was said here.
-- Genuinely separable pieces — different parts of the system, different skills,
-  or work that would otherwise be done one after another for no reason: split it.
-  Say in one short line how you are splitting it and why, then call \`task\` once per
-  piece **in the same step** so they run in parallel.
+- Do it yourself when the request is one thread of work: a few files you can hold
+  at once, anything that needs what was said here, and anything where writing the
+  brief would take longer than making the change. Several small fixes in one
+  repository are one thread of work, even when they are in different files.
+- Split when a piece is a body of work in its own right — somewhere you have not
+  read yet and would have to survey, a different part of the system, a different
+  skill, or a change that needs its own reading before anything can be written.
+  The test is whether the piece needs understanding of its own, not whether it
+  touches a different file. Say in one short line how you are splitting it and
+  why, then call \`task\` once per piece **in the same step** so they run in
+  parallel.
 - Work that must happen in order: run the first stage, read what came back, then
   start the next. Do not launch a task that depends on another task's output.
 
@@ -98,8 +107,35 @@ When the subagents return, you own the result. Read their reports, reconcile
 anything that conflicts, verify what matters, and give the user one answer —
 not a list of what each agent said.
 
-Answer in English.`
+Answer in the language the user wrote in.`
   }
+}
+
+/**
+ * What this agent has had taken away, in its own words.
+ *
+ * A read-only agent is given no `write` and no `edit`, and nothing used to tell
+ * it so — it inferred the absence, which it did well, and then wrote the change
+ * out in prose and finished. The card said Done with half the instruction not
+ * carried out. Naming the gap and pointing at `need_human` is what turns that
+ * into a task handed back.
+ */
+function restrictions(available: string[]): string {
+  const missing = ['write', 'edit', 'bash'].filter((name) => !available.includes(name))
+  if (missing.length === 0) return ''
+
+  const cannot: string[] = []
+  if (!available.includes('write') || !available.includes('edit')) cannot.push('change files')
+  if (!available.includes('bash')) cannot.push('run commands')
+
+  return `
+
+# What you cannot do in this session
+You have no ${missing.join(' and no ')} tool here, so you cannot ${cannot.join(' or ')}.
+That is this agent's configuration, not an obstacle to get around. If the work
+you were asked for needs one of them, do the part you can and then hand the rest
+back with \`need_human\`, saying exactly what has to be done. Do not write the
+change out and finish as though you had made it.`
 }
 
 function systemPrompt(agent: AgentConfig, input: {
@@ -108,10 +144,11 @@ function systemPrompt(agent: AgentConfig, input: {
   environmentKind: string
   platform: string
   date: string
+  tools: string[]
 }): string {
   const base =
     agent.prompt ??
-    'You are a capable software engineering agent. Answer in English.'
+    'You are a capable software engineering agent. Answer in the language the user wrote in.'
   return `${base}
 
 # Environment
@@ -128,7 +165,11 @@ function systemPrompt(agent: AgentConfig, input: {
 - Keep each bash call to one purpose; the interface renders every call as its own
   collapsible block, so one command per idea reads far better than a chained script.
 - When you are done, summarize what changed in a few lines. Do not pad the answer.
-- All user-facing text you write must be in English.`
+- When a check disagrees with the code, the code is what was asked about: fix it, or
+  say why the check itself was wrong. Never edit an expectation to make a run pass.
+- Write to the user in the language they wrote to you in, and keep to it.${restrictions(
+    input.tools
+  )}`
 }
 
 /**
@@ -553,6 +594,43 @@ export async function runTurn(input: TurnInput): Promise<string> {
   /** Set when the provider failed mid-stream, which is not the same as a throw. */
   let streamFailure: string | null = null
 
+  /**
+   * Armed when the request goes out, cleared by the first thing that comes
+   * back.
+   *
+   * A turn that never produced a token used to be indistinguishable from a turn
+   * thinking hard: the card said running, the transcript stayed empty, nothing
+   * reached the log, and the only way out was to notice. This does not cancel
+   * anything — a slow provider is not a broken one — it says so, once, where
+   * both the user and whoever reads the log afterwards can see it.
+   */
+  let silence: NodeJS.Timeout | null = null
+
+  /*
+   * What this turn has already added to the session's running totals.
+   *
+   * They used to be written once, when the turn ended, so a card that had been
+   * working for ten minutes showed a session that had spent nothing — which is
+   * exactly the ten minutes somebody is watching to see what it costs. Credited
+   * per step now, as the difference from what was credited last time, so the
+   * arithmetic stays right however the steps arrive and whatever else spends
+   * against this session mid-turn.
+   */
+  let creditedInput = 0
+  let creditedOutput = 0
+  let creditedCost = 0
+
+  const creditSession = (input: number, output: number, cost: number | null): void => {
+    const deltaInput = Math.max(0, input - creditedInput)
+    const deltaOutput = Math.max(0, output - creditedOutput)
+    const deltaCost = Math.max(0, (cost ?? 0) - creditedCost)
+    if (deltaInput === 0 && deltaOutput === 0 && deltaCost === 0) return
+    creditedInput += deltaInput
+    creditedOutput += deltaOutput
+    creditedCost += deltaCost
+    store.creditUsage(session.id, { input: deltaInput, output: deltaOutput, cost: deltaCost })
+  }
+
   try {
     const runtime = getRuntime(session.environmentId)
     await runtime.connect()
@@ -616,6 +694,21 @@ export async function runTurn(input: TurnInput): Promise<string> {
           depth: (input.depth ?? 0) + 1,
           parentBlockId
         })
+        /*
+         * What the subagent spent is what this task cost, so it is credited
+         * here as well as kept on the subchat. A card that delegated three
+         * pieces of work used to report only the manager's own tokens — a
+         * fifth of the real figure, and wrong in the direction that makes
+         * delegating look free.
+         */
+        const spent = store.getSession(child.id)?.usage
+        if (spent && (spent.input > 0 || spent.output > 0)) {
+          store.creditUsage(session.id, {
+            input: spent.input,
+            output: spent.output,
+            cost: spent.cost
+          })
+        }
         return { sessionId: child.id, report: report || '(the subagent returned no text)' }
       }
     }
@@ -642,7 +735,8 @@ export async function runTurn(input: TurnInput): Promise<string> {
           environmentLabel: runtime.label,
           environmentKind: runtime.kind,
           platform,
-          date: new Date().toISOString().slice(0, 10)
+          date: new Date().toISOString().slice(0, 10),
+          tools: Object.keys(tools)
         }) +
         savingsGuidance(savings, planner === modelRef ? null : planner) +
         (input.coordinationNote ?? ''),
@@ -673,6 +767,21 @@ export async function runTurn(input: TurnInput): Promise<string> {
       }
     })
 
+    const QUIET_MS = 90_000
+    silence = setTimeout(() => {
+      logLine(
+        'warn',
+        `turn ${session.id} has had nothing from ${modelRef} in ${QUIET_MS / 1000}s; still waiting`
+      )
+      bus.emit({
+        type: 'toast',
+        level: 'warn',
+        message:
+          `${modelRef} has sent nothing for ${QUIET_MS / 1000} seconds. The turn is still open — ` +
+          `stop it if you would rather not wait.`
+      })
+    }, QUIET_MS)
+
     let textPartIndex = -1
     let reasoningPartIndex = -1
     // Accumulated as each step reports it, so the transcript can show a real
@@ -684,6 +793,10 @@ export async function runTurn(input: TurnInput): Promise<string> {
     let lastStepInput = 0
 
     for await (const part of result.fullStream) {
+      if (silence) {
+        clearTimeout(silence)
+        silence = null
+      }
       if (controller.signal.aborted) break
       switch (part.type) {
         case 'text-delta': {
@@ -716,6 +829,7 @@ export async function runTurn(input: TurnInput): Promise<string> {
               ...(so_far === null ? {} : { cost: so_far })
             }
           })
+          creditSession(usedInput, usedOutput, so_far)
           break
         }
         case 'tool-call':
@@ -762,20 +876,12 @@ export async function runTurn(input: TurnInput): Promise<string> {
     // The agent may have handed the task back mid-turn; finishing the turn
     // does not un-block it, so the status it set is left alone.
     const ended = store.getSession(session.id)
-    // Taken from the store, not from the `session` binding above. A tool may
-    // have spent tokens of its own mid-turn — a delegated read does exactly
-    // that — and those have to be added to, not overwritten. It happens to
-    // work either way today, because the store hands out the session itself
-    // rather than a copy, but this does not depend on that.
-    const before = ended?.usage ?? session.usage
+    // Only the difference. The steps have already been credited, and anything
+    // else that spent against this session mid-turn — a delegated read, a
+    // subagent's report — is in those totals too and must not be overwritten.
+    creditSession(inputTokens, outputTokens, turnCost)
     store.updateSession(session.id, {
-      status:
-        ended?.status === 'blocked' ? 'blocked' : streamFailure !== null ? 'error' : 'idle',
-      usage: {
-        input: before.input + inputTokens,
-        output: before.output + outputTokens,
-        cost: before.cost + (turnCost ?? 0)
-      }
+      status: ended?.status === 'blocked' ? 'blocked' : streamFailure !== null ? 'error' : 'idle'
     })
     /*
      * Told, not left to be noticed. A provider that fails mid-stream used to
@@ -803,11 +909,7 @@ export async function runTurn(input: TurnInput): Promise<string> {
         input: usedInput,
         output: usedOutput
       })
-      store.creditUsage(session.id, {
-        input: usedInput,
-        output: usedOutput,
-        cost: spentCost ?? 0
-      })
+      creditSession(usedInput, usedOutput, spentCost)
       meterRecord(agent.model ?? session.model, { input: usedInput, output: usedOutput })
       logLine(
         'warn',
@@ -818,6 +920,7 @@ export async function runTurn(input: TurnInput): Promise<string> {
     }
     if (!aborted) bus.emit({ type: 'toast', level: 'error', message })
   } finally {
+    if (silence) clearTimeout(silence)
     controllers.delete(session.id)
     if (store.getSession(session.id)?.status === 'running') store.setSessionStatus(session.id, 'idle')
     store.flush()

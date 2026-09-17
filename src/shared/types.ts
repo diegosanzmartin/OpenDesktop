@@ -200,6 +200,15 @@ export interface AppConfig {
   shuntMinLines?: number
   /** How many board tasks the scheduler will run at once. */
   maxConcurrentTasks?: number
+  /**
+   * How many subagents one agent may have working at the same time.
+   *
+   * The board limit does not cover these: a single manager that calls `task`
+   * eight times in one step opens eight streams, and a provider with a
+   * concurrency ceiling answers that by making all of them slow. Extra calls
+   * wait for a slot and then run; nothing is dropped.
+   */
+  maxParallelSubagents?: number
   /** Share of a model's usable window at which the transcript is summarised. */
   compactAtFraction?: number
   /** How many messages stay verbatim after a summary. */

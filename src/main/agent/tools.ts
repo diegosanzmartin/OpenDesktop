@@ -30,6 +30,7 @@ import {
   workerModelRef
 } from '../shunt'
 import { costOf } from '@shared/cost'
+import { scrubSecrets } from '@shared/errors'
 import { record as meterRecord, spentLookup } from '../meter'
 
 export interface ToolContext {
@@ -95,10 +96,12 @@ async function askPermission(ctx: ToolContext, block: Block, spec: PermissionSpe
   if (decision.mode === 'deny') {
     store.updateBlock(ctx.sessionId, block.id, {
       status: 'error',
-      error: 'Not permitted by configuration',
+      error: decision.deniedBy
+        ? `Not permitted by configuration — ${decision.deniedBy}`
+        : `Not permitted by configuration — ${spec.key} is set to deny`,
       endedAt: Date.now()
     })
-    throw new PermissionDenied(spec.detail)
+    throw new PermissionDenied(spec.detail, decision.deniedBy ?? `${spec.key} is set to deny`)
   }
 
   const needsAsk =
@@ -200,6 +203,56 @@ async function withBlock(
 
 function enabled(ctx: ToolContext, name: string): boolean {
   return ctx.agent.tools?.[name] !== false
+}
+
+/**
+ * How many subagents one agent may have working at once.
+ *
+ * `task` calls in the same step run concurrently — which is the point — but the
+ * board's concurrency limit does not see them: two board tasks with three
+ * subagents each is seven streams against a provider that was configured for
+ * two. Slots are per parent agent, so a subagent's own children have their own
+ * pool and nothing can wait on itself. Over the limit a call waits for a slot
+ * and then runs; it is never dropped, and the block is created first so the
+ * user sees the whole fan-out.
+ */
+const fanoutRunning = new Map<string, number>()
+const fanoutQueue = new Map<string, (() => void)[]>()
+
+function releaseFanoutSlot(parent: string): void {
+  // The slot is handed to whoever is next rather than released and re-taken:
+  // between those two steps another agent's call could take it.
+  const next = fanoutQueue.get(parent)?.shift()
+  if (next) return next()
+  const left = (fanoutRunning.get(parent) ?? 1) - 1
+  if (left > 0) fanoutRunning.set(parent, left)
+  else fanoutRunning.delete(parent)
+}
+
+async function takeFanoutSlot(ctx: ToolContext): Promise<void> {
+  const limit = Math.max(1, ctx.config.maxParallelSubagents ?? 4)
+  const taken = fanoutRunning.get(ctx.sessionId) ?? 0
+  if (taken < limit) {
+    fanoutRunning.set(ctx.sessionId, taken + 1)
+    return
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    const queue = fanoutQueue.get(ctx.sessionId) ?? []
+    const start = (): void => {
+      ctx.signal.removeEventListener('abort', onAbort)
+      resolve()
+    }
+    function onAbort(): void {
+      const pending = fanoutQueue.get(ctx.sessionId)
+      const at = pending?.indexOf(start) ?? -1
+      if (pending && at >= 0) pending.splice(at, 1)
+      reject(new Error('Aborted by the user.'))
+    }
+    queue.push(start)
+    fanoutQueue.set(ctx.sessionId, queue)
+    ctx.signal.addEventListener('abort', onAbort, { once: true })
+  })
 }
 
 /**
@@ -339,9 +392,18 @@ export function createTools(ctx: ToolContext): ToolSet {
               cwd: ctx.cwd,
               timeoutMs: timeout ?? 180_000,
               signal: ctx.signal,
-              onChunk: (chunk) => store.appendBlockOutput(ctx.sessionId, block.id, chunk)
+              // Scrubbed per chunk for the live view, which is best-effort: a
+              // key can be split across two reads of the pipe. The stored
+              // output is replaced below with the scrubbed whole, so what ends
+              // up on disk and in front of the model is not best-effort.
+              onChunk: (chunk) =>
+                store.appendBlockOutput(ctx.sessionId, block.id, scrubSecrets(chunk))
             })
-            const body = [res.stdout, res.stderr].filter(Boolean).join('\n').trim()
+            const raw = [res.stdout, res.stderr].filter(Boolean).join('\n').trim()
+            const body = scrubSecrets(raw)
+            // Only when something was actually redacted, so an ordinary
+            // command's live output is left exactly as it streamed in.
+            if (body !== raw) store.updateBlock(ctx.sessionId, block.id, { output: body })
             return {
               output: body || '(no output)',
               exitCode: res.exitCode
@@ -379,10 +441,11 @@ export function createTools(ctx: ToolContext): ToolSet {
             input: { id, command: result.task.command }
           },
           async (block) => {
-            store.appendBlockOutput(ctx.sessionId, block.id, result.chunk || '(nothing new)')
+            const chunk = scrubSecrets(result.chunk)
+            store.appendBlockOutput(ctx.sessionId, block.id, chunk || '(nothing new)')
             return {
               output: `${describeForModel(result.task)}\n\nNew output:\n${
-                result.chunk || '(nothing new since the last read)'
+                chunk || '(nothing new since the last read)'
               }`
             }
           }
@@ -714,7 +777,9 @@ export function createTools(ctx: ToolContext): ToolSet {
           async (block) => {
             const res = await fetch(url, { signal: ctx.signal, headers: { 'user-agent': 'OpenDesktop' } })
             const text = await res.text()
-            const body = text.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '')
+            const body = scrubSecrets(
+              text.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '')
+            )
             store.appendBlockOutput(ctx.sessionId, block.id, body.slice(0, 20_000))
             return { output: `HTTP ${res.status}\n\n${body}`, exitCode: res.ok ? 0 : 1 }
           }
@@ -1018,12 +1083,15 @@ export function createTools(ctx: ToolContext): ToolSet {
             input: { agent, description, prompt }
           },
           async (block) => {
-            const { sessionId, report } = await ctx.spawnSubagent!({
-              agentId: agent,
-              prompt,
-              description,
-              parentBlockId: block.id
-            })
+            await takeFanoutSlot(ctx)
+            const { sessionId, report } = await ctx
+              .spawnSubagent!({
+                agentId: agent,
+                prompt,
+                description,
+                parentBlockId: block.id
+              })
+              .finally(() => releaseFanoutSlot(ctx.sessionId))
             // Recorded on the block so the UI can open the subagent's own
             // transcript; two subagents can share a description, an id cannot.
             store.updateBlock(ctx.sessionId, block.id, {

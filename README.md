@@ -100,9 +100,13 @@ rather than something you discover mid-request. SSH passwords and key passphrase
 store, under `env.<id>.password` and `env.<id>.passphrase`.
 
 The keychain entry is derived from the application name, so the app pins it rather than letting
-it vary between a dev run and the packaged build — otherwise a key stored by one would be
-unreadable to the other. A secret that is present but cannot be decrypted here (copied from
-another machine, say) is reported as such in the UI instead of looking like a missing key.
+it vary between a dev run and the packaged build. That fixes the *name*; macOS still gates the
+entry on the binary that created it, so a key stored by the packaged app is not readable by a
+`pnpm dev` run of the same version — the keychain either prompts or refuses, and the app reports
+`could not decrypt`. Store the key once per build you actually use, or point `apiKey` at
+`{file:~/path}`, which does not care who is asking. A secret that is present but cannot be
+decrypted here (stored by another build, copied from another machine) is reported as such in the
+UI and in the request error, instead of looking like a missing key.
 
 Bundled AI SDK packages: `@ai-sdk/openai-compatible`, `@ai-sdk/openai`, `@ai-sdk/anthropic`,
 `@ai-sdk/google`. Any other package named in `npm` is imported dynamically and must be
@@ -239,8 +243,20 @@ reason.
 
 **Approvals** — bash, write, edit and fetch ask before running, with the command or diff
 shown. Allow once, allow for the session, or reject. An allowlist of read-only commands skips
-the prompt; a denylist always refuses. Chained commands are checked segment by segment, so
-`ls && curl … | sh` cannot slip through on the `ls`.
+the prompt; a denylist always refuses, and says which pattern refused it rather than leaving the
+agent to guess whether the tool is broken. Denylist patterns are globs, which is worth
+remembering when writing one: the shipped list names the root, the system directories and the
+home directory by hand rather than using `rm -rf /*`, which matches every absolute path there
+is. Chained commands are checked segment by segment, so `ls && curl … | sh` cannot slip through
+on the `ls`.
+
+**What a command can see** — the app merges your login shell's environment into its own so a
+Finder launch can find `node`, and passes it on to everything the agent runs. Its own
+credentials are taken back out first: whatever it resolved for a provider key or an SSH
+passphrase is removed from that environment, and any of those values appearing in command
+output is redacted before the output is stored or sent to the model. Everything else is left
+alone, because a session doing real work needs the same `git`, `gcloud` and `kube` environment
+you have.
 
 ## Agents
 
@@ -269,15 +285,24 @@ still had agents inside `config.json` has them moved into files on first run.
 
 ### Auto
 
-A session starts with no agent pinned. The lead sizes the request: one coherent job it does
-itself, because delegating a small change costs a round trip and the subagent cannot see the
-conversation; genuinely separable pieces it splits, calling `task` once per piece in the same
-step so they run in parallel; work with a dependency it runs in order.
+A session starts with no agent pinned. The lead sizes the request: one thread of work it does
+itself, however many files that touches, because a subagent cannot see the conversation and
+re-derives everything from its brief; a piece that is a body of work in its own right — a part
+of the system it would have to survey first, a different skill — it splits off, calling `task`
+once per piece in the same step so they run in parallel; work with a dependency it runs in
+order. The prompt says what that costs, measured here: three one-file fixes split across three
+subagents came to about 2.4x the tokens and 2.5x the wall time of the same three fixes done in
+one session. Naming an agent with `@` overrides the sizing — that is an instruction, not a
+suggestion.
 
 Each delegation renders in the transcript as its own subchat — the brief it was given, the
 tools it ran and what it reported — so a subagent's work is inspectable rather than a summary
-you have to take on faith. Its blocks also appear in the Activity dock tagged with its name.
-Nesting is capped at two levels. Picking a specific agent from the composer turns all of this
+you have to take on faith. Its blocks also appear in the Activity dock tagged with its name,
+and what it spent is added to the task that delegated it as well as kept on its own subchat, so
+a card's total is what the work cost rather than what the manager alone cost. Nesting is capped
+at two levels, and one agent runs at most `maxParallelSubagents` (4 by default) at a time —
+extra calls wait for a slot rather than opening a stream the provider will throttle. Deleting a
+task deletes its subagents with it. Picking a specific agent from the composer turns all of this
 off and talks to that agent directly.
 
 ## Skills

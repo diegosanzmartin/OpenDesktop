@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ModelMessage } from 'ai'
 import { DATA_DIR } from './config'
@@ -136,6 +136,35 @@ export function appendHistory(sessionId: string, messages: ModelMessage[]): void
 export function persist(sessionId: string): void {
   mkdirSync(HISTORY_DIR, { recursive: true })
   writeFileSync(pathFor(sessionId), JSON.stringify(memory.get(sessionId) ?? []), 'utf8')
+}
+
+/**
+ * Deletes transcripts no session owns any more.
+ *
+ * Deleting a session clears its history, so this is for what escaped that: a
+ * subagent whose parent was removed before deletion cascaded, and anything a
+ * test run left behind before the data directory could be pointed elsewhere.
+ * Run at startup, when the store has just said which sessions exist.
+ */
+export function dropOrphans(known: string[]): number {
+  if (!existsSync(HISTORY_DIR)) return 0
+  const live = new Set(known)
+  let dropped = 0
+  for (const name of readdirSync(HISTORY_DIR)) {
+    if (!name.endsWith('.json')) continue
+    const id = name.replace(/\.marks\.json$|\.json$/, '')
+    if (live.has(id)) continue
+    try {
+      rmSync(join(HISTORY_DIR, name))
+      // In memory as well as on disk, so nothing can read back what was swept.
+      memory.delete(id)
+      marks.delete(id)
+      dropped++
+    } catch {
+      // A file we cannot remove is not worth failing a startup over.
+    }
+  }
+  return dropped
 }
 
 export function clearHistory(sessionId: string): void {

@@ -22,15 +22,56 @@ const MAX_DEPTH = 6
 const MAX_BODY = 240
 
 /**
- * Redacts anything shaped like a key.
+ * Values this process resolved from a keychain, a file or the environment, so
+ * they can be recognised wherever they turn up.
  *
- * A provider's error body can quote the request that caused it, and this text
- * goes to a log file, a transcript and a window. The app's whole arrangement
- * with secrets is that they stay in the keychain and never reach the renderer;
- * an error message is not an exception to that.
+ * The shapes below catch a key that looks like a key. This catches the app's
+ * own keys whatever they look like, which matters because a command's output is
+ * not a place they can be predicted: `env`, `curl -v`, a framework printing its
+ * config, a stack trace quoting a header. Values only, never their names — the
+ * name is what makes the redaction readable.
+ */
+const known = new Set<string>()
+const MIN_SECRET = 8
+
+export function rememberSecret(value: string): void {
+  if (typeof value === 'string' && value.trim().length >= MIN_SECRET) known.add(value.trim())
+}
+
+/** For the tests, and for a config reload: what was true is not necessarily still. */
+export function forgetSecrets(): void {
+  known.clear()
+}
+
+export function secretCount(): number {
+  return known.size
+}
+
+/** The values themselves, for the one caller that has to compare rather than redact. */
+export function knownSecretValues(): string[] {
+  return [...known]
+}
+
+function escapeForRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * Redacts anything shaped like a key, and anything known to be one.
+ *
+ * A provider's error body can quote the request that caused it, and a shell
+ * command will happily print the whole environment; this text goes to a log
+ * file, a transcript, a window and the model. The app's whole arrangement with
+ * secrets is that they stay in the keychain and never reach the renderer;
+ * neither an error message nor a tool result is an exception to that.
  */
 export function scrubSecrets(text: string): string {
-  return text
+  let out = text
+  for (const secret of known) {
+    if (!out.includes(secret)) continue
+    out = out.replace(new RegExp(escapeForRegExp(secret), 'g'), '•••')
+  }
+  return out
     .replace(/\b(sk|pk|key|tok|ghp|gho|xoxb|xoxp)[-_][A-Za-z0-9_-]{8,}/gi, '$1-•••')
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, 'Bearer •••')
     .replace(/("?(?:api[-_]?key|authorization|password|passphrase|token)"?\s*[:=]\s*"?)([^"\s,}]{6,})/gi,

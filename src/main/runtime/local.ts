@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve as pathResolve } from 'node:path'
 import type { EnvironmentKind, FileEntry } from '@shared/types'
 import type { ExecOptions, ExecResult, Runtime } from './types'
+import { toolEnvironment } from '../tool-env'
 
 const MAX_OUTPUT = 200_000
 
@@ -32,7 +33,7 @@ export class LocalRuntime implements Runtime {
       const shell = process.env.SHELL || '/bin/bash'
       const child = spawn(shell, ['-l', '-c', command], {
         cwd: options.cwd,
-        env: { ...process.env, TERM: 'dumb', NO_COLOR: '1', GIT_PAGER: 'cat', PAGER: 'cat' }
+        env: { ...toolEnvironment(), TERM: 'dumb', NO_COLOR: '1', GIT_PAGER: 'cat', PAGER: 'cat' }
       })
 
       let stdout = ''
