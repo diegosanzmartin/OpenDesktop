@@ -1309,6 +1309,36 @@ export async function runTurn(input: TurnInput): Promise<string> {
     store.updateSession(session.id, {
       status: ended?.status === 'blocked' ? 'blocked' : streamFailure !== null ? 'error' : 'idle'
     })
+    /*
+     * A turn that stops without saying anything says so.
+     *
+     * The model can end a turn having called tools and produced no text at
+     * all, and the UI then showed a finished message with nothing in it: the
+     * spinner stopped and there was no answer and no error to explain why. A
+     * small local model does this on its first outing, which is how it was
+     * found — but nothing about it is local, and an empty answer is worth a
+     * sentence whoever produced it.
+     */
+    if (
+      textPartIndex === -1 &&
+      streamFailure === null &&
+      !controller.signal.aborted &&
+      store.getSession(session.id)?.status !== 'blocked' &&
+      !input.collectFinalText
+    ) {
+      const madeCalls = store
+        .listBlocks(session.id)
+        .filter((block) => block.messageId === assistant.id).length
+      store.pushPart(session.id, assistant.id, {
+        type: 'text',
+        text:
+          `The model ended the turn without answering` +
+          `${madeCalls > 0 ? `, after ${madeCalls} tool call${madeCalls === 1 ? '' : 's'}` : ''}. ` +
+          `That is it stopping rather than an error — asking again, or in plainer words, usually gets an answer.`
+      })
+      logLine('warn', `turn ${session.id} produced no text after ${steps} steps on ${modelRef}`)
+    }
+
     logLine(
       'info',
       `turn ${session.id} done model=${modelRef} steps=${steps} ` +

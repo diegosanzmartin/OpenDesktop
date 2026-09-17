@@ -202,6 +202,45 @@ function finish(reason: FinishReason, input: number, output: number) {
 }
 
 /** A mock model that calls bash once, then answers with text. */
+/**
+ * A model that calls a tool and then says nothing at all — which is what a 3B
+ * model did the first time it was given the real harness, and what used to
+ * leave a finished message with nothing in it.
+ */
+function silentModel(command: string): LanguageModel {
+  let step = 0
+  return new MockLanguageModelV4({
+    doStream: async () => {
+      step++
+      if (step === 1) {
+        return {
+          stream: new ReadableStream({
+            start(controller) {
+              controller.enqueue({ type: 'stream-start', warnings: [] })
+              const input = JSON.stringify({ command, description: 'look around' })
+              controller.enqueue({ type: 'tool-input-start', id: 'q-1', toolName: 'bash' })
+              controller.enqueue({ type: 'tool-input-delta', id: 'q-1', delta: input })
+              controller.enqueue({ type: 'tool-input-end', id: 'q-1' })
+              controller.enqueue({ type: 'tool-call', toolCallId: 'q-1', toolName: 'bash', input })
+              controller.enqueue(finish('tool-calls', 10, 5))
+              controller.close()
+            }
+          })
+        }
+      }
+      return {
+        stream: new ReadableStream({
+          start(controller) {
+            controller.enqueue({ type: 'stream-start', warnings: [] })
+            controller.enqueue(finish('stop', 8, 0))
+            controller.close()
+          }
+        })
+      }
+    }
+  }) as unknown as LanguageModel
+}
+
 function scriptedModel(command: string): LanguageModel {
   let step = 0
   return new MockLanguageModelV4({
@@ -5943,6 +5982,51 @@ async function main(): Promise<void> {
     forgetRtkStatus()
   }
 
+
+  section('a turn that ends without answering')
+  {
+    /*
+     * Found by running a 3B model against the real harness: it called a tool,
+     * stopped, and the UI showed a finished assistant message containing
+     * nothing — no answer and no error to explain the silence. Nothing about
+     * that is local; any model can end a turn this way.
+     */
+    const quiet = store.createSession({
+      title: 'silence',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: 'build',
+      model: 'mock/mock',
+      autoApprove: true
+    })
+    history.clearHistory(quiet.id)
+    providers.setModelResolverOverride(() => ({
+      providerId: 'mock',
+      modelId: 'mock',
+      label: 'Mock',
+      model: silentModel('printf quiet')
+    }))
+
+    await runTurn({ sessionId: quiet.id, userText: 'have a look' })
+    const messages = store.listMessages(quiet.id)
+    const last = messages[messages.length - 1]
+    const text = (last?.parts ?? [])
+      .filter((part) => part.type === 'text')
+      .map((part) => part.text ?? '')
+      .join(' ')
+    check('the turn says that it ended without answering', /without answering/.test(text), text)
+    check(
+      'and says how many calls it made before it stopped, so it is not a mystery',
+      /1 tool call\b/.test(text),
+      text
+    )
+    check('not as an error, because it is not one', !last?.parts.some((part) => part.type === 'error'))
+    check('and the session is idle rather than failed', store.getSession(quiet.id)?.status === 'idle')
+
+    providers.setModelResolverOverride(null)
+    store.deleteSession(quiet.id)
+    history.clearHistory(quiet.id)
+  }
 
   section('a model that runs on this machine')
   {

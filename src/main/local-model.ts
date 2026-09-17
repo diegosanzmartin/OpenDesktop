@@ -89,9 +89,9 @@ export function modelPath(spec: LocalModelSpec): string {
   return join(MODELS_DIR, spec.file)
 }
 
-/** Where the running server's key is kept, for as long as it is running. */
-function keyFile(): string {
-  return join(RUNTIME_DIR, 'session-key')
+/** Where a running server's key is kept, for as long as it is running. */
+function keyFile(port: number): string {
+  return join(RUNTIME_DIR, `session-key-${port}`)
 }
 
 function sizeOf(path: string): number {
@@ -637,15 +637,15 @@ async function startProcess(spec: LocalModelSpec): Promise<Live> {
    * worth keeping.
    */
   const token = randomBytes(24).toString('hex')
-  rmSync(keyFile(), { force: true })
-  writeFileSync(keyFile(), `${token}\n`, { mode: 0o600 })
+  rmSync(keyFile(port), { force: true })
+  writeFileSync(keyFile(port), `${token}\n`, { mode: 0o600 })
 
   const args = [
     '--model', modelPath(spec),
     '--alias', spec.id,
     '--host', '127.0.0.1',
     '--port', String(port),
-    '--api-key-file', keyFile(),
+    '--api-key-file', keyFile(port),
     '--ctx-size', String(spec.contextWindow),
     // All of it on the GPU where there is one; ignored where there is not.
     '--n-gpu-layers', '999',
@@ -683,7 +683,7 @@ async function startProcess(spec: LocalModelSpec): Promise<Live> {
   child.on('close', (code) => {
     const was = live
     live = null
-    rmSync(keyFile(), { force: true })
+    rmSync(keyFile(port), { force: true })
     if (state.stage === 'running' || state.stage === 'starting') {
       state.stage = 'ready'
       state.port = undefined
@@ -785,8 +785,8 @@ export function stopLocalModel(reason?: string): LocalModelStatus {
   }
   const current = live
   live = null
-  rmSync(keyFile(), { force: true })
   if (current) {
+    rmSync(keyFile(current.port), { force: true })
     current.child.kill()
     logLine('info', `local model: stopped${reason ? ` — ${reason}` : ''}`)
   }
