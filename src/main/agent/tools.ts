@@ -56,6 +56,9 @@ export interface ToolContext {
     prompt: string
     description: string
     parentBlockId: string
+    /** Files the lead has already read, handed over rather than read again. */
+    contextPaths?: string[]
+    contextNotes?: string
   }) => Promise<{ sessionId: string; report: string }>
 }
 
@@ -388,17 +391,30 @@ export function createTools(ctx: ToolContext): ToolSet {
             }
           },
           async (block) => {
+            /*
+             * The live view is scrubbed as it streams, holding back the tail.
+             *
+             * A key can straddle two reads of the pipe, and half a key matches
+             * nothing — so the last stretch of each chunk waits for the next
+             * one before it is shown. The whole output is scrubbed again at the
+             * end, so what is stored and what the model reads are exact either
+             * way; this is what stops a secret being briefly visible in the
+             * transcript while a command is still running.
+             */
+            let held = ''
+            const flush = (chunk: string, last = false): void => {
+              held += chunk
+              const safe = last ? held : held.slice(0, Math.max(0, held.length - 96))
+              held = last ? '' : held.slice(safe.length)
+              if (safe) store.appendBlockOutput(ctx.sessionId, block.id, scrubSecrets(safe))
+            }
             const res = await ctx.runtime.exec(rewrite?.command ?? command, {
               cwd: ctx.cwd,
               timeoutMs: timeout ?? 180_000,
               signal: ctx.signal,
-              // Scrubbed per chunk for the live view, which is best-effort: a
-              // key can be split across two reads of the pipe. The stored
-              // output is replaced below with the scrubbed whole, so what ends
-              // up on disk and in front of the model is not best-effort.
-              onChunk: (chunk) =>
-                store.appendBlockOutput(ctx.sessionId, block.id, scrubSecrets(chunk))
+              onChunk: (chunk) => flush(chunk)
             })
+            flush('', true)
             const raw = [res.stdout, res.stderr].filter(Boolean).join('\n').trim()
             const body = scrubSecrets(raw)
             // Only when something was actually redacted, so an ordinary
@@ -807,7 +823,7 @@ export function createTools(ctx: ToolContext): ToolSet {
     const credit = (ref: string, usage: { input: number; output: number }): string => {
       const cost = costOf(ctx.config, ref, usage)
       store.creditUsage(ctx.sessionId, { ...usage, cost: cost ?? 0 })
-      meterRecord(ref, usage)
+      meterRecord(ref, { ...usage, cost: cost ?? 0 })
       return `${ref}: ${usage.input} in, ${usage.output} out`
     }
 
@@ -1063,13 +1079,30 @@ export function createTools(ctx: ToolContext): ToolSet {
         'Delegate a self-contained piece of work to another agent. Available agents:\n' +
         subagents.map((a) => `- ${a.id}: ${a.description}`).join('\n') +
         '\nThe subagent does not see this conversation, so the prompt must stand alone. ' +
-        'Launch independent subagents in the same step to run them in parallel.',
+        'Launch independent subagents in the same step to run them in parallel.\n' +
+        'Hand over what you already know with `context_paths` and `context_notes`: the files ' +
+        'are read for it and put in front of it, so it starts where you are instead of ' +
+        'rediscovering the repository. That is most of what delegating costs.',
       inputSchema: z.object({
         agent: z.string().describe(`One of: ${subagents.map((a) => a.id).join(', ')}`),
         description: z.string().describe('A 3-8 word label for the UI.'),
-        prompt: z.string().describe('The full, self-contained task for the subagent.')
+        prompt: z.string().describe('The full, self-contained task for the subagent.'),
+        context_paths: z
+          .array(z.string())
+          .optional()
+          .describe(
+            'Files you have already read that it will need. They are read and handed to it ' +
+              'with the brief; it does not have to read them again.'
+          ),
+        context_notes: z
+          .string()
+          .optional()
+          .describe(
+            'What you already know that is not in those files: conventions, what you have ' +
+              'ruled out, how the thing is wired.'
+          )
       }),
-      execute: async ({ agent, description, prompt }) => {
+      execute: async ({ agent, description, prompt, context_paths, context_notes }) => {
         const target = ctx.config.agent[agent]
         if (!target || !(target.mode === 'subagent' || target.mode === 'all')) {
           throw new Error(`Unknown subagent "${agent}". Available: ${subagents.map((a) => a.id).join(', ')}`)
@@ -1080,7 +1113,16 @@ export function createTools(ctx: ToolContext): ToolSet {
             tool: 'task',
             title: description,
             subtitle: `${target.name} subagent`,
-            input: { agent, description, prompt }
+            // The handover is part of the brief, so it belongs on the block:
+            // a delegation is meant to be inspectable, and "what did the lead
+            // hand over" is the first thing to ask when a subagent goes wrong.
+            input: {
+              agent,
+              description,
+              prompt,
+              ...(context_paths?.length ? { context_paths } : {}),
+              ...(context_notes ? { context_notes } : {})
+            }
           },
           async (block) => {
             await takeFanoutSlot(ctx)
@@ -1089,7 +1131,9 @@ export function createTools(ctx: ToolContext): ToolSet {
                 agentId: agent,
                 prompt,
                 description,
-                parentBlockId: block.id
+                parentBlockId: block.id,
+                contextPaths: context_paths,
+                contextNotes: context_notes
               })
               .finally(() => releaseFanoutSlot(ctx.sessionId))
             // Recorded on the block so the UI can open the subagent's own
@@ -1133,6 +1177,15 @@ export function createTools(ctx: ToolContext): ToolSet {
 
   return tools
 }
+
+/**
+ * The tools that change something, as opposed to reading it.
+ *
+ * Named here rather than in the prompt that talks about them, so an agent's
+ * system prompt and this file cannot drift into disagreeing about which tools
+ * a read-only agent is missing.
+ */
+export const MUTATING_TOOLS = ['write', 'edit', 'bash'] as const
 
 export function toolNames(): string[] {
   return [
