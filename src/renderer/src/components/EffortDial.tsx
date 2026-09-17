@@ -111,19 +111,29 @@ export function EffortDial({ session }: { session: Session }): ReactNode {
             })}
           </div>
 
-          <p className="text-ink-500 mt-2.5 text-[11.5px] leading-[1.55]">
+          {/* What it does, in the fewest words that are still true. The
+              sentence this replaces explained that a model without a reasoning
+              setting only gets the step ceiling — which is worth knowing once
+              and is now the tooltip, not three lines of the panel. */}
+          <p
+            className="text-ink-500 mt-2.5 text-[11.5px] tabular-nums"
+            title={
+              thinks
+                ? 'Sent to the model as its reasoning setting, with a ceiling on the steps a turn may take'
+                : `${model?.name ?? session.model} declares no reasoning setting, so the dial only moves the step ceiling. Mark it as reasoning under Providers & keys to have the dial reach it.`
+            }
+          >
             {thinks ? (
               <>
                 {level.reasoning === 'off'
-                  ? 'No thinking before the answer'
-                  : `Thinking ${level.reasoning}${level.budgetTokens ? `, up to ${Math.round(level.budgetTokens / 1024)}k tokens` : ''}`}
-                , and up to {steps} steps in a turn.
+                  ? 'No thinking'
+                  : `Thinking ${level.reasoning}${level.budgetTokens ? ` · ${Math.round(level.budgetTokens / 1024)}k` : ''}`}
+                {' · '}
+                {steps} steps
               </>
             ) : (
               <>
-                {model?.name ?? session.model} declares no reasoning setting, so this only
-                changes how many steps a turn may take: up to {steps}. Mark the model as
-                reasoning under Providers &amp; keys to have the dial reach it.
+                {steps} steps <span className="text-ink-600">· no thinking to set</span>
               </>
             )}
           </p>

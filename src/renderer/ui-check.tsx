@@ -1157,13 +1157,20 @@ async function run(): Promise<void> {
       panel
     )
     check(
-      'and how much room is left before it summarises',
-      panel.includes('Room until a summary'),
+      'and how much room is left before it summarises, with the threshold',
+      panel.includes('Room until a summary') && panel.includes('at 70%'),
       panel
     )
+    /*
+     * The panels are three sentences shorter than they were. What they said is
+     * still there — a total the provider charged for against parts this app
+     * estimated, and where the usage figures come from — but as tooltips: the
+     * same explanation on every open is noise the second time.
+     */
     check(
-      'the parts are labelled as this app’s estimate of a measured total',
-      /estimate of a total the provider charged/.test(panel),
+      'the estimate is admitted, without a paragraph about it',
+      host.innerHTML.includes("app's estimate of it") &&
+        !panel.includes('estimate of a total the provider charged'),
       panel
     )
     check(
@@ -1192,8 +1199,8 @@ async function run(): Promise<void> {
     fresh.querySelector('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await settle()
     check(
-      'before a turn it says the parts are not measured yet',
-      /send one and this/.test(fresh.textContent ?? ''),
+      'before a turn it says so in three words',
+      (fresh.textContent ?? '').includes('Not measured yet'),
       fresh.textContent
     )
   }
@@ -1214,9 +1221,14 @@ async function run(): Promise<void> {
       dial.querySelectorAll('button').length
     )
     check(
-      'and a model with no reasoning setting is told so, in so many words',
-      /declares no reasoning setting/.test(open) && /up to 60/.test(open),
+      'a model with no reasoning setting shows the one thing that does change',
+      /60 steps/.test(open) && /no thinking to set/.test(open),
       open
+    )
+    check(
+      'and why, on hover rather than on screen',
+      (dial.innerHTML ?? '').includes('declares no reasoning setting'),
+      dial.innerHTML.slice(0, 400)
     )
 
     // The same dial on a model that does reason: now it says what it will ask for.
@@ -1242,8 +1254,8 @@ async function run(): Promise<void> {
     const smart = thinking.textContent ?? ''
     check('at the top of the scale it is Max', smart.includes('Max'), smart)
     check(
-      'and it says what it will ask the model for',
-      /Thinking high/.test(smart) && /32k tokens/.test(smart),
+      'and it says what it will ask the model for, in two numbers',
+      /Thinking high/.test(smart) && /32k/.test(smart) && /60 steps/.test(smart),
       smart
     )
     useStore.setState({ config: before })
@@ -1387,6 +1399,17 @@ async function run(): Promise<void> {
         await settle()
       }
     }
+  }
+
+  // The box on its own, to check that the line of text sits in the middle of it.
+  if (new URLSearchParams(location.search).get('shot') === 'input') {
+    document.body.innerHTML = ''
+    mount(
+      <div className="w-[560px] p-5">
+        <Composer session={{ ...session, model: 'p/m' }} />
+      </div>
+    )
+    await settle()
   }
 
   // The effort dial open, which is the other thing that line does.

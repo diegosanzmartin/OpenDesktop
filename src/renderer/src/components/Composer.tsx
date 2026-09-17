@@ -632,7 +632,7 @@ export function Composer({ session }: { session: Session }): ReactNode {
             )
           }}
           className={clsx(
-            'border-ink-700 bg-ink-850 focus-within:border-ink-600 relative flex flex-col rounded-2xl border px-3.5 py-2.5',
+            'border-ink-700 bg-ink-850 focus-within:border-ink-600 relative flex flex-col rounded-2xl border px-3.5 py-2',
             dropping && 'border-brand bg-brand/5'
           )}
         >
@@ -701,15 +701,15 @@ export function Composer({ session }: { session: Session }): ReactNode {
                 submit()
               }
             }}
-            className="text-ink-100 placeholder:text-ink-600 max-h-56 min-h-[24px] flex-1 resize-none bg-transparent text-[14px] leading-[1.6] outline-none"
+            className="text-ink-100 placeholder:text-ink-600 max-h-56 min-h-[22px] flex-1 resize-none bg-transparent text-[14px] leading-[22px] outline-none"
           />
           <button
             type="button"
             title="Attach files"
             onClick={async () => take(await window.opendesktop.attachments.pick(session.id))}
-            className="text-ink-500 hover:bg-ink-800 hover:text-ink-200 mb-0.5 shrink-0 rounded-md p-1.5"
+            className="text-ink-500 hover:bg-ink-800 hover:text-ink-200 shrink-0 rounded-md p-1"
           >
-            <Paperclip className="h-4 w-4" />
+            <Paperclip className="h-3.5 w-3.5" />
           </button>
           <button
             type="button"
@@ -717,7 +717,7 @@ export function Composer({ session }: { session: Session }): ReactNode {
             disabled={!busy && !text.trim() && attachments.length === 0}
             title={busy ? 'Stop' : 'Send'}
             className={clsx(
-              'flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors',
+              'flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition-colors',
               busy
                 ? 'bg-bad/20 text-bad hover:bg-bad/30'
                 : text.trim()
@@ -725,7 +725,7 @@ export function Composer({ session }: { session: Session }): ReactNode {
                   : 'bg-ink-800 text-ink-600'
             )}
           >
-            {busy ? <Square className="h-3 w-3" /> : <ArrowUp className="h-4 w-4" />}
+            {busy ? <Square className="h-2.5 w-2.5" /> : <ArrowUp className="h-3.5 w-3.5" />}
           </button>
           </div>
         </div>

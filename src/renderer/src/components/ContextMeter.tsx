@@ -166,7 +166,12 @@ export function ContextMeter({ session }: { session: Session }): ReactNode {
       {open ? (
         <div className="border-ink-800 bg-ink-900 absolute bottom-[calc(100%+8px)] right-0 z-40 max-h-[70vh] w-[320px] overflow-y-auto rounded-xl border p-3 shadow-2xl">
           <div className="flex items-baseline justify-between">
-            <span className="text-ink-300 text-[12px]">Context window</span>
+            <span
+              className="text-ink-300 text-[12px]"
+              title="The total is what the provider charged for the first step of the last turn; the parts are this app's estimate of it."
+            >
+              Context window
+            </span>
             <span className="text-ink-400 text-[11px] tabular-nums">
               {tokens(used)} / {tokens(window_)} ({Math.round(share * 100)}%)
             </span>
@@ -192,7 +197,12 @@ export function ContextMeter({ session }: { session: Session }): ReactNode {
               ))}
               <div className="flex items-center gap-2 text-[11.5px]">
                 <span className="border-ink-700 h-2 w-2 shrink-0 rounded-[2px] border" />
-                <span className="text-ink-400 min-w-0 flex-1 truncate">Room until a summary</span>
+                <span
+                  className="text-ink-400 min-w-0 flex-1 truncate"
+                  title={`Summarised at ${Math.round(at * 100)}% of the window, keeping the last ${config.keepRecentMessages ?? 8} messages verbatim`}
+                >
+                  Room until a summary <span className="text-ink-600">at {Math.round(at * 100)}%</span>
+                </span>
                 <span className="text-ink-500 tabular-nums">{tokens(untilSummary)}</span>
                 <span className="text-ink-600 w-9 text-right tabular-nums">
                   {Math.round((untilSummary / window_) * 100)}%
@@ -200,27 +210,28 @@ export function ContextMeter({ session }: { session: Session }): ReactNode {
               </div>
             </div>
           ) : (
-            <p className="text-ink-600 mt-2 text-[11.5px] leading-[1.5]">
-              What it is made of is measured on the first step of a turn — send one and this
-              fills in.
+            <p
+              className="text-ink-600 mt-2 text-[11.5px]"
+              title="The parts are measured on the first step of a turn"
+            >
+              Not measured yet.
             </p>
           )}
 
-          <p className="text-ink-600 mt-2.5 text-[11px] leading-[1.5]">
-            Summarised at {Math.round(at * 100)}% of the window, keeping the last{' '}
-            {config.keepRecentMessages ?? 8} messages verbatim.
-            {parts ? ' Parts are this app’s estimate of a total the provider charged for.' : ''}
-          </p>
-
           <div className="border-ink-800 mt-3 border-t pt-2.5">
             <div className="flex items-baseline justify-between">
-              <span className="text-ink-300 text-[12px]">Usage this month</span>
+              <span
+                className="text-ink-300 text-[12px]"
+                title="Every model this app has paid for, not only this session's — a delegated read or a plan is charged to whichever model did it. Counted here, since no provider reports a balance back."
+              >
+                Usage this month
+              </span>
               <span className="text-ink-500 text-[11px] tabular-nums">
                 {monthCost > 0 ? formatCost(monthCost) : '—'}
               </span>
             </div>
             {spending.length === 0 ? (
-              <p className="text-ink-600 mt-1.5 text-[11.5px]">Nothing counted yet.</p>
+              <p className="text-ink-600 mt-1.5 text-[11.5px]">Nothing yet.</p>
             ) : (
               <div className="mt-1.5 space-y-1">
                 {spending.map((entry) => (
@@ -241,11 +252,6 @@ export function ContextMeter({ session }: { session: Session }): ReactNode {
                 ))}
               </div>
             )}
-            <p className="text-ink-600 mt-2 text-[11px] leading-[1.5]">
-              Every model this app has paid for, not only this session&apos;s: a delegated read
-              or a plan is charged to whichever model did it. Counted here, since no provider
-              reports a balance back.
-            </p>
           </div>
         </div>
       ) : null}
