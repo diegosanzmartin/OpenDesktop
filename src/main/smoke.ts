@@ -411,6 +411,25 @@ function expensiveLoopingModel(perStep: number): LanguageModel {
   })
 }
 
+/** The same, but reporting the input it wants — for the budget's arithmetic. */
+function billingModel(text: string, input: number, output = 4): LanguageModel {
+  return new MockLanguageModelV4({
+    doStream: async () => ({
+      stream: new ReadableStream({
+        start(controller) {
+          controller.enqueue({ type: 'stream-start', warnings: [] })
+          controller.enqueue({ type: 'response-metadata', id: 'b1', modelId: 'mock' })
+          controller.enqueue({ type: 'text-start', id: 'bt' })
+          controller.enqueue({ type: 'text-delta', id: 'bt', delta: text })
+          controller.enqueue({ type: 'text-end', id: 'bt' })
+          controller.enqueue(finish('stop', input, output))
+          controller.close()
+        }
+      })
+    })
+  }) as unknown as LanguageModel
+}
+
 function replyingModel(text: string): LanguageModel {
   return new MockLanguageModelV4({
     doStream: async () => ({
@@ -3845,6 +3864,204 @@ async function main(): Promise<void> {
 
     store.deleteSession(parentSession.id)
     history.clearHistory(parentSession.id)
+  }
+
+  section('leaving the prefix alone so the provider can cache it')
+  {
+    /*
+     * The most expensive thing this app did was save tokens.
+     *
+     * Dropping old tool output costs nothing, so it ran at the end of every
+     * turn — and rewriting the transcript changes the prefix, which is what the
+     * provider caches by. From the third turn of a session on, every step paid
+     * full price for the whole conversation because the app had just changed
+     * the part that would have been served from cache. Measured here, two
+     * thirds of a turn's input can come back as a cache read.
+     *
+     * So the test is about bytes: under the threshold the transcript the next
+     * turn sends must be *identical*, not merely equivalent.
+     */
+    const withWindow = (contextWindow: number): AppConfig => ({
+      ...defaultConfig(),
+      provider: {
+        mock: {
+          id: 'mock',
+          npm: '@ai-sdk/openai-compatible',
+          name: 'Mock',
+          options: { apiKey: 'x' },
+          models: { mock: { id: 'mock', name: 'Mock', contextWindow } }
+        }
+      }
+    })
+
+    /** A session whose transcript has an old, fat tool result in it. */
+    const seed = (id: string): string => {
+      const session = store.createSession({
+        title: `prefix ${id}`,
+        cwd: process.cwd(),
+        environmentId: 'local',
+        agentId: 'build',
+        model: 'mock/mock',
+        autoApprove: true
+      })
+      history.clearHistory(session.id)
+      history.appendHistory(session.id, [
+        { role: 'user', content: 'first question' },
+        {
+          role: 'assistant',
+          content: [{ type: 'tool-call', toolCallId: 'c1', toolName: 'bash', input: { command: 'ls' } }]
+        },
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: 'c1',
+              toolName: 'bash',
+              output: { type: 'text', value: 'x'.repeat(6_000) }
+            }
+          ]
+        },
+        { role: 'assistant', content: 'answered' },
+        { role: 'user', content: 'second question' },
+        { role: 'assistant', content: 'answered again' },
+        { role: 'user', content: 'third question' },
+        { role: 'assistant', content: 'answered once more' }
+      ])
+      return session.id
+    }
+
+    // 5,000 tokens of prefix, as the provider would report it.
+    providers.setModelResolverOverride(() => ({
+      providerId: 'mock',
+      modelId: 'mock',
+      label: 'Mock',
+      model: billingModel('done', 5_000)
+    }))
+
+    // A big window: the transcript is a rounding error against it, and the
+    // provider will serve it from cache on the next turn.
+    const roomy = seed('roomy')
+    saveConfig(withWindow(1_000_000))
+    const kept = history.getHistory(roomy).length
+    const before = JSON.stringify(history.getHistory(roomy).slice(0, kept))
+    await runTurn({ sessionId: roomy, userText: 'and another' })
+    const after = JSON.stringify(history.getHistory(roomy).slice(0, kept))
+    check(
+      'with room to spare the transcript is not touched at all',
+      after === before,
+      { before: before.length, after: after.length }
+    )
+    check(
+      'so the old output is still there, byte for byte',
+      after.includes('x'.repeat(6_000)),
+      after.length
+    )
+
+    // A window the transcript genuinely threatens: 5,000 against a 2,000 budget.
+    const tight = seed('tight')
+    saveConfig(withWindow(14_000))
+    await runTurn({ sessionId: tight, userText: 'and another' })
+    const tightened = JSON.stringify(history.getHistory(tight))
+    check(
+      'but once it threatens the window the old output goes',
+      !tightened.includes('x'.repeat(6_000)) && tightened.includes('dropped to save context'),
+      tightened.slice(0, 200)
+    )
+    check(
+      'and what replaced it says which call to run again',
+      /It came from bash\(/.test(tightened),
+      tightened.slice(tightened.indexOf('dropped to save context'), tightened.indexOf('dropped to save context') + 200)
+    )
+
+    /*
+     * And the turn records what the provider actually did with the prefix, so a
+     * provider that stops rewarding this is visible rather than a guess. The
+     * mock reports no cache reads, which is what a cold or absent cache looks
+     * like.
+     */
+    check(
+      'and the turn records what the cache did, for whoever reads the log',
+      store.getSession(roomy)?.cacheShare === 0,
+      store.getSession(roomy)?.cacheShare
+    )
+
+    providers.setModelResolverOverride(null)
+    saveConfig(defaultConfig())
+    for (const id of [roomy, tight]) {
+      store.deleteSession(id)
+      history.clearHistory(id)
+    }
+  }
+
+  section('what a cache read costs')
+  {
+    /*
+     * The provider was already caching and the app was charging full price for
+     * it: two thirds of one measured turn's input came back as a cache read and
+     * every one of those tokens was billed as new. That overstates a long turn
+     * by most of its bill, and the allowance counter reads off the same figure.
+     */
+    const priced: AppConfig = {
+      ...defaultConfig(),
+      provider: {
+        p: {
+          id: 'p',
+          npm: '@ai-sdk/openai-compatible',
+          name: 'P',
+          options: {},
+          models: {
+            m: { id: 'm', name: 'M', price: { input: 10, output: 40 } },
+            explicit: {
+              id: 'explicit',
+              name: 'Explicit',
+              price: { input: 10, output: 40, cacheRead: 2, cacheWrite: 11 }
+            }
+          }
+        }
+      }
+    }
+
+    check(
+      'nothing cached is the price on the tin',
+      costOf(priced, 'p/m', { input: 1_000_000, output: 0 }) === 10
+    )
+    check(
+      'a tenth for a cache read, by the usual convention',
+      costOf(priced, 'p/m', { input: 1_000_000, output: 0, cacheRead: 1_000_000 }) === 1,
+      costOf(priced, 'p/m', { input: 1_000_000, output: 0, cacheRead: 1_000_000 })
+    )
+    check(
+      'and a quarter more to write one',
+      costOf(priced, 'p/m', { input: 1_000_000, output: 0, cacheWrite: 1_000_000 }) === 12.5
+    )
+    check(
+      'a mixed turn is added up part by part',
+      Math.abs(
+        (costOf(priced, 'p/m', {
+          input: 1_000_000,
+          output: 100_000,
+          cacheRead: 600_000,
+          cacheWrite: 100_000
+        }) ?? 0) -
+          // 300k fresh at $10, 600k read at $1, 100k written at $12.50, 100k out at $40
+          (3 + 0.6 + 1.25 + 4)
+      ) < 1e-9,
+      costOf(priced, 'p/m', {
+        input: 1_000_000,
+        output: 100_000,
+        cacheRead: 600_000,
+        cacheWrite: 100_000
+      })
+    )
+    check(
+      'a provider that publishes its own cache rates is taken at its word',
+      costOf(priced, 'p/explicit', { input: 1_000_000, output: 0, cacheRead: 1_000_000 }) === 2
+    )
+    check(
+      'and an unpriced model still says nothing rather than zero',
+      costOf(defaultConfig(), 'helmcode/glm5.3-flash', { input: 1_000, output: 1_000 }) === null
+    )
   }
 
   section('what one turn may spend')

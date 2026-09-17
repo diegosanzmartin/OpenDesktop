@@ -165,8 +165,10 @@ function systemPrompt(agent: AgentConfig, input: {
 - Every command and file operation you request runs on the execution target above,
   not on the machine rendering this interface.
 - Read a file before you edit it. Never invent a path.
-- Keep each bash call to one purpose; the interface renders every call as its own
-  collapsible block, so one command per idea reads far better than a chained script.
+- One purpose per bash call — and a purpose is often two or three commands, so
+  chain those together rather than spending a step on each. A step resends the
+  whole conversation, which is what it costs; what must not be chained is
+  unrelated work, since the interface renders each call as its own block.
 - When you are done, summarize what changed in a few lines. Do not pad the answer.
 - When a check disagrees with the code, the code is what was asked about: fix it, or
   say why the check itself was wrong. Never edit an expectation to make a run pass.
@@ -400,11 +402,37 @@ async function tighten(
   sessionId: string,
   modelRef: string,
   measuredTokens: number
-): Promise<void> {
-  const freed = history.dehydrateHistory(sessionId, {
-    afterTurns: config.dehydrateAfterTurns,
-    overChars: config.dehydrateOverChars
-  })
+): Promise<{ prefix: 'kept' | 'dehydrated' | 'compacted' }> {
+  /*
+   * Leaving the transcript alone is usually the cheaper move.
+   *
+   * Dropping old tool output costs nothing in tokens, so it used to happen at
+   * the end of every turn. But the provider caches by prefix, and a rewritten
+   * transcript is a different prefix: from the third turn of a session onwards,
+   * every step of every turn was paying full price for the whole conversation
+   * because the app had just changed the part that would otherwise have been
+   * served from the cache. Measured on this app, two thirds of a turn's input
+   * can come back as a cache read — that is what is being thrown away.
+   *
+   * So it waits now. Under the threshold the transcript is byte-for-byte what
+   * it was and the cache does the saving; over it, the transcript really is the
+   * bigger cost and dropping the old bodies is worth the cold prefix it buys.
+   *
+   * Measured on helmcode, on a 34k-token transcript: a turn whose prefix had
+   * been sent before came back 99% served from cache, against 0% on the turn
+   * after a rewrite. Dropping the old bodies saved 10% of the same transcript.
+   * The turn's `first=` figure in the log is that measurement — it is what to
+   * check if a provider ever stops rewarding this.
+   */
+  const budget = budgetFor(config, modelRef)
+  const share = budget > 0 ? measuredTokens / budget : 0
+  const worthIt = share >= (config.dehydrateAtFraction ?? 0.5)
+  const freed = worthIt
+    ? history.dehydrateHistory(sessionId, {
+        afterTurns: config.dehydrateAfterTurns,
+        overChars: config.dehydrateOverChars
+      })
+    : { dropped: 0, freedTokens: 0 }
   const projected = Math.max(0, measuredTokens - freed.freedTokens)
   const compacted = await compactIfNeeded(config, sessionId, modelRef, projected)
 
@@ -419,6 +447,8 @@ async function tighten(
     contextTokens:
       compacted || freed.dropped > 0 ? history.estimateTokens(history.getHistory(sessionId)) : projected
   })
+
+  return { prefix: compacted ? 'compacted' : freed.dropped > 0 ? 'dehydrated' : 'kept' }
 }
 
 async function compactIfNeeded(
@@ -769,6 +799,9 @@ export async function runTurn(input: TurnInput): Promise<string> {
    */
   let cacheRead = 0
   let cacheWrite = 0
+  /** The first step's numbers, which say whether the prefix carried over. */
+  let firstStepInput = 0
+  let firstStepCacheRead = 0
 
   const creditSession = (input: number, output: number, cost: number | null): void => {
     const deltaInput = Math.max(0, input - creditedInput)
@@ -975,6 +1008,17 @@ export async function runTurn(input: TurnInput): Promise<string> {
     // The last step's input is the size of the assembled prefix. The sum across
     // steps is what the turn cost; it is not how full the window is.
     let lastStepInput = 0
+    /*
+     * Where a long turn's tokens actually go.
+     *
+     * Every step resends the conversation, so a turn's bill is roughly the
+     * prefix times the number of steps — but which of the two is to blame is
+     * not guessable from the total. A turn that opened at 34k and closed at
+     * 109k spent most of it carrying tool output it had already read; one that
+     * opened and closed at 34k spent it on steps. Both are fixable, and by
+     * different means, so the log says which.
+     */
+    let firstStepTotal = 0
 
     for await (const part of result.fullStream) {
       if (silence) {
@@ -1002,12 +1046,19 @@ export async function runTurn(input: TurnInput): Promise<string> {
           steps++
           cacheRead += part.usage.inputTokenDetails?.cacheReadTokens ?? 0
           cacheWrite += part.usage.inputTokenDetails?.cacheWriteTokens ?? 0
+          if (steps === 1) {
+            firstStepInput = part.usage.inputTokens ?? 0
+            firstStepCacheRead = part.usage.inputTokenDetails?.cacheReadTokens ?? 0
+            firstStepTotal = firstStepInput
+          }
           lastStepInput = part.usage.inputTokens ?? lastStepInput
           usedInput += part.usage.inputTokens ?? 0
           usedOutput += part.usage.outputTokens ?? 0
           const so_far = costOf(config, agent.model ?? session.model, {
             input: usedInput,
-            output: usedOutput
+            output: usedOutput,
+            cacheRead,
+            cacheWrite
           })
           store.updateMessage(session.id, assistant.id, {
             usage: {
@@ -1071,7 +1122,12 @@ export async function runTurn(input: TurnInput): Promise<string> {
 
     const responseMessages = await result.responseMessages
     history.appendHistory(session.id, responseMessages as ModelMessage[])
-    await tighten(config, session.id, agent.model ?? session.model, lastStepInput)
+    const tightened = await tighten(config, session.id, agent.model ?? session.model, lastStepInput)
+    // What the next turn's decision reads: did this conversation's prefix
+    // survive between turns, or did it arrive as new tokens?
+    store.updateSession(session.id, {
+      cacheShare: firstStepInput > 0 ? firstStepCacheRead / firstStepInput : 0
+    })
 
     const usage = await result.totalUsage
     /*
@@ -1084,7 +1140,12 @@ export async function runTurn(input: TurnInput): Promise<string> {
     const outputTokens = Math.max(usage.outputTokens ?? 0, usedOutput)
     // Worked out now and kept on the message: a price edited next week must not
     // change what this turn is recorded as having cost.
-    const turnCost = costOf(config, modelRef, { input: inputTokens, output: outputTokens })
+    const turnCost = costOf(config, modelRef, {
+      input: inputTokens,
+      output: outputTokens,
+      cacheRead,
+      cacheWrite
+    })
     meterRecord(modelRef, { input: inputTokens, output: outputTokens, cost: turnCost ?? 0 })
     warnOnAllowance(config, modelRef)
     store.updateMessage(session.id, assistant.id, {
@@ -1108,7 +1169,12 @@ export async function runTurn(input: TurnInput): Promise<string> {
     logLine(
       'info',
       `turn ${session.id} done model=${modelRef} steps=${steps} ` +
-        `tokens=${inputTokens}/${outputTokens} cache=${cacheRead}r/${cacheWrite}w` +
+        `tokens=${inputTokens}/${outputTokens} ` +
+        `cache=${cacheRead}r/${cacheWrite}w` +
+        `${inputTokens > 0 ? `(${Math.round((cacheRead / inputTokens) * 100)}%)` : ''} ` +
+        `first=${firstStepInput > 0 ? Math.round((firstStepCacheRead / firstStepInput) * 100) : 0}% ` +
+        `prefix=${Math.round(firstStepTotal / 1000)}k→${Math.round(lastStepInput / 1000)}k ` +
+        `after=${tightened.prefix}` +
         `${turnCost === null ? '' : ` cost=${turnCost.toFixed(4)}`} ` +
         `calls=${store.listBlocks(session.id).filter((block) => block.messageId === assistant.id).length} ` +
         `${Date.now() - startedAt}ms${streamFailure === null ? '' : ' (stream failed)'}`
@@ -1144,7 +1210,9 @@ export async function runTurn(input: TurnInput): Promise<string> {
     if (usedInput > 0 || usedOutput > 0) {
       const spentCost = costOf(config, agent.model ?? session.model, {
         input: usedInput,
-        output: usedOutput
+        output: usedOutput,
+        cacheRead,
+        cacheWrite
       })
       creditSession(usedInput, usedOutput, spentCost)
       meterRecord(agent.model ?? session.model, {

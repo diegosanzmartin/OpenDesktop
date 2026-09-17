@@ -134,6 +134,7 @@ export function defaultConfig(): AppConfig {
     savings: { rtk: false, shunt: false },
     autoApprove: false,
     shuntMinLines: 350,
+    dehydrateAtFraction: 0.5,
     compactAtFraction: 0.7,
     keepRecentMessages: 8,
     dehydrateAfterTurns: 2,

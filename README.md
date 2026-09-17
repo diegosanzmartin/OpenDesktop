@@ -303,6 +303,24 @@ back**, not failed: the reason goes in the transcript, the card lands in Blocked
 and replying carries the work on. A warning at 60% of the ceiling gives you the
 chance to stop it yourself.
 
+**What a repetition costs** — every step of a turn resends the conversation, so a turn's bill
+is roughly the prefix times the number of steps: a 33k transcript and 24 steps is 800k input
+tokens, and that is the real number, not a display quirk. Two things make it cheaper. The
+provider's cache, when it serves the prefix rather than charging for it — measured on helmcode,
+an unchanged prefix has come back anywhere from 0% to 99% served from cache, so it is real but
+opportunistic. And not rewriting the transcript: dropping old tool output is free in tokens but
+changes the prefix, which is exactly what a cache cannot serve, so it now waits until the
+transcript reaches a share of the window (*Routing → Start dropping it at*, 50% by default)
+instead of happening on every turn. Cache reads are also priced as cache reads — a tenth of an
+input token, a quarter more to write one, or whatever the provider publishes — so a turn's cost
+stops being overstated by whatever the cache served.
+
+Every turn's log line carries the evidence: `tokens=66600/879 cache=3072r/0w(5%) first=0%
+prefix=32k→35k after=kept steps=2`. `first=` is the share of the *opening* step served from
+cache, which is the only honest test of whether the prefix survived between turns; `prefix=`
+is how far it grew across the turn, which says whether a big turn went on steps or on carrying
+tool output it had already read.
+
 **When nothing is happening** — a turn that has had nothing from the provider for
 90 seconds says so, in the log and as a toast, without cancelling anything: a
 slow provider is not a broken one. Every turn writes two lines to

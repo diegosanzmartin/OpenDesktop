@@ -83,7 +83,19 @@ export interface ProviderModelConfig {
    * every provider publishes it, so it can be copied across without arithmetic.
    * Absent means unknown, and unknown is shown as nothing rather than as zero.
    */
-  price?: { input?: number; output?: number }
+  price?: {
+    input?: number
+    output?: number
+    /**
+     * What a cached input token costs, and what it costs to write one. Unset,
+     * the usual convention is assumed — a tenth of the input price to read and
+     * a quarter more than it to write — because a provider that caches and does
+     * not say so is still charging that way, and counting a cache read at full
+     * price overstates every figure this app shows.
+     */
+    cacheRead?: number
+    cacheWrite?: number
+  }
   /**
    * How this model is paid for. It changes what the next token costs, which is
    * what the router balances: a flat-rate model is paid for whether it is used
@@ -222,6 +234,18 @@ export interface AppConfig {
   plannerModel?: string
   /** Whole-file reads longer than this are refused while shunt is on. */
   shuntMinLines?: number
+  /**
+   * Share of the usable window at which old tool output stops being resent.
+   *
+   * Dropping it is free in tokens and used to happen on every turn — which
+   * turned out to be the most expensive thing the app did. Rewriting the
+   * transcript changes the prefix, and a changed prefix is one the provider
+   * cannot serve from its cache, so every step of every later turn paid full
+   * price for the whole conversation instead of a tenth. Below this share the
+   * transcript is left byte-for-byte alone and the cache does the saving;
+   * above it, resending really is the bigger cost.
+   */
+  dehydrateAtFraction?: number
   /** How many board tasks the scheduler will run at once. */
   maxConcurrentTasks?: number
   /**
@@ -354,6 +378,19 @@ export interface Session {
    * Drives the context gauge.
    */
   contextTokens?: number
+  /**
+   * How much of the *first* step of the last turn came out of the provider's
+   * cache, 0 to 1.
+   *
+   * The first step is the only one that answers the question that matters:
+   * whether this conversation's prefix survived between turns. Later steps of a
+   * turn hit the cache almost by definition — they resend what the step before
+   * them just sent — so counting those would say every provider caches
+   * everything. What this drives is whether the transcript is worth leaving
+   * byte-for-byte alone: if the prefix is being served from cache, rewriting it
+   * throws that away; if it is not, shrinking it is free.
+   */
+  cacheShare?: number
   /** Parent session when this was spawned by a `task` tool call. */
   parentSessionId?: string
   /** Short label for a subagent session, shown on its subchat. */

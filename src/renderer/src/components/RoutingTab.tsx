@@ -273,8 +273,26 @@ export function RoutingTab(): ReactNode {
           />
         </Row>
         <Row
+          label="Start dropping it at"
+          description="Share of the usable window at which old tool output starts being dropped. Below it the transcript is left byte-for-byte alone, because a rewritten transcript is a prefix the provider cannot serve from its cache — and a cached prefix costs a tenth. Lower this if your provider's cache is unreliable and the transcript is what hurts."
+        >
+          <RowInput
+            mono
+            width="w-[72px]"
+            value={String(Math.round((draft.dehydrateAtFraction ?? 0.5) * 100))}
+            onChange={(value) => {
+              const parsed = Number(value.replace(/\D/g, ''))
+              setDraft({
+                ...draft,
+                dehydrateAtFraction: Math.min(0.95, Math.max(0, (parsed || 50) / 100))
+              })
+            }}
+          />
+          <Hint>%</Hint>
+        </Row>
+        <Row
           label="Drop tool output after"
-          description="Turns after which a command's output stops being resent, replaced by a note naming the call. Costs nothing and usually saves more than a summary."
+          description="Once it is dropping, the turns it keeps whole. What goes is replaced by a note naming the call, so the agent can run it again."
         >
           <RowInput
             mono
