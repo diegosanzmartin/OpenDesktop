@@ -111,16 +111,49 @@ export interface LocalModelSpec {
   contextWindow: number
   /** Roughly what it occupies while loaded, weights plus that window's cache. */
   ramBytes: number
+  /**
+   * Anything this particular model needs the server told about it.
+   *
+   * Qwen3 is a hybrid thinking model: asked a question with the default
+   * settings it spent its whole output budget inside its reasoning channel and
+   * returned an empty answer — 256 tokens, nothing said. `--reasoning off` is
+   * how llama.cpp turns that off, and knowing it is the app's job rather than
+   * something for anyone to discover twice.
+   */
+  serverArgs?: string[]
   /** One line for the settings row. */
   blurb: string
 }
 
 /**
- * The curated models. Ungated repositories only — a download that stops to ask
- * for an account is not plug-and-play — and published by whoever trained the
- * model, so the weights are not somebody's requantisation of them.
+ * The curated models, best first. Ungated repositories only — a download that
+ * stops to ask for an account is not plug-and-play — and published by whoever
+ * trained the model, so the weights are not somebody's requantisation of them.
  */
 export const LOCAL_MODELS: LocalModelSpec[] = [
+  {
+    /*
+     * The default, on measurement rather than on size. Asked the same question
+     * three times through the app's own agent loop it read the file it was
+     * pointed at and answered in one sentence three times, identically. The 3B
+     * below did that once in three, and spent the other two grepping for the
+     * wording of the question or reading a five-line file sixteen times.
+     *
+     * It costs a third of its speed for that: about 31 tokens a second against
+     * the 3B's 43, and a 16k window instead of 32k because its KV cache is
+     * larger per token.
+     */
+    id: 'qwen3-4b',
+    name: 'Qwen3 4B',
+    repo: 'Qwen/Qwen3-4B-GGUF',
+    file: 'Qwen3-4B-Q4_K_M.gguf',
+    bytes: 2_497_280_256,
+    sha256: '7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5',
+    contextWindow: 16_384,
+    ramBytes: 5_000_000_000,
+    serverArgs: ['--reasoning', 'off'],
+    blurb: 'Reads what it is pointed at and answers short. The default: the reliable one.'
+  },
   {
     id: 'qwen2.5-3b-instruct',
     name: 'Qwen2.5 3B Instruct',
@@ -130,18 +163,7 @@ export const LOCAL_MODELS: LocalModelSpec[] = [
     sha256: '626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d',
     contextWindow: 32_768,
     ramBytes: 3_400_000_000,
-    blurb: 'Answers straight away and calls tools. The default: small enough to stay loaded.'
-  },
-  {
-    id: 'qwen3-4b',
-    name: 'Qwen3 4B',
-    repo: 'Qwen/Qwen3-4B-GGUF',
-    file: 'Qwen3-4B-Q4_K_M.gguf',
-    bytes: 2_497_280_256,
-    sha256: '7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5',
-    contextWindow: 16_384,
-    ramBytes: 5_000_000_000,
-    blurb: 'Better answers, thinks before them, and a smaller window for the same memory.'
+    blurb: 'Half again as fast with twice the window, and it gets the job right about a third of the time.'
   }
 ]
 

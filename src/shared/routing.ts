@@ -60,6 +60,26 @@ export function capability(model: ProviderModelConfig): number {
   return clamp(model.iq ?? 3)
 }
 
+/**
+ * Whether this model should be handed the slim harness instead of the full one.
+ *
+ * The app's prompts and tools are written for a frontier model: a page of
+ * policy about delegation, narration and spending, and a dozen tool schemas to
+ * choose between. A 3B model given that flails — measured here, it grepped for
+ * the text of the question rather than reading the file it had been pointed at,
+ * and the same model with two tools and three lines of instruction answered
+ * correctly on the first call. So past a point, taking things away is what
+ * makes a small model work.
+ *
+ * Declared capability is the test, not the size of the file or who made it:
+ * `iq` is already the judgement the router weighs, and a model nobody has
+ * judged defaults to the middle and keeps the full harness. Moving the slider
+ * to "modest" is how you ask for this, and moving it up is how you refuse it.
+ */
+export function needsSlimHarness(model: ProviderModelConfig | undefined): boolean {
+  return model !== undefined && capability(model) <= 2
+}
+
 function clamp(value: number): number {
   if (!Number.isFinite(value)) return 3
   return Math.min(DEAREST, Math.max(CHEAPEST, Math.round(value)))

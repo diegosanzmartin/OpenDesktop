@@ -134,7 +134,7 @@ server is this app's own child process and goes when it does.
 |  | Where it goes |
 | --- | --- |
 | Runtime | `~/.opendesktop/llama/<build>/` (an 11 MB download, ~27 MB once unpacked) |
-| Weights | `~/.opendesktop/models/<file>.gguf` (2.1 GB for the default model) |
+| Weights | `~/.opendesktop/models/<file>.gguf` (2.5 GB for the default model) |
 
 Both downloads are pinned: the build, the asset names, the byte counts and the SHA-256s are
 written into the app, so a download that does not match the thing this version was built
@@ -155,8 +155,45 @@ is the cheapest thing the router knows about — and at `iq` 2 it only wins work
 actually do. With a stronger flat-rate model configured, that means it mostly sits there, which
 is the intended outcome: it is the thing that still works when nothing else is paid for.
 
-`pnpm local:check` does the whole thing for real — install, start, a completion through the
-normal resolver, and the tokens per second it managed — and leaves the config as it found it.
+Two models are curated, best first. **Qwen3 4B** is the default on measurement, not on size:
+asked the same question three times through the agent loop it read the file it was pointed at
+and answered in one sentence, identically, three times. **Qwen2.5 3B** is half again as fast
+(43 tokens a second against 31) with twice the window, and got the same job right about once in
+three — the other two it grepped for the wording of the question, or read a five-line file
+sixteen times. Qwen3 is a hybrid thinking model and is served with `--reasoning off`: left on,
+it spent an entire 256-token budget inside its reasoning channel and returned an empty answer.
+
+`pnpm local:check [model-id]` does the whole thing for real — install, start, a completion, and
+a whole turn through the agent loop with tools — and prints the tokens per second and the tool
+calls it took. It leaves the config as it found it.
+
+### Less harness for a smaller model
+
+A model declared as **modest** (`iq` 2 or below on the capability slider) is handed a different
+harness, because the usual one is written for a frontier model: a page of policy about
+delegation, narration and spending, and a dozen tool schemas to choose between. Measured on the
+3B, that made it grep for the text of the question instead of reading the file it had just been
+pointed at; the same model with three lines of instruction and five tools read the file.
+
+| | Full harness | Slim |
+| --- | --- | --- |
+| System prompt | ~4,000 tokens of policy | ~400: look first, read what is named, keep it short |
+| Tools | everything configured | no `task`, `fetch`, `bulk_read` or `code_write` |
+| Steps | `maxSteps` (60) | 12 |
+| Temperature | the provider's default | 0.2 |
+| Savings guidance | included | omitted |
+
+`plan` deliberately stays: asking a stronger model how to do something hard is not a luxury for
+a weak one, it is the arrangement the savings switch exists for, and it is the one thing on that
+list that gets more useful as the model gets smaller. The step cap is there because a small
+model that has not finished in twelve steps is looping rather than working, and the temperature
+is pinned because llama.cpp serves at 0.8 by default, which on a 3B is the difference between
+reading a file and inventing a regex for the question.
+
+Capability is the trigger, so the slider is the switch: moving a model to "modest" asks for this
+and moving it up refuses it. A model nobody has judged keeps the full harness, and the turn log
+says `harness=slim` when the short one was used. None of it changes permissions — the approval
+prompts are exactly the same.
 
 ### API keys
 

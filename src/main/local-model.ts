@@ -654,7 +654,9 @@ async function startProcess(spec: LocalModelSpec): Promise<Live> {
     // prefix reuses the KV cache for it instead of prefilling it again.
     '--cache-reuse', '256',
     '--jinja',
-    '--no-webui'
+    '--no-webui',
+    // Whatever this model needs said about it — see `serverArgs`.
+    ...(spec.serverArgs ?? [])
   ]
 
   state.stage = 'starting'

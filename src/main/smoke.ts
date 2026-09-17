@@ -115,6 +115,7 @@ import { approvalDetail, approvalQuestion } from '@shared/approvals'
 import { mentionToken, mentionedAgents, splitMentions } from '@shared/mentions'
 import { extensionOf, fileSize, isDocument } from '@shared/documents'
 import { costOf, formatCost } from '@shared/cost'
+import { needsSlimHarness } from '@shared/routing'
 import {
   LLAMA_BINARIES,
   LLAMA_BUILD,
@@ -5982,6 +5983,171 @@ async function main(): Promise<void> {
     forgetRtkStatus()
   }
 
+
+  section('less harness for a smaller model')
+  {
+    /*
+     * What the model is actually handed, captured from the mock: the system
+     * prompt and the tool names. Found by running a 3B model against the real
+     * harness — a page of policy and a dozen schemas — where it grepped for
+     * the text of the question instead of reading the file it was pointed at.
+     * The same model with three lines and five tools read the file.
+     */
+    const seen: { system: string; tools: string[] }[] = []
+    const capture = (): LanguageModel =>
+      new MockLanguageModelV4({
+        doStream: async (params: Record<string, unknown>) => {
+          seen.push({
+            system: String(
+              (params.prompt as { role: string; content: unknown }[])?.find(
+                (message) => message.role === 'system'
+              )?.content ?? ''
+            ),
+            // An array in the provider protocol, not a map: keying it by
+            // index reported ten tools called "0".."9".
+            tools: ((params.tools as { name: string }[]) ?? []).map((tool) => tool.name)
+          })
+          return {
+            stream: new ReadableStream({
+              start(controller) {
+                controller.enqueue({ type: 'stream-start', warnings: [] })
+                controller.enqueue({ type: 'text-start', id: 't1' })
+                controller.enqueue({ type: 'text-delta', id: 't1', delta: 'done' })
+                controller.enqueue({ type: 'text-end', id: 't1' })
+                controller.enqueue(finish('stop', 20, 4))
+                controller.close()
+              }
+            })
+          }
+        }
+      }) as unknown as LanguageModel
+
+    const twoModels = normalizeConfig({
+      model: 'p/strong',
+      provider: {
+        p: {
+          id: 'p',
+          npm: '@ai-sdk/openai-compatible',
+          name: 'P',
+          options: { apiKey: 'set' },
+          models: {
+            strong: { id: 'strong', name: 'Strong', iq: 5, cost: 4 },
+            modest: { id: 'modest', name: 'Modest', iq: 2, cost: 1, billing: 'flat' },
+            unjudged: { id: 'unjudged', name: 'Unjudged' }
+          }
+        }
+      }
+    } as unknown as Record<string, unknown>)
+    saveConfig(twoModels)
+
+    check('a model declared modest asks for the slim harness', needsSlimHarness(twoModels.provider.p.models.modest))
+    check('a strong one does not', !needsSlimHarness(twoModels.provider.p.models.strong))
+    check(
+      'and a model nobody has judged keeps the full one',
+      !needsSlimHarness(twoModels.provider.p.models.unjudged),
+      twoModels.provider.p.models.unjudged
+    )
+    check('as does a model the config has never heard of', !needsSlimHarness(undefined))
+
+    providers.setModelResolverOverride((ref) => ({
+      providerId: 'p',
+      modelId: ref.split('/')[1],
+      label: ref,
+      model: capture()
+    }))
+
+    // With shunt on, so the tools it adds are on the table too: a small model
+    // must not be handed the delegated-reading machinery either.
+    const big = store.createSession({
+      title: 'strong',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: MANAGER_AGENT,
+      model: 'p/strong',
+      savings: { rtk: false, shunt: true },
+      autoApprove: true
+    })
+    history.clearHistory(big.id)
+    await runTurn({ sessionId: big.id, userText: 'hello' })
+    const full = seen[seen.length - 1]
+
+    const small = store.createSession({
+      title: 'modest',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: MANAGER_AGENT,
+      model: 'p/modest',
+      savings: { rtk: false, shunt: true },
+      autoApprove: true
+    })
+    history.clearHistory(small.id)
+    await runTurn({ sessionId: small.id, userText: 'hello' })
+    const slim = seen[seen.length - 1]
+
+    check(
+      'the strong model still gets the manager brief',
+      full.system.includes('Specialists you can delegate to') && full.system.length > 3000,
+      full.system.length
+    )
+    check(
+      'and the small one gets a prompt it can hold',
+      slim.system.length < full.system.length / 3,
+      { slim: slim.system.length, full: full.system.length }
+    )
+    check(
+      'which says the things that matter: look first, read what is named, keep it short',
+      /Look before you answer/.test(slim.system) &&
+        /never guess a path/i.test(slim.system) &&
+        /If a file is named, read it/.test(slim.system) &&
+        /one or two sentences/i.test(slim.system),
+      slim.system
+    )
+    check(
+      'and nothing about delegating, which it has no tool for',
+      !/delegate/i.test(slim.system) && !/subagent/i.test(slim.system),
+      slim.system
+    )
+    check(
+      'the working directory is still in it, because it is not optional',
+      slim.system.includes(process.cwd())
+    )
+
+    check(
+      'the small model keeps the tools the work needs',
+      ['bash', 'read', 'write', 'edit', 'grep', 'glob', 'list'].every((name) =>
+        slim.tools.includes(name)
+      ),
+      slim.tools
+    )
+    check(
+      'and is not offered the expensive mistakes',
+      ['task', 'fetch', 'bulk_read', 'code_write'].every((name) => !slim.tools.includes(name)),
+      slim.tools
+    )
+    check(
+      'but keeps the one that asks a stronger model for a plan',
+      slim.tools.includes('plan'),
+      slim.tools
+    )
+    check(
+      'the strong model is offered everything it was before',
+      ['fetch', 'task', 'bulk_read', 'code_write'].every((name) => full.tools.includes(name)) &&
+        full.tools.length - slim.tools.length >= 3,
+      { full: full.tools, slim: slim.tools }
+    )
+    check(
+      'and the slim prompt is the shorter of the two by a long way',
+      full.system.length - slim.system.length > 2000,
+      full.system.length - slim.system.length
+    )
+
+    providers.setModelResolverOverride(null)
+    store.deleteSession(big.id)
+    store.deleteSession(small.id)
+    history.clearHistory(big.id)
+    history.clearHistory(small.id)
+    saveConfig(defaultConfig())
+  }
 
   section('a turn that ends without answering')
   {

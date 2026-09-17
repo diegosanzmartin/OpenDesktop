@@ -12,10 +12,11 @@ import {
   type AgentConfig,
   type AppConfig,
   type Attachment,
-  type Message
+  type Message,
+  type ProviderModelConfig
 } from '@shared/types'
 import { savingsOf, type Savings } from '@shared/savings'
-import { allowanceFor, allowanceUsed, pickModel } from '@shared/routing'
+import { allowanceFor, allowanceUsed, needsSlimHarness, pickModel } from '@shared/routing'
 import { mentionToken, mentionedAgents } from '@shared/mentions'
 import { costOf, formatCost } from '@shared/cost'
 import { isAbort } from '@shared/errors'
@@ -155,6 +156,89 @@ Answer in the language the user wrote in.`
   }
 }
 
+/** The model entry behind a `provider/model` ref, if the config has one. */
+function declaredModel(config: AppConfig, ref: string): ProviderModelConfig | undefined {
+  const slash = ref.indexOf('/')
+  if (slash === -1) return undefined
+  return config.provider[ref.slice(0, slash)]?.models[ref.slice(slash + 1)]
+}
+
+/**
+ * The tools a small model is not given, and why each one goes.
+ *
+ * Not a judgement about danger — the permission prompts do that, and they are
+ * unchanged. This is about attention: every schema is one more thing to choose
+ * between, and these are the ones a small model gets wrong expensively. `task`
+ * is a 3B model deciding to hire three more of itself, each re-reading the
+ * repository from nothing. `fetch` is the open internet reaching the model
+ * least able to treat a web page as data. `bulk_read` and `code_write` hand
+ * work down to a cheaper model, and there is nothing cheaper than this one.
+ *
+ * `plan` deliberately stays. Asking a stronger model how to do something hard
+ * is not a luxury for a weak model, it is the arrangement the savings switch
+ * exists for — the cheap one drives, the expensive one is consulted — and it is
+ * the only thing on this list that gets more useful as the model gets smaller.
+ * Taking it away was the first thing tried here, and it broke the test that
+ * says a modest model can ask for a plan, which is how that test earned its
+ * keep.
+ *
+ * What is left is the work a small model is for: run something, read something,
+ * find something, change a line, ask for a plan. Nothing a person would expect
+ * in a chat window has been removed.
+ */
+const SLIM_WITHOUT = ['task', 'fetch', 'bulk_read', 'code_write'] as const
+
+/**
+ * The same agent with fewer tools, and without the manager's brief.
+ *
+ * The orchestrator prompt is six hundred words about when to delegate and what
+ * delegating costs, and with no `task` tool none of it is actionable — it is
+ * just the largest thing in the context of the model least able to carry it.
+ * Any other agent keeps its own prompt: that one is either the user's
+ * instruction or the description of a job they picked, and slimming somebody
+ * else's instruction is not this function's business.
+ */
+function slimHarness(agent: AgentConfig): AgentConfig {
+  const off: Record<string, boolean> = { ...(agent.tools ?? {}) }
+  for (const name of SLIM_WITHOUT) off[name] = false
+  return {
+    ...agent,
+    tools: off,
+    prompt: isManager(agent.id)
+      ? 'You are a careful assistant working in one folder. Do the small, ' +
+        'concrete thing you were asked for, using the tools to look before you answer.'
+      : agent.prompt
+  }
+}
+
+/**
+ * The rules, in the three lines a small model can hold.
+ *
+ * The full set is thirteen paragraphs about parallel calls, narration,
+ * repetition, spending and what to do when a test disagrees with the code. It
+ * is all true and a 3B model cannot act on any of it; what it can act on is:
+ * look first, do not guess a path, keep it short. Measured against the same
+ * question, the full harness sent it grepping for the sentence it had been
+ * asked; this one has it read the file.
+ */
+function slimRules(): string {
+  return `
+
+# How to work
+- Look before you answer, and never guess a path or invent a line of a file you
+  have not read.
+- **If a file is named, read it.** Search only when you do not know which file to
+  look in, and search for a word that would appear in the file — never for the
+  wording of the question. (Measured: asked which port a service listens on,
+  this is the mistake a small model makes — it greps for "which port does the
+  service listen on" and finds nothing.)
+- One tool call at a time is fine. Do the obvious one rather than the clever one.
+- Answer in one or two sentences unless more was asked for. Do not narrate what
+  you are about to do, and do not repeat what the tool output already showed.
+- If you cannot do it with the tools you have, say so plainly and stop.
+- Write to the user in the language they wrote to you in.`
+}
+
 /**
  * What this agent has had taken away, in its own words.
  *
@@ -189,10 +273,22 @@ function systemPrompt(agent: AgentConfig, input: {
   platform: string
   date: string
   tools: string[]
+  /** A model declared as modest gets the short version of all of this. */
+  slim?: boolean
 }): string {
   const base =
     agent.prompt ??
     'You are a capable software engineering agent. Answer in the language the user wrote in.'
+
+  if (input.slim) {
+    return `${base}
+
+# Environment
+- Working directory: ${input.cwd}
+- Execution target: ${input.environmentLabel} (${input.environmentKind})
+- Today: ${input.date}${slimRules()}${restrictions(input.tools)}`
+  }
+
   return `${base}
 
 # Environment
@@ -920,6 +1016,14 @@ export async function runTurn(input: TurnInput): Promise<string> {
     ])
 
     const modelRef = agent.model ?? session.model
+    /*
+     * Which harness this model gets. Decided from what the model is declared
+     * to be, so it follows the model rather than the session: the same agent
+     * asked of a frontier model and of the 3B on this machine gets the full brief from
+     * one and three lines from the other.
+     */
+    const slim = needsSlimHarness(declaredModel(config, modelRef))
+    const harness = slim ? slimHarness(agent) : agent
     const autoApprove = session.autoApprove ?? config.autoApprove ?? false
     const savings = await announceSavingsProblems({
       config,
@@ -946,12 +1050,15 @@ export async function runTurn(input: TurnInput): Promise<string> {
     logLine(
       'info',
       `turn ${session.id} start agent=${agent.id} model=${modelRef} env=${session.environmentId}` +
+        `${slim ? ' harness=slim' : ''}` +
         `${input.depth ? ` depth=${input.depth}` : ''} cwd=${session.cwd}`
     )
 
     const ctx: ToolContext = {
       config,
-      agent,
+      // The slimmed one: `enabled()` reads its tool map, which is how a small
+      // model ends up with five schemas instead of a dozen.
+      agent: harness,
       /*
        * The session's own permissions. Auto-approve is read from the session,
        * falling back to the app's default, and it only ever removes the
@@ -1034,20 +1141,43 @@ export async function runTurn(input: TurnInput): Promise<string> {
     const result = streamText({
       model: resolved.model,
       system:
-        systemPrompt(agent, {
+        systemPrompt(harness, {
           cwd: session.cwd,
           environmentLabel: runtime.label,
           environmentKind: runtime.kind,
           platform,
           date: new Date().toISOString().slice(0, 10),
-          tools: Object.keys(tools)
+          tools: Object.keys(tools),
+          slim
         }) +
-        savingsGuidance(savings, planner === modelRef ? null : planner) +
+        // More policy, and the switches it explains are the ones a small model
+        // has no tools for anyway.
+        (slim ? '' : savingsGuidance(savings, planner === modelRef ? null : planner)) +
         (input.coordinationNote ?? ''),
       messages,
       tools,
-      temperature: agent.temperature,
-      stopWhen: stepCountIs(config.maxSteps),
+      /*
+       * A small model is asked for the same answer twice.
+       *
+       * llama.cpp serves at temperature 0.8 unless told otherwise, which on a
+       * 3B model is the difference between reading the file it was pointed at
+       * and inventing a regex for the wording of the question — measured here,
+       * the same turn three times over came out right, verbose, and not
+       * attempted. Basic work wants the likeliest token, not an interesting
+       * one. An agent that sets its own temperature still gets it.
+       */
+      temperature: agent.temperature ?? (slim ? 0.2 : undefined),
+      /*
+       * A dozen steps for a small model, sixty for the others.
+       *
+       * A model that has not finished a basic job in twelve steps is not
+       * working through it, it is looping: measured here, the same question
+       * twice produced sixteen and seventeen consecutive reads of a five-line
+       * file, each one announcing that it would read a bit more. The cap turns
+       * forty-seven seconds of that into a bounded failure that says what
+       * happened, which is the most useful thing it can be.
+       */
+      stopWhen: stepCountIs(slim ? Math.min(config.maxSteps, 12) : config.maxSteps),
       /*
        * Told before it is cut off.
        *
