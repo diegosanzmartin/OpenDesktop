@@ -2,14 +2,15 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type {
   AgentConfig,
   AppConfig,
+  AppEvent,
+  ApprovalRequest,
   Attachment,
   BackgroundTask,
-  AppEvent,
-  Board,
-  ApprovalRequest,
   Block,
+  Board,
   FileEntry,
   Message,
+  MeterEntry,
   RepoChanges,
   Session,
   Skill
@@ -63,10 +64,8 @@ const api = {
       ipcRenderer.invoke('models:list')
   },
   meter: {
-    get: (): Promise<Record<string, { day: number; month: number }>> =>
-      ipcRenderer.invoke('meter:get'),
-    reset: (): Promise<Record<string, { day: number; month: number }>> =>
-      ipcRenderer.invoke('meter:reset')
+    get: (): Promise<Record<string, MeterEntry>> => ipcRenderer.invoke('meter:get'),
+    reset: (): Promise<Record<string, MeterEntry>> => ipcRenderer.invoke('meter:reset')
   },
   rtk: {
     status: (

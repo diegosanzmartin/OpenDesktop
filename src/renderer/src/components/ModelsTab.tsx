@@ -1,14 +1,18 @@
 import clsx from 'clsx'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Check, CircleAlert, Eye, EyeOff, Plus, Trash2 } from 'lucide-react'
-import type { AppConfig, ProviderConfig } from '@shared/types'
+import type { AppConfig, MeterEntry, ProviderConfig } from '@shared/types'
+import { formatCost } from '@shared/cost'
 import { SWITCHES, savingsOf, type Savings } from '@shared/savings'
 import {
   BILLINGS,
+  allowanceFor,
+  allowanceUsed,
   capability,
   costTier,
   pickModel,
-  type Billing
+  type Billing,
+  type Spent
 } from '@shared/routing'
 import { useStore } from '../state/store'
 import { Hint, IconButton, Row, RowInput, RowSelect, RowSlider, Section, Toggle } from './settings-ui'
@@ -377,7 +381,7 @@ export function ModelsTab(): ReactNode {
    * against. Local: no provider reports a balance back, so this is what this
    * app has used and is labelled as such.
    */
-  const [meter, setMeter] = useState<Record<string, { day: number; month: number }>>({})
+  const [meter, setMeter] = useState<Record<string, MeterEntry>>({})
   useEffect(() => {
     // An empty object when the answer is missing: the rows below index into
     // this, and a settings page that throws because nothing has been spent yet
@@ -387,13 +391,44 @@ export function ModelsTab(): ReactNode {
 
   // The routing as it stands, shown rather than described: the settings above
   // are two judgements per model, and this is what they add up to.
+  /**
+   * What counts against this model's allowance: its own spend, or its whole
+   * key's when the limit belongs to the key. Money as well as tokens, since a
+   * $400-a-month key is measured in one and not the other.
+   */
+  const spentFor = useMemo(() => {
+    if (!draft) return () => ({ tokens: 0, cost: 0 })
+    return (ref: string): Spent => {
+      const slash = ref.indexOf('/')
+      const providerId = slash === -1 ? ref : ref.slice(0, slash)
+      const provider = draft.provider[providerId]
+      const model = provider?.models[ref.slice(slash + 1)]
+      const period = (model ? allowanceFor(draft, providerId, model)?.period : undefined) ?? 'month'
+      const ownScope = model?.allowance !== undefined || provider?.allowance === undefined
+      const pick = (entry?: MeterEntry): Spent =>
+        period === 'day'
+          ? { tokens: entry?.day ?? 0, cost: entry?.dayCost ?? 0 }
+          : { tokens: entry?.month ?? 0, cost: entry?.monthCost ?? 0 }
+
+      if (ownScope) return pick(meter[ref])
+      const total: Spent = { tokens: 0, cost: 0 }
+      for (const [key, entry] of Object.entries(meter)) {
+        if (!key.startsWith(`${providerId}/`)) continue
+        const part = pick(entry)
+        total.tokens += part.tokens
+        total.cost = (total.cost ?? 0) + (part.cost ?? 0)
+      }
+      return total
+    }
+  }, [draft, meter])
+
   const delegate = useMemo(
-    () => (draft ? pickModel(draft, 'delegate', { spent: (ref) => ({ tokens: meter[ref]?.month ?? 0 }) }) : null),
-    [draft, meter]
+    () => (draft ? pickModel(draft, 'delegate', { spent: spentFor }) : null),
+    [draft, spentFor]
   )
   const planner = useMemo(
-    () => (draft ? pickModel(draft, 'plan', { spent: (ref) => ({ tokens: meter[ref]?.month ?? 0 }) }) : null),
-    [draft, meter]
+    () => (draft ? pickModel(draft, 'plan', { spent: spentFor }) : null),
+    [draft, spentFor]
   )
   const savings: Savings = savingsOf(draft)
 
@@ -508,6 +543,49 @@ export function ModelsTab(): ReactNode {
               setDraft({ ...draft, maxConcurrentTasks: Math.min(12, Math.max(1, parsed || 1)) })
             }}
           />
+        </Row>
+
+        <Row
+          label="Subagents at once"
+          description="How many subagents one agent may have working at the same time. Extra task calls wait for a slot rather than opening a stream the provider will throttle."
+        >
+          <RowInput
+            mono
+            width="w-[72px]"
+            value={String(draft.maxParallelSubagents ?? 4)}
+            onChange={(value) => {
+              const parsed = Number(value.replace(/\D/g, ''))
+              setDraft({ ...draft, maxParallelSubagents: Math.min(12, Math.max(1, parsed || 1)) })
+            }}
+          />
+        </Row>
+
+        <Row
+          label="A turn may spend"
+          description="Tokens across all of a turn's steps, and minutes on the clock, before it is stopped and handed back. Generous on purpose: these end a runaway, they do not ration ordinary work."
+        >
+          <div className="flex items-center gap-1.5">
+            <RowInput
+              mono
+              width="w-[96px]"
+              value={String(draft.maxTurnTokens ?? 750_000)}
+              onChange={(value) => {
+                const parsed = Number(value.replace(/\D/g, ''))
+                setDraft({ ...draft, maxTurnTokens: Math.max(10_000, parsed || 10_000) })
+              }}
+            />
+            <Hint>tokens ·</Hint>
+            <RowInput
+              mono
+              width="w-[64px]"
+              value={String(Math.round((draft.maxTurnMs ?? 1_800_000) / 60_000))}
+              onChange={(value) => {
+                const parsed = Number(value.replace(/\D/g, ''))
+                setDraft({ ...draft, maxTurnMs: Math.max(1, parsed || 1) * 60_000 })
+              }}
+            />
+            <Hint>minutes</Hint>
+          </div>
         </Row>
 
         <Row label="Provider" description="Which one you are editing.">
@@ -633,8 +711,12 @@ export function ModelsTab(): ReactNode {
                   }
                 }
               })
-            const used = meter[entry.ref]
             const allowance = model.allowance?.tokens
+            // The limit in force for this model — its own, or the one on the
+            // key it shares with every other model under the same provider.
+            const effective = allowanceFor(draft, entry.providerId, model)
+            const spend = spentFor(entry.ref)
+            const fraction = allowanceUsed(effective, spend)
             return (
               <Row
                 key={entry.ref}
@@ -676,18 +758,35 @@ export function ModelsTab(): ReactNode {
                           const parsed = Number(value.replace(/\D/g, ''))
                           patchModel({
                             allowance: {
+                              ...model.allowance,
                               period: model.allowance?.period ?? 'month',
                               tokens: parsed || undefined
                             }
                           })
                         }}
                       />
+                      <Hint>or</Hint>
+                      <RowInput
+                        mono
+                        width="w-[76px]"
+                        placeholder="$"
+                        value={model.allowance?.usd !== undefined ? String(model.allowance.usd) : ''}
+                        onChange={(value) =>
+                          patchModel({
+                            allowance: {
+                              ...model.allowance,
+                              period: model.allowance?.period ?? 'month',
+                              usd: money(value)
+                            }
+                          })
+                        }
+                      />
                       <RowSelect
                         value={model.allowance?.period ?? 'month'}
                         onChange={(event) =>
                           patchModel({
                             allowance: {
-                              tokens: model.allowance?.tokens,
+                              ...model.allowance,
                               period: event.target.value as 'day' | 'month'
                             }
                           })
@@ -697,11 +796,10 @@ export function ModelsTab(): ReactNode {
                           { value: 'day', label: 'per day' }
                         ]}
                       />
-                      <Hint tone={allowance && (used?.month ?? 0) >= allowance ? 'warn' : 'muted'}>
-                        {(
-                          (model.allowance?.period === 'day' ? used?.day : used?.month) ?? 0
-                        ).toLocaleString('en-US')}{' '}
-                        counted here
+                      <Hint tone={(fraction ?? 0) >= 0.9 ? 'warn' : 'muted'}>
+                        {spend.tokens.toLocaleString('en-US')} counted here
+                        {effective?.usd ? ` · ${formatCost(spend.cost ?? 0)} of ${formatCost(effective.usd)}` : ''}
+                        {fraction === null ? '' : ` · ${Math.round(fraction * 100)}%`}
                       </Hint>
                     </div>
                   ) : null}

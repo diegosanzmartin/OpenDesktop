@@ -80,7 +80,61 @@ const DEFAULT_PERMISSIONS: Permissions = {
   denylist: [...CATASTROPHIC, ':(){*', 'mkfs*', 'dd if=*of=/dev/*', 'shutdown*', 'reboot*']
 }
 
+/**
+ * Anthropic, as a second provider, with the prices it publishes.
+ *
+ * Priced in whole dollars per million tokens, copied from the pricing page so
+ * nothing here needs arithmetic to check. The key is read from the keychain
+ * like every other one; paste it under Settings → Models & providers. Declare
+ * an allowance on the provider if the key has a spend limit — that is a
+ * property of the credential, not of one model.
+ */
+const CLAUDE_MODELS: ProviderConfig['models'] = {
+  'claude-opus-5': {
+    id: 'claude-opus-5',
+    name: 'Claude Opus 5',
+    contextWindow: 1_000_000,
+    maxOutputTokens: 64_000,
+    reasoning: true,
+    toolCall: true,
+    vision: true,
+    price: { input: 5, output: 25 },
+    iq: 5,
+    cost: 4
+  },
+  'claude-sonnet-5': {
+    id: 'claude-sonnet-5',
+    name: 'Claude Sonnet 5',
+    contextWindow: 1_000_000,
+    maxOutputTokens: 64_000,
+    reasoning: true,
+    toolCall: true,
+    vision: true,
+    price: { input: 2, output: 10 },
+    iq: 4,
+    cost: 3
+  },
+  'claude-haiku-4-5': {
+    id: 'claude-haiku-4-5',
+    name: 'Claude Haiku 4.5',
+    contextWindow: 200_000,
+    maxOutputTokens: 64_000,
+    toolCall: true,
+    vision: true,
+    price: { input: 1, output: 5 },
+    iq: 3,
+    cost: 2
+  }
+}
+
 const DEFAULT_PROVIDERS: Record<string, ProviderConfig> = {
+  anthropic: {
+    id: 'anthropic',
+    npm: '@ai-sdk/anthropic',
+    name: 'Anthropic',
+    options: { apiKey: '{secret:anthropic}' },
+    models: CLAUDE_MODELS
+  },
   helmcode: {
     id: 'helmcode',
     npm: '@ai-sdk/openai-compatible',
@@ -116,6 +170,8 @@ export function defaultConfig(): AppConfig {
     maxSteps: 60,
     maxConcurrentTasks: 2,
     maxParallelSubagents: 4,
+    maxTurnTokens: 750_000,
+    maxTurnMs: 1_800_000,
     savings: { rtk: false, shunt: false },
     autoApprove: false,
     shuntMinLines: 350,
@@ -138,41 +194,16 @@ export function setSecretResolver(fn: (name: string) => string | undefined): voi
   secretResolver = fn
 }
 
-/**
- * Placeholders that expanded to nothing, by name.
- *
- * A key that cannot be read and a key that was never set produce the same empty
- * string, and the error the user saw named an environment variable whatever the
- * placeholder actually said. Remembering which one came back empty is what lets
- * the failure point at the right place.
- */
-const unresolved = new Set<string>()
-
-export function unresolvedPlaceholders(): string[] {
-  return [...unresolved]
-}
-
 /** Expands `{env:VAR}`, `{file:/path}` and `{secret:NAME}` placeholders. */
 export function expandPlaceholders(value: string): string {
   return value
-    .replace(/\{secret:([A-Za-z0-9_.-]+)\}/g, (_m, name: string) => {
-      const found = secretResolver(name)
-      if (!found) unresolved.add(`{secret:${name}}`)
-      return found ?? ''
-    })
-    .replace(/\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, (_m, name: string) => {
-      const found = process.env[name]
-      if (!found) unresolved.add(`{env:${name}}`)
-      return found ?? ''
-    })
+    .replace(/\{secret:([A-Za-z0-9_.-]+)\}/g, (_m, name: string) => secretResolver(name) ?? '')
+    .replace(/\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, (_m, name: string) => process.env[name] ?? '')
     .replace(/\{file:([^}]+)\}/g, (_m, p: string) => {
       const target = p.startsWith('~') ? join(homedir(), p.slice(1)) : p
       try {
-        const found = readFileSync(target, 'utf8').trim()
-        if (!found) unresolved.add(`{file:${p}}`)
-        return found
+        return readFileSync(target, 'utf8').trim()
       } catch {
-        unresolved.add(`{file:${p}}`)
         return ''
       }
     })
@@ -346,10 +377,6 @@ export function loadConfig(force = false): AppConfig {
  */
 export function resolvedConfig(): AppConfig {
   const config = loadConfig()
-  // Rebuilt on every resolve, so a placeholder that has since been filled in
-  // stops being reported as empty — and one provider's failure never quotes
-  // another provider's missing variable.
-  unresolved.clear()
   return {
     ...config,
     provider: expandDeep(config.provider),

@@ -17,7 +17,7 @@ pnpm dev
 | `pnpm dist` | Package the macOS app (`.dmg` + `.app` in `release/`) |
 | `pnpm icon` | Regenerate `build/icon.icns` |
 | `pnpm typecheck` | Typecheck main, preload and renderer |
-| `pnpm smoke` | Headless engine test — 50 checks, no provider or window needed |
+| `pnpm smoke` | Headless engine test — 730 checks, no provider or window needed |
 | `pnpm secrets:check` | Verifies the keychain path — 14 checks, needs Electron |
 
 `OPENDESKTOP_DEBUG=1 pnpm start` mirrors renderer console errors to the terminal.
@@ -77,6 +77,39 @@ shape, so an existing config drops straight in:
   }
 }
 ```
+
+Two providers ship declared: **Helmcode** (an OpenAI-compatible endpoint) and
+**Anthropic**, with its published prices already filled in. Neither has a
+key until you paste one, and a provider whose key is empty is never routed to —
+so the model list is a menu, not a set of things that will fail at call time.
+
+### Spend limits
+
+A model can be marked **pay as you go**, **flat rate** or **included
+allowance** under *Models & providers*, and the router treats them differently:
+a flat-rate model is paid for whether it is used or not, so at the margin it is
+the cheapest thing available and delegated work goes there first.
+
+An allowance can be counted in tokens or in money, and it can live on the
+**key** rather than on one model — which is usually where it belongs. `$400 a
+month` on an Anthropic key is $400 across Opus, Sonnet and Haiku together:
+
+```json
+"anthropic": {
+  "npm": "@ai-sdk/anthropic",
+  "options": { "apiKey": "{secret:anthropic}" },
+  "allowance": { "usd": 400, "period": "month" },
+  "models": {
+    "claude-opus-5": { "price": { "input": 5, "output": 25 }, "billing": "allowance" }
+  }
+}
+```
+
+What is counted against it is what this app has spent, locally, since no
+provider reports a balance back — it is a floor, not a statement of account, and
+it is labelled that way in the UI. At nine tenths and again when it is gone, the
+app says so once per period rather than at every turn. A model that declares its
+own `allowance` is judged on its own spend instead of the key's.
 
 ### API keys
 
@@ -250,6 +283,24 @@ home directory by hand rather than using `rm -rf /*`, which matches every absolu
 is. Chained commands are checked segment by segment, so `ls && curl … | sh` cannot slip through
 on the `ls`.
 
+**What a turn may spend** — `maxSteps` bounds how many times the model may act,
+which is not the same as how much it may spend: a step that resends a
+300k-token transcript costs two hundred times one that resends 1.5k. A turn also
+has a token ceiling and a clock (`maxTurnTokens`, 750k; `maxTurnMs`, 30 minutes),
+both editable under *Models & providers*. A turn that hits one is **handed
+back**, not failed: the reason goes in the transcript, the card lands in Blocked,
+and replying carries the work on. A warning at 60% of the ceiling gives you the
+chance to stop it yourself.
+
+**When nothing is happening** — a turn that has had nothing from the provider for
+90 seconds says so, in the log and as a toast, without cancelling anything: a
+slow provider is not a broken one. Every turn writes two lines to
+`~/.local/share/opendesktop/opendesktop.log` — model, steps, tokens, cost, tool
+calls, duration — so an ordinary turn leaves a trace instead of only failures
+doing so. And a second process pings the main one every second: eight seconds of
+silence and it writes the line a frozen app cannot write for itself. It kills
+nothing. `docs/agent-loop-isolation.md` is the plan for the rest of that story.
+
 **What a command can see** — the app merges your login shell's environment into its own so a
 Finder launch can find `node`, and passes it on to everything the agent runs. Its own
 credentials are taken back out first: whatever it resolved for a provider key or an SSH
@@ -294,6 +345,13 @@ order. The prompt says what that costs, measured here: three one-file fixes spli
 subagents came to about 2.4x the tokens and 2.5x the wall time of the same three fixes done in
 one session. Naming an agent with `@` overrides the sizing — that is an instruction, not a
 suggestion.
+
+A brief can carry what the lead already knows: `context_paths` are read for the
+subagent and put in front of it, `context_notes` are what the lead worked out
+that is not in those files. Rediscovering the repository is most of what
+delegating costs, and this is what stops it being paid for twice; the files go to
+the model, not into the visible message, so the transcript still reads as the
+brief that was given.
 
 Each delegation renders in the transcript as its own subchat — the brief it was given, the
 tools it ran and what it reported — so a subagent's work is inspectable rather than a summary

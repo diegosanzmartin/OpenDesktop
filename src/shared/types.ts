@@ -92,8 +92,15 @@ export interface ProviderModelConfig {
   billing?: Billing
   /** What the subscription costs, for `flat`. Informational; nothing divides by it. */
   monthlyCost?: number
-  /** The quota, for `allowance`, counted from what this app has spent. */
-  allowance?: { tokens?: number; period: 'day' | 'month' }
+  /**
+   * The quota, for `allowance`, counted from what this app has spent.
+   *
+   * In tokens where the provider counts tokens, or in money where it counts
+   * money — a $400-a-month key is a budget, not a token bucket, and rounding it
+   * into tokens would need a price per model to be exactly right anyway. When
+   * both are set, whichever runs out first ends the free part.
+   */
+  allowance?: { tokens?: number; usd?: number; period: 'day' | 'month' }
   /**
    * 1 (cheap) to 5 (expensive), relative to the other models declared here.
    * Absent is read off the price, so a config written before this existed
@@ -104,11 +111,28 @@ export interface ProviderModelConfig {
   iq?: number
 }
 
+/** What the settings page reads for one model: tokens and money, by period. */
+export interface MeterEntry {
+  day: number
+  month: number
+  dayCost: number
+  monthCost: number
+}
+
 export interface ProviderConfig {
   id: string
   /** The AI SDK package that backs this provider. */
   npm: string
   name: string
+  /**
+   * A cap on the whole key, shared by every model under it.
+   *
+   * A spend limit belongs to the credential, not to one model: $400 a month on
+   * an Anthropic key is $400 across Opus, Sonnet and Haiku together. A model
+   * with its own `allowance` uses that instead; everything else here counts
+   * against this.
+   */
+  allowance?: { tokens?: number; usd?: number; period: 'day' | 'month' }
   options: {
     baseURL?: string
     apiKey?: string
@@ -200,6 +224,19 @@ export interface AppConfig {
   shuntMinLines?: number
   /** How many board tasks the scheduler will run at once. */
   maxConcurrentTasks?: number
+  /**
+   * What one turn may spend before it is stopped, in tokens across all its
+   * steps, and in wall-clock milliseconds.
+   *
+   * `maxSteps` bounds how many times the model may act, which is not the same
+   * as how much it may spend: a step that resends a 300k-token transcript costs
+   * two hundred times one that resends 1.5k. Both ceilings are deliberately
+   * generous — they exist to end a runaway, not to ration ordinary work — and a
+   * turn that hits one is handed back rather than failed, so replying carries
+   * it on.
+   */
+  maxTurnTokens?: number
+  maxTurnMs?: number
   /**
    * How many subagents one agent may have working at the same time.
    *

@@ -73,20 +73,54 @@ function clamp(value: number): number {
  * the settings. An allowance behaves the same way until it runs out and like
  * its own price afterwards.
  */
+export interface Spent {
+  tokens: number
+  /** What that came to in money, where the models are priced. */
+  cost?: number
+}
+
+export type Allowance = { tokens?: number; usd?: number; period: 'day' | 'month' }
+
+/**
+ * The quota this model's next token counts against: its own, or its key's.
+ *
+ * A limit usually belongs to the credential — $400 a month on an Anthropic key
+ * is $400 across every model under that key — so a provider-level allowance
+ * covers all of them, and a model that declares its own overrides it.
+ */
+export function allowanceFor(
+  config: AppConfig,
+  providerId: string,
+  model: ProviderModelConfig
+): Allowance | undefined {
+  return model.allowance ?? config.provider?.[providerId]?.allowance
+}
+
+/** How far through an allowance the spend is, 0 to 1, or null when uncapped. */
+export function allowanceUsed(allowance: Allowance | undefined, spent?: Spent | null): number | null {
+  if (!allowance) return null
+  const fractions: number[] = []
+  if (allowance.usd) fractions.push((spent?.cost ?? 0) / allowance.usd)
+  if (allowance.tokens) fractions.push((spent?.tokens ?? 0) / allowance.tokens)
+  if (fractions.length === 0) return null
+  // Whichever limit runs out first is the one that ends the free part.
+  return Math.max(...fractions)
+}
+
 export function marginalCost(
   model: ProviderModelConfig,
-  spent?: { tokens: number } | null
+  spent?: Spent | null,
+  allowance?: Allowance
 ): number {
   const billing = model.billing ?? 'pay-as-you-go'
   if (billing === 'flat') return CHEAPEST
   if (billing === 'allowance') {
-    const included = model.allowance?.tokens
-    if (!included) return CHEAPEST
-    const used = spent?.tokens ?? 0
-    if (used >= included) return costTier(model)
+    const used = allowanceUsed(allowance ?? model.allowance, spent)
+    if (used === null) return CHEAPEST
+    if (used >= 1) return costTier(model)
     // Near the end of the allowance it stops being free: past nine tenths the
     // next token is likely to be the one that is charged.
-    return used > included * 0.9 ? Math.max(CHEAPEST, costTier(model) - 1) : CHEAPEST
+    return used > 0.9 ? Math.max(CHEAPEST, costTier(model) - 1) : CHEAPEST
   }
   return costTier(model)
 }
@@ -102,17 +136,26 @@ export interface Candidate {
 /** Every `provider/model` the config declares, with its two numbers resolved. */
 export function candidates(
   config: AppConfig,
-  spent?: (ref: string) => { tokens: number } | null
+  spent?: (ref: string) => Spent | null
 ): Candidate[] {
   const out: Candidate[] = []
   for (const provider of Object.values(config.provider ?? {})) {
+    /*
+     * A provider whose key is declared and empty is not a candidate.
+     *
+     * The app ships more providers than any one person has keys for, and
+     * routing work to one that cannot authenticate turns a saving into a failed
+     * turn. Declared-and-empty is the test: a provider that reads its key from
+     * its own environment variable says nothing here, and is left alone.
+     */
+    if ('apiKey' in provider.options && !provider.options.apiKey) continue
     for (const model of Object.values(provider.models ?? {})) {
       const ref = `${provider.id}/${model.id}`
       out.push({
         ref,
         label: model.name || model.id,
         model,
-        cost: marginalCost(model, spent?.(ref)),
+        cost: marginalCost(model, spent?.(ref), allowanceFor(config, provider.id, model)),
         iq: capability(model)
       })
     }
@@ -146,7 +189,7 @@ export interface Choice {
 export function pickModel(
   config: AppConfig,
   purpose: Purpose,
-  options?: { exclude?: string[]; spent?: (ref: string) => { tokens: number } | null }
+  options?: { exclude?: string[]; spent?: (ref: string) => Spent | null }
 ): Choice | null {
   const pool = candidates(config, options?.spent).filter(
     (candidate) => !(options?.exclude ?? []).includes(candidate.ref)
@@ -186,7 +229,7 @@ export function pickModel(
 export function workerModelRef(
   config: AppConfig,
   sessionModel: string,
-  spent?: (ref: string) => { tokens: number } | null
+  spent?: (ref: string) => Spent | null
 ): string {
   // Named for the job, then the app's existing "something cheap for work that
   // is not the work", then the router. A choice someone made by hand outranks
@@ -200,7 +243,7 @@ export function workerModelRef(
 export function plannerModelRef(
   config: AppConfig,
   sessionModel: string,
-  spent?: (ref: string) => { tokens: number } | null
+  spent?: (ref: string) => Spent | null
 ): string {
   if (config.plannerModel) return config.plannerModel
   return pickModel(config, 'plan', { spent })?.ref ?? sessionModel
@@ -210,7 +253,7 @@ export function plannerModelRef(
 export function workerIsTheSameModel(
   config: AppConfig,
   sessionModel: string,
-  spent?: (ref: string) => { tokens: number } | null
+  spent?: (ref: string) => Spent | null
 ): boolean {
   return workerModelRef(config, sessionModel, spent) === sessionModel
 }
