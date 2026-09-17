@@ -115,7 +115,20 @@ export function marginalCost(
   const billing = model.billing ?? 'pay-as-you-go'
   if (billing === 'flat') return CHEAPEST
   if (billing === 'allowance') {
-    const used = allowanceUsed(allowance ?? model.allowance, spent)
+    const inForce = allowance ?? model.allowance
+    /*
+     * A quota of money is not the same kind of allowance as a quota of tokens.
+     *
+     * Included tokens are free at the margin until they run out — that is the
+     * whole point of saying so. A budget is not: $400 across Opus, Sonnet and
+     * Haiku is $400 being spent five times faster on one than on another, so
+     * treating them as equally free sent delegated reading to the most
+     * expensive model under the key. A money allowance is a cap with a warning,
+     * not a discount; the price still orders the models inside it.
+     */
+    if (inForce?.usd && !inForce.tokens) return costTier(model)
+
+    const used = allowanceUsed(inForce, spent)
     if (used === null) return CHEAPEST
     if (used >= 1) return costTier(model)
     // Near the end of the allowance it stops being free: past nine tenths the
@@ -207,7 +220,22 @@ export function pickModel(
 
   const floor = pool.some((candidate) => candidate.iq >= 2) ? 2 : CHEAPEST
   const able = pool.filter((candidate) => candidate.iq >= floor)
-  const cheapest = able.reduce((a, b) => (b.cost < a.cost || (b.cost === a.cost && b.iq > a.iq) ? b : a))
+  /*
+   * Cheapest, then cheapest by list price, then most capable.
+   *
+   * The middle step matters once several models are free at the margin — three
+   * under one subscription, say. Breaking that tie on capability picks the
+   * dearest model of the three, which is the wrong way round for the job this
+   * is choosing for: if the free-ness turns out to be wrong, the cheaper one is
+   * the smaller mistake.
+   */
+  const cheapest = able.reduce((a, b) => {
+    if (b.cost !== a.cost) return b.cost < a.cost ? b : a
+    const listA = costTier(a.model)
+    const listB = costTier(b.model)
+    if (listA !== listB) return listB < listA ? b : a
+    return b.iq > a.iq ? b : a
+  })
   const billing = cheapest.model.billing ?? 'pay-as-you-go'
   return {
     ref: cheapest.ref,

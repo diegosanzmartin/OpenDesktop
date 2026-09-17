@@ -287,6 +287,12 @@ export function normalizeConfig(raw: Record<string, unknown>): AppConfig {
       models[mid] = { ...m, id: mid, name: m?.name ?? mid }
     }
     merged.provider[id] = {
+      // Everything the config said, then the fields this shape guarantees.
+      // Rebuilding a provider from a fixed list of keys silently dropped
+      // anything added since it was written — which is how a spend limit
+      // declared on a key disappeared on the first load, leaving the models
+      // that were supposed to share it with no limit at all.
+      ...p,
       id,
       npm: p.npm ?? '@ai-sdk/openai-compatible',
       name: p.name ?? id,

@@ -4026,13 +4026,70 @@ async function main(): Promise<void> {
       }
     }
 
+    /*
+     * The limit has to survive being read and written.
+     *
+     * `normalizeConfig` used to rebuild each provider from a fixed list of
+     * fields, so a spend limit declared on a key was dropped on the first load
+     * — and the models that were supposed to share it were left with none,
+     * which is how $400 on one key became three separate $400s typed into three
+     * model rows.
+     */
+    const reread = normalizeConfig(JSON.parse(JSON.stringify(priced)) as Record<string, unknown>)
+    check(
+      "a key's spend limit survives a config load",
+      reread.provider.claude.allowance?.usd === 400,
+      reread.provider.claude.allowance
+    )
+    saveConfig(priced)
+    const roundTripped = loadConfig(true)
+    check(
+      'and a save and load round trip',
+      roundTripped.provider.claude.allowance?.usd === 400,
+      roundTripped.provider.claude.allowance
+    )
+    check(
+      'with the models under it still sharing it rather than each having one',
+      Object.values(roundTripped.provider.claude.models).every((m) => m.allowance === undefined) &&
+        Object.keys(roundTripped.provider.claude.models).every(
+          (id) => allowanceFor(roundTripped, 'claude', roundTripped.provider.claude.models[id])?.usd === 400
+        ),
+      Object.fromEntries(
+        Object.entries(roundTripped.provider.claude.models).map(([id, m]) => [id, m.allowance])
+      )
+    )
+
     resetMeter()
     const big = priced.provider.claude.models.big
     check(
       'the limit on the key covers a model that declares none of its own',
       allowanceFor(priced, 'claude', big)?.usd === 400
     )
-    check('an untouched allowance is the cheapest thing there is', marginalCost(big, { tokens: 0, cost: 0 }, allowanceFor(priced, 'claude', big)) === CHEAPEST)
+    /*
+     * A budget is a cap, not a discount. Included *tokens* are free at the
+     * margin until they run out; $400 shared between Opus, Sonnet and Haiku is
+     * money being spent five times faster on one than on another, and treating
+     * them as equally free is what sent delegated reading to the dearest model
+     * under the key.
+     */
+    check(
+      'money inside a budget still costs what the model costs',
+      marginalCost(big, { tokens: 0, cost: 0 }, allowanceFor(priced, 'claude', big)) === costTier(big),
+      marginalCost(big, { tokens: 0, cost: 0 }, allowanceFor(priced, 'claude', big))
+    )
+    check(
+      'so the cheapest model under one budget is the one that gets the reading',
+      pickModel(priced, 'delegate')?.ref === 'claude/small',
+      pickModel(priced, 'delegate')
+    )
+    check(
+      'while a quota of tokens is free at the margin, as before',
+      marginalCost(
+        priced.provider.claude.models.small,
+        { tokens: 0, cost: 0 },
+        { tokens: 1_000_000, period: 'month' }
+      ) === CHEAPEST
+    )
 
     // 1M in and 1M out on the small model: $1 + $5 of the $400.
     const smallUsage = { input: 1_000_000, output: 1_000_000 }
@@ -4052,11 +4109,6 @@ async function main(): Promise<void> {
     const nearly = spentLookup(priced)('claude/big')
     check('the spend adds up across the key', nearly?.cost === 380, nearly)
     check(
-      'past nine tenths it stops being free',
-      marginalCost(big, nearly, allowanceFor(priced, 'claude', big)) > CHEAPEST,
-      marginalCost(big, nearly, allowanceFor(priced, 'claude', big))
-    )
-    check(
       'and the fraction is what the settings page shows',
       Math.round((allowanceUsed(allowanceFor(priced, 'claude', big), nearly) ?? 0) * 100) === 95
     )
@@ -4064,7 +4116,7 @@ async function main(): Promise<void> {
     meterRecord('claude/big', { input: 0, output: 0, cost: 30 })
     const over = spentLookup(priced)('claude/big')
     check(
-      'once it is spent the model costs what it costs',
+      'and over the cap nothing changes about the price either',
       marginalCost(big, over, allowanceFor(priced, 'claude', big)) === costTier(big),
       { spent: over, tier: costTier(big) }
     )
