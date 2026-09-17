@@ -92,6 +92,41 @@ function launch(session: Session, note: string): void {
   })
 }
 
+/** Whether two id lists say the same thing, order aside. */
+function sameIds(left: string[] | undefined, right: string[]): boolean {
+  const before = left ?? []
+  if (before.length !== right.length) return false
+  const seen = new Set(before)
+  return right.every((id) => seen.has(id))
+}
+
+/**
+ * Records the coordinator's verdict on a card, and does nothing when the card
+ * already says it.
+ *
+ * `updateSession` has no notion of a write that changes nothing: it stamps a
+ * fresh `updatedAt` and emits `session.updated` every time. The scheduler
+ * listens to that event, so a held task used to wedge the whole process — the
+ * pass wrote `heldBy`, the write woke the scheduler, the verdict came back from
+ * the coordinator's cache so the next pass cost no round trip, the same
+ * `heldBy` was written again, and round it went with no I/O in between. One
+ * core at 100%, a window that never repainted, the running turn's stream never
+ * read, and not a line in the log to say why.
+ */
+function recordVerdict(
+  session: Session,
+  verdict: { relatedSessionIds: string[]; heldBy?: string[] }
+): void {
+  const holdChanged = verdict.heldBy !== undefined && !sameIds(session.heldBy, verdict.heldBy)
+  const relatedChanged = !sameIds(session.relatedSessionIds, verdict.relatedSessionIds)
+  if (!holdChanged && !relatedChanged) return
+
+  store.updateSession(session.id, {
+    relatedSessionIds: verdict.relatedSessionIds,
+    ...(verdict.heldBy === undefined ? {} : { heldBy: verdict.heldBy })
+  })
+}
+
 /**
  * One pass over the queue. Re-entrant calls are collapsed into a single
  * re-run afterwards, since the assessment awaits and events keep arriving.
@@ -119,7 +154,7 @@ export async function tick(): Promise<void> {
       // Same code as something in flight: wait for it rather than race it.
       const blocking = related.filter((entry) => entry.sameFiles)
       if (blocking.length > 0) {
-        store.updateSession(candidate.id, {
+        recordVerdict(candidate, {
           relatedSessionIds: related.map((entry) => entry.sessionId),
           // Named, so the card can say what it is waiting for instead of
           // sitting at "Queued" with no explanation.
@@ -129,7 +164,7 @@ export async function tick(): Promise<void> {
       }
 
       if (related.length > 0) {
-        store.updateSession(candidate.id, {
+        recordVerdict(candidate, {
           relatedSessionIds: related.map((entry) => entry.sessionId)
         })
         // Both sides should know, not just the one starting second.
@@ -138,7 +173,7 @@ export async function tick(): Promise<void> {
           if (!other) continue
           const ids = new Set(other.relatedSessionIds ?? [])
           ids.add(candidate.id)
-          store.updateSession(other.id, { relatedSessionIds: [...ids] })
+          recordVerdict(other, { relatedSessionIds: [...ids] })
         }
       }
 
@@ -156,6 +191,27 @@ export async function tick(): Promise<void> {
 }
 
 let timer: NodeJS.Timeout | null = null
+let soon: NodeJS.Timeout | null = null
+let unsubscribe: (() => void) | null = null
+
+/**
+ * A pass shortly, rather than a pass inside the event that asked for one.
+ *
+ * The scheduler's own writes reach it back as `session.updated`, so running the
+ * next pass straight from the handler drains the queue in a chain of calls that
+ * never yields to the event loop — and the moment any pass writes something it
+ * has already written, that chain has no end and the process stops answering
+ * for anything, streams and quit included. Going through a timer costs 25ms and
+ * makes that failure impossible to express; it also collapses the burst of
+ * events a starting turn emits into a single pass.
+ */
+function tickSoon(): void {
+  if (soon) return
+  soon = setTimeout(() => {
+    soon = null
+    void tick()
+  }, 25)
+}
 
 /**
  * The queue is drained whenever a session changes — that covers a task
@@ -164,14 +220,15 @@ let timer: NodeJS.Timeout | null = null
  * cleared, which no event announces.
  */
 export function startScheduler(): void {
-  bus.subscribe((event) => {
+  stopScheduler()
+  unsubscribe = bus.subscribe((event) => {
     if (event.type === 'session.deleted') forgetJudgements(event.sessionId)
     if (event.type === 'session.updated' || event.type === 'session.created') {
       // A task that stopped running cannot be overlapping anything any more.
       if (event.type === 'session.updated' && event.session.status === 'done') {
         forgetJudgements(event.session.id)
       }
-      void tick()
+      tickSoon()
     }
   })
   timer = setInterval(() => void tick(), 15_000)
@@ -181,4 +238,10 @@ export function startScheduler(): void {
 export function stopScheduler(): void {
   if (timer) clearInterval(timer)
   timer = null
+  if (soon) clearTimeout(soon)
+  soon = null
+  // Without this a second start would leave the first subscription in place,
+  // and every session change would drain the queue twice.
+  unsubscribe?.()
+  unsubscribe = null
 }

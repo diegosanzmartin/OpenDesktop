@@ -2542,6 +2542,40 @@ async function main(): Promise<void> {
       held.status
     )
     check('and the card says who it is waiting on', (held.relatedSessionIds ?? []).includes(a.id))
+    check('and names it as the hold, not just as related', (held.heldBy ?? []).includes(a.id), held.heldBy)
+
+    /*
+     * Holding a task must be a write that happens once.
+     *
+     * In the app the write comes back to the scheduler as `session.updated`,
+     * which is the event that asks for the next pass — and the verdict behind
+     * it is cached, so that pass costs no round trip. A pass that rewrites what
+     * the card already says therefore has nothing to slow it down: one core at
+     * 100%, no turn streams read, no window repainted, no way out but a kill.
+     */
+    let heldWrites = 0
+    const watchHeld = bus.subscribe((event) => {
+      if (event.type === 'session.updated' && event.session.id === b.id) heldWrites++
+    })
+    await tick()
+    await tick()
+    check(
+      'holding it again writes nothing, so the queue cannot feed itself',
+      heldWrites === 0,
+      heldWrites
+    )
+
+    // The guard is "unchanged", not "never again": a card that lost its hold
+    // has to get it back, or a restart would leave it queued with no reason.
+    store.updateSession(b.id, { heldBy: [] })
+    heldWrites = 0
+    await tick()
+    check(
+      'but a hold the card no longer has is written back',
+      heldWrites > 0 && (store.getSession(b.id)?.heldBy ?? []).includes(a.id),
+      { heldWrites, heldBy: store.getSession(b.id)?.heldBy }
+    )
+    watchHeld()
 
     /*
      * The same question is not asked twice. Cleared first, because the tick
