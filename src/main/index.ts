@@ -17,6 +17,7 @@ import { stopAll } from './agent/runner'
 import { killAllTerminals } from './terminal'
 import { killAllBackgroundTasks } from './background'
 import { startWedgeWatch, stopWedgeWatch } from './watchdog'
+import { deliverQueuedFollowUps } from './agent/runner'
 
 const isDev = !app.isPackaged
 
@@ -117,6 +118,10 @@ void app.whenReady().then(async () => {
   startBoardSync()
   reconcileOnStart()
   startScheduler()
+  // Anything typed into a running turn that the app never got to deliver — it
+  // was persisted so that closing the app would not lose it, and this is the
+  // half that makes that true.
+  deliverQueuedFollowUps()
   startWedgeWatch()
   await startPreviewServer()
   registerIpc()

@@ -58,6 +58,26 @@ export function queueFollowUp(sessionId: string, text: string): void {
   })
 }
 
+/**
+ * Sends what was queued into a turn the app never finished.
+ *
+ * A note typed mid-turn is kept on the session so that closing the app does not
+ * lose it — which is only true if something delivers it afterwards. Run at
+ * startup, once the store is loaded.
+ */
+export function deliverQueuedFollowUps(): void {
+  for (const session of store.listSessions()) {
+    const waiting = session.queuedFollowUps
+    if (!waiting || waiting.length === 0) continue
+    if (session.archived || isRunning(session.id)) continue
+    store.updateSession(session.id, { queuedFollowUps: undefined })
+    logLine('info', `session ${session.id} had ${waiting.length} queued message(s) from last time`)
+    void runTurn({ sessionId: session.id, userText: waiting.join('\n\n') }).catch(() => {
+      // runTurn records its own failures.
+    })
+  }
+}
+
 export function stop(sessionId: string): void {
   cancelSessionApprovals(sessionId)
   controllers.get(sessionId)?.abort()
