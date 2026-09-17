@@ -326,7 +326,10 @@ input token, a quarter more to write one, or whatever the provider publishes —
 stops being overstated by whatever the cache served.
 
 Every turn's log line carries the evidence: `tokens=66600/879 cache=3072r/0w(5%) first=0%
-prefix=32k→35k after=kept steps=2`. `first=` is the share of the *opening* step served from
+prefix=32k→35k after=kept steps=2 calls=2 25754ms(model=24s tools=2s)`. The last pair is where
+the *time* went, counted as wall time rather than as a sum of durations, since calls in one step
+run at the same time: an eleven-minute investigation turned out to be eight minutes of the model
+writing and three of everything else, which is a different problem from the one it looked like. `first=` is the share of the *opening* step served from
 cache, which is the only honest test of whether the prefix survived between turns; `prefix=`
 is how far it grew across the turn, which says whether a big turn went on steps or on carrying
 tool output it had already read.

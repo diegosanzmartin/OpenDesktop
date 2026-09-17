@@ -4183,6 +4183,68 @@ async function main(): Promise<void> {
     saveConfig(defaultConfig())
   }
 
+  section('what a turn spent its time on')
+  {
+    /*
+     * A slow turn is either the model writing or the commands running, and the
+     * total says nothing about which: an eleven-minute investigation turned out
+     * to be eight minutes of generation. Counted as wall time rather than as a
+     * sum of durations, because calls in one step run at the same time and
+     * adding them up reports parallel work as serial.
+     */
+    const timed = store.createSession({
+      title: 'timing',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: 'build',
+      model: 'mock/mock',
+      autoApprove: true
+    })
+    history.clearHistory(timed.id)
+    saveConfig({ ...defaultConfig(), autoApprove: true })
+
+    // A command that really takes a second, run by the real local runtime:
+    // the point is that the second lands on the work and not on the model.
+    providers.setModelResolverOverride(() => ({
+      providerId: 'mock',
+      modelId: 'mock',
+      label: 'Mock',
+      model: scriptedModel('sleep 1')
+    }))
+    const began = Date.now()
+    await runTurn({ sessionId: timed.id, userText: 'run the slow one' })
+    const wall = Date.now() - began
+    providers.setModelResolverOverride(null)
+    saveConfig(defaultConfig())
+
+    const line = readFileSync(logPath(), 'utf8')
+      .trim()
+      .split('\n')
+      .reverse()
+      .find((entry) => entry.includes(`turn ${timed.id} done`))
+    check('the turn says how long it took', Boolean(line), line)
+    check(
+      'and splits it into the model and the work',
+      /model=\d+s tools=\d+s/.test(line ?? ''),
+      line
+    )
+    const tools = Number(/tools=(\d+)s/.exec(line ?? '')?.[1] ?? '-1')
+    const model = Number(/model=(\d+)s/.exec(line ?? '')?.[1] ?? '-1')
+    check(
+      'the second the command took is counted as the work',
+      tools >= 1 && tools * 1000 <= wall,
+      { tools, wall }
+    )
+    check(
+      'and the mock model, which takes no time, is not charged for it',
+      model === 0,
+      { model, tools, wall }
+    )
+
+    store.deleteSession(timed.id)
+    history.clearHistory(timed.id)
+  }
+
   section('typing while it works')
   {
     /*

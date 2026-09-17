@@ -827,15 +827,20 @@ export function createTools(ctx: ToolContext): ToolSet {
       return `${ref}: ${usage.input} in, ${usage.output} out`
     }
 
-    const gather = async (paths: string[]): Promise<{ path: string; text: string }[]> => {
-      const files: { path: string; text: string }[] = []
-      for (const path of paths) {
-        const text = await ctx.runtime.readFile(path).catch(() => null)
-        if (text === null) throw new Error(`Cannot read ${path}. Check the path and try again.`)
-        files.push({ path, text })
-      }
-      return files
-    }
+    /*
+     * All of them at once. Reading a corpus one file at a time is one round
+     * trip per file, and on a remote target a round trip is most of the cost of
+     * a small file — the whole point of handing a list over is that it is a
+     * list. Order is preserved, since the answer quotes them back.
+     */
+    const gather = async (paths: string[]): Promise<{ path: string; text: string }[]> =>
+      Promise.all(
+        paths.map(async (path) => {
+          const text = await ctx.runtime.readFile(path).catch(() => null)
+          if (text === null) throw new Error(`Cannot read ${path}. Check the path and try again.`)
+          return { path, text }
+        })
+      )
 
     if (enabled(ctx, 'bulk_read')) {
       tools.bulk_read = tool({

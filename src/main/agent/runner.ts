@@ -147,6 +147,10 @@ When the subagents return, you own the result. Read their reports, reconcile
 anything that conflicts, verify what matters, and give the user one answer —
 not a list of what each agent said.
 
+Whatever you do yourself, ask for it all at once where you can: calls in the
+same step run at the same time, and a step you spend waiting for one answer
+before asking the next question costs another pass over the whole conversation.
+
 Answer in the language the user wrote in.`
   }
 }
@@ -206,7 +210,21 @@ function systemPrompt(agent: AgentConfig, input: {
   chain those together rather than spending a step on each. A step resends the
   whole conversation, which is what it costs; what must not be chained is
   unrelated work, since the interface renders each call as its own block.
-- When you are done, summarize what changed in a few lines. Do not pad the answer.
+- **Ask for everything you can at once.** Calls in the same step run at the same
+  time, so two reads, three greps or a search and a listing that do not depend on
+  each other belong in one step. Waiting for the first before asking for the
+  second doubles both the wall clock and the bill, and the only reason to take
+  turns is when one call's answer decides what the next one should be.
+- **Do not narrate.** No "let me check…", no "now I'll run…", no announcing a
+  tool call before making it: the interface already shows what you ran and what
+  it said. A line before a call is worth writing only when it says something the
+  call does not — a decision, a surprise, a reason for doing the unexpected thing.
+- **Do not repeat yourself.** The transcript is in front of the user: restating
+  the plan, re-summarising what you just found, or re-listing what you already
+  listed is text they have read, and it is the single biggest thing you spend
+  time on. Every token you write is time they wait.
+- When you are done, say what changed — or what you found — in as few lines as
+  carry it. One summary at the end, not one after every step.
 - When a check disagrees with the code, the code is what was asked about: fix it, or
   say why the check itself was wrong. Never edit an expectation to make a run pass.
 - Write to the user in the language they wrote to you in, and keep to it.${restrictions(
@@ -845,6 +863,32 @@ export async function runTurn(input: TurnInput): Promise<string> {
   let firstStepInput = 0
   let firstStepCacheRead = 0
 
+  /*
+   * How much of the turn was spent waiting for tools rather than for the model.
+   *
+   * A turn's wall clock is the model generating plus the commands running, and
+   * which of the two a slow turn was is not guessable from the total: an
+   * investigation that took eleven minutes turned out to be eight minutes of
+   * the model writing and three of everything else. Counted as wall time, not
+   * as a sum of durations — calls in one step run at the same time, and adding
+   * them up would report five seconds of parallel work as fifteen.
+   */
+  let toolsRunning = 0
+  let toolsSince = 0
+  let toolsWall = 0
+
+  const toolStarted = (): void => {
+    if (toolsRunning === 0) toolsSince = Date.now()
+    toolsRunning++
+  }
+  const toolEnded = (): void => {
+    toolsRunning = Math.max(0, toolsRunning - 1)
+    if (toolsRunning === 0 && toolsSince > 0) {
+      toolsWall += Date.now() - toolsSince
+      toolsSince = 0
+    }
+  }
+
   /** What this turn has actually been charged for, cache reads excluded. */
   const spent = (): number => Math.max(0, usedInput - cacheRead) + usedOutput
   const cacheShareLabel = (): string =>
@@ -864,8 +908,16 @@ export async function runTurn(input: TurnInput): Promise<string> {
   try {
     const runtime = getRuntime(session.environmentId)
     await runtime.connect()
-    const { platform } = await describeTarget(session.environmentId)
-    const resolved = await resolveModel(config, agent.model ?? session.model)
+    /*
+     * The two things a turn needs before it can start are independent of each
+     * other: what the target is, which is a round trip to the target, and which
+     * model to use, which is local. On a remote host the first is the slower,
+     * and nothing is gained by making the second wait for it.
+     */
+    const [{ platform }, resolved] = await Promise.all([
+      describeTarget(session.environmentId),
+      resolveModel(config, agent.model ?? session.model)
+    ])
 
     const modelRef = agent.model ?? session.model
     const autoApprove = session.autoApprove ?? config.autoApprove ?? false
@@ -1039,6 +1091,8 @@ export async function runTurn(input: TurnInput): Promise<string> {
           }
         : {}),
       abortSignal: controller.signal,
+      onToolExecutionStart: () => toolStarted(),
+      onToolExecutionEnd: () => toolEnded(),
       onError: ({ error }) => {
         // streamText does not reject for a provider failure mid-stream: it
         // reports it here and ends the stream. Without remembering it, the
@@ -1266,7 +1320,8 @@ export async function runTurn(input: TurnInput): Promise<string> {
         `after=${tightened.prefix}` +
         `${turnCost === null ? '' : ` cost=${turnCost.toFixed(4)}`} ` +
         `calls=${store.listBlocks(session.id).filter((block) => block.messageId === assistant.id).length} ` +
-        `${Date.now() - startedAt}ms${streamFailure === null ? '' : ' (stream failed)'}`
+        `${Date.now() - startedAt}ms(model=${Math.round((Date.now() - startedAt - toolsWall) / 1000)}s ` +
+        `tools=${Math.round(toolsWall / 1000)}s)${streamFailure === null ? '' : ' (stream failed)'}`
     )
 
     /*
