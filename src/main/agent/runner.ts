@@ -758,6 +758,18 @@ export async function runTurn(input: TurnInput): Promise<string> {
   let creditedOutput = 0
   let creditedCost = 0
 
+  /*
+   * What the provider says it charged for and what it served from a cache.
+   *
+   * Every step of a turn resends the whole prefix — the system prompt, the tool
+   * schemas, the transcript — so whether those tokens are cache reads or full
+   * price is most of what a turn costs. The SDK reports the split; without it
+   * in the log there is no way to tell a cache that is working from one that
+   * silently is not, and the difference is an order of magnitude on the bill.
+   */
+  let cacheRead = 0
+  let cacheWrite = 0
+
   const creditSession = (input: number, output: number, cost: number | null): void => {
     const deltaInput = Math.max(0, input - creditedInput)
     const deltaOutput = Math.max(0, output - creditedOutput)
@@ -988,6 +1000,8 @@ export async function runTurn(input: TurnInput): Promise<string> {
         }
         case 'finish-step': {
           steps++
+          cacheRead += part.usage.inputTokenDetails?.cacheReadTokens ?? 0
+          cacheWrite += part.usage.inputTokenDetails?.cacheWriteTokens ?? 0
           lastStepInput = part.usage.inputTokens ?? lastStepInput
           usedInput += part.usage.inputTokens ?? 0
           usedOutput += part.usage.outputTokens ?? 0
@@ -1094,7 +1108,8 @@ export async function runTurn(input: TurnInput): Promise<string> {
     logLine(
       'info',
       `turn ${session.id} done model=${modelRef} steps=${steps} ` +
-        `tokens=${inputTokens}/${outputTokens}${turnCost === null ? '' : ` cost=${turnCost.toFixed(4)}`} ` +
+        `tokens=${inputTokens}/${outputTokens} cache=${cacheRead}r/${cacheWrite}w` +
+        `${turnCost === null ? '' : ` cost=${turnCost.toFixed(4)}`} ` +
         `calls=${store.listBlocks(session.id).filter((block) => block.messageId === assistant.id).length} ` +
         `${Date.now() - startedAt}ms${streamFailure === null ? '' : ' (stream failed)'}`
     )
