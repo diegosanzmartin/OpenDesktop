@@ -20,7 +20,12 @@ export default defineConfig({
     resolve: { alias: { '@shared': shared } },
     build: {
       rollupOptions: {
-        input: resolve('src/main/index.ts'),
+        // The wedge watcher is its own entry: it runs as a utility process, so
+        // it has to exist as a file the main process can fork.
+        input: {
+          index: resolve('src/main/index.ts'),
+          'wedge-watch': resolve('src/main/wedge-watch.ts')
+        },
         external: nodeExternals
       }
     }

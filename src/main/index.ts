@@ -16,6 +16,7 @@ import { startScheduler, stopScheduler } from './scheduler'
 import { stopAll } from './agent/runner'
 import { killAllTerminals } from './terminal'
 import { killAllBackgroundTasks } from './background'
+import { startWedgeWatch, stopWedgeWatch } from './watchdog'
 
 const isDev = !app.isPackaged
 
@@ -116,6 +117,7 @@ void app.whenReady().then(async () => {
   startBoardSync()
   reconcileOnStart()
   startScheduler()
+  startWedgeWatch()
   await startPreviewServer()
   registerIpc()
   installMenu()
@@ -131,6 +133,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  stopWedgeWatch()
   stopScheduler()
   stopAll()
   killAllTerminals()

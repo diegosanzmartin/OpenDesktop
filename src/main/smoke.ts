@@ -69,6 +69,9 @@ import {
 } from './shunt'
 import { NOTHING, savingsLabel, savingsOf } from '@shared/savings'
 import {
+  CHEAPEST,
+  allowanceFor,
+  allowanceUsed,
   candidates,
   capability,
   costTier,
@@ -78,7 +81,7 @@ import {
   workerIsTheSameModel,
   workerModelRef
 } from '@shared/routing'
-import { meterSnapshot, record as meterRecord, resetMeter, spentOn } from './meter'
+import { meterSnapshot, record as meterRecord, resetMeter, spentLookup, spentOn } from './meter'
 import {
   RTK_DIR,
   installRtk,
@@ -94,7 +97,14 @@ import {
   rtkStatus
 } from './rtk'
 import { diffLines, renderDiff } from './diff'
-import { decide, deniedSegment, matchesAny, splitCommand, withoutPrompts } from './approvals'
+import {
+  decide,
+  deniedSegment,
+  hasSessionGrant,
+  matchesAny,
+  splitCommand,
+  withoutPrompts
+} from './approvals'
 import { parseGcloudCommand } from '@shared/gcloud'
 import { filterSessions, groupSessions, nestSubtasks, sortSessions, splitPinned } from '@shared/sessions'
 import { activityOf, duration, tokenRate } from '@shared/progress'
@@ -125,7 +135,7 @@ import {
 } from '@shared/boards'
 import { createBoard, deleteBoard, getBoard, listBoards, loadBoards } from './boards'
 import { startBoardSync } from './board-sync'
-import { queuedTasks, tick } from './scheduler'
+import { queuedTasks, startScheduler, stopScheduler, tick } from './scheduler'
 import {
   clearClaims,
   coordinationNote,
@@ -221,7 +231,10 @@ function delegatingModel(): LanguageModel {
         const input = JSON.stringify({
           agent: 'explore',
           description: 'find the entry point',
-          prompt: 'Report the name of the current directory and stop.'
+          prompt: 'Find where the entry point is. Report the name of the current directory and stop.',
+          // What a lead that had already read the file would hand over.
+          context_paths: ['package.json'],
+          context_notes: 'The entry point is declared in package.json; I have read it already.'
         })
         return {
           stream: new ReadableStream({
@@ -360,6 +373,42 @@ function sequenceModel(calls: { tool: string; input: Record<string, unknown> }[]
 }
 
 /** A mock model that answers immediately with text; used for the subagent. */
+/**
+ * A model that never finishes and charges heavily for trying.
+ *
+ * `maxSteps` would stop this eventually; the point of the token ceiling is that
+ * "eventually" can be sixty steps of a 300k-token transcript. Each step here
+ * reports a large bill, so the ceiling is what ends the turn.
+ */
+function expensiveLoopingModel(perStep: number): LanguageModel {
+  let call = 0
+  return new MockLanguageModelV4({
+    doStream: async () => {
+      call++
+      const input = JSON.stringify({ command: 'printf step', description: 'go round again' })
+      return {
+        stream: new ReadableStream({
+          start(controller) {
+            controller.enqueue({ type: 'stream-start', warnings: [] })
+            controller.enqueue({ type: 'response-metadata', id: `loop-${call}`, modelId: 'mock' })
+            controller.enqueue({ type: 'tool-input-start', id: `loop-${call}`, toolName: 'bash' })
+            controller.enqueue({ type: 'tool-input-delta', id: `loop-${call}`, delta: input })
+            controller.enqueue({ type: 'tool-input-end', id: `loop-${call}` })
+            controller.enqueue({
+              type: 'tool-call',
+              toolCallId: `loop-${call}`,
+              toolName: 'bash',
+              input
+            })
+            controller.enqueue(finish('tool-calls', perStep, 100))
+            controller.close()
+          }
+        })
+      }
+    }
+  })
+}
+
 function replyingModel(text: string): LanguageModel {
   return new MockLanguageModelV4({
     doStream: async () => ({
@@ -903,6 +952,86 @@ async function main(): Promise<void> {
   check('a rejected block is canceled', rejected?.status === 'canceled', rejected?.status)
   check('the rejection is recorded on the block', Boolean(rejected?.error))
 
+  section('the three answers to an approval')
+  {
+    /*
+     * The rejection path above covers "no". This covers "always", which is the
+     * answer with a memory: a grant belongs to the session, so the next command
+     * of the same kind must not ask again — and `auto-approve` must still not
+     * lift a denylist entry, which is the whole reason a denylist exists.
+     */
+    const granting = store.createSession({
+      title: 'smoke-grant',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: 'build',
+      model: 'mock/mock'
+    })
+    history.clearHistory(granting.id)
+
+    let asked = 0
+    const answerAlways = bus.subscribe((event) => {
+      if (event.type === 'approval.requested') {
+        asked++
+        resolveApproval(event.request.id, 'always')
+      }
+    })
+    providers.setModelResolverOverride(() => ({
+      providerId: 'mock',
+      modelId: 'mock',
+      label: 'Mock',
+      model: scriptedModel('printf once')
+    }))
+    await runTurn({ sessionId: granting.id, userText: 'run it' })
+    const afterFirst = asked
+    check('the first command of its kind asks', afterFirst === 1, afterFirst)
+
+    providers.setModelResolverOverride(() => ({
+      providerId: 'mock',
+      modelId: 'mock',
+      label: 'Mock',
+      model: scriptedModel('printf twice')
+    }))
+    await runTurn({ sessionId: granting.id, userText: 'run it again' })
+    answerAlways()
+    providers.setModelResolverOverride(null)
+    check('"always" holds for the rest of the session', asked === afterFirst, asked)
+    check(
+      'and the second command ran',
+      store.listBlocks(granting.id).filter((block) => block.tool === 'bash' && block.status === 'success')
+        .length === 2,
+      store.listBlocks(granting.id).map((block) => `${block.tool}:${block.status}`)
+    )
+    check(
+      'the grant is this session and no other',
+      !hasSessionGrant(store.createSession({
+        title: 'smoke-grant-other',
+        cwd: process.cwd(),
+        environmentId: 'local',
+        agentId: 'build',
+        model: 'mock/mock'
+      }).id, 'bash')
+    )
+
+    // Auto-approve removes the question, never the policy.
+    const lifted = withoutPrompts(defaultConfig().permissions)
+    check('auto-approve turns ask into allow', lifted.bash === 'allow')
+    const refused = decide(lifted, 'bash', 'rm -rf /')
+    check('but a denylisted command is still denied', refused.mode === 'deny', refused)
+    check(
+      'and the refusal names the rule, so the agent can tell policy from breakage',
+      refused.deniedBy?.includes('rm -rf /') === true,
+      refused.deniedBy
+    )
+    check(
+      'a scratch directory under /tmp is not what that rule was for',
+      decide(lifted, 'bash', 'rm -rf /tmp/build-1234 node_modules').mode !== 'deny'
+    )
+
+    store.deleteSession(granting.id)
+    history.clearHistory(granting.id)
+  }
+
   section('multi-agent (task tool spawns a subagent session)')
   // Pin the explore agent to its own model in its file, which also covers both
   // per-agent models and the fact that agents are no longer part of the config.
@@ -972,6 +1101,30 @@ async function main(): Promise<void> {
 
   saveAgent(exploreAgent)
   loadConfig(true)
+
+  /*
+   * What the lead already read is handed over rather than read again. The mock
+   * delegator asks for one file by path; it should arrive in the child's first
+   * message, marked as current, and the brief should still read as the brief.
+   */
+  const childFirst = child
+    ? store
+        .listMessages(child.id)
+        .find((m) => m.role === 'user')
+        ?.parts.find((part) => part.type === 'text')?.text
+    : undefined
+  const childHistory = child ? JSON.stringify(history.getHistory(child.id)) : ''
+  check(
+    "the subagent's visible brief is the brief, not a paste of the repository",
+    (childFirst ?? '').includes('Find where the entry point is') === true,
+    childFirst?.slice(0, 120)
+  )
+  check(
+    'but the files the lead had read reach the model with it',
+    childHistory.includes('<handover from=\\"the lead agent\\"') &&
+      childHistory.includes('package.json'),
+    childHistory.slice(0, 200)
+  )
 
   check(
     'the parent knows its subagents, so deleting it can take them with it',
@@ -3123,9 +3276,27 @@ async function main(): Promise<void> {
       'failing that, the small model the app already has',
       workerModelRef({ ...base, smallModel: 'p/small' }, 'p/big') === 'p/small'
     )
+    /*
+     * The app ships an Anthropic provider as well, so "whichever the router likes"
+     * depends on which keys exist. With no Anthropic key pasted — the state a
+     * fresh install is in — its models are not candidates and the work goes to
+     * the provider that can actually answer.
+     */
+    const noAnthropicKey: AppConfig = {
+      ...base,
+      provider: {
+        ...base.provider,
+        anthropic: { ...base.provider.anthropic, options: { apiKey: '' } }
+      }
+    }
     check(
       'and failing that, whichever declared model the router likes',
-      workerModelRef(base, 'p/big') === 'helmcode/glm5.3-flash',
+      workerModelRef(noAnthropicKey, 'p/big') === 'helmcode/glm5.3-flash',
+      workerModelRef(noAnthropicKey, 'p/big')
+    )
+    check(
+      'with both keys in place the cheapest capable model wins, whoever it belongs to',
+      workerModelRef(base, 'p/big') === 'anthropic/claude-haiku-4-5',
       workerModelRef(base, 'p/big')
     )
     const noModels = { ...base, provider: {} }
@@ -3672,6 +3843,271 @@ async function main(): Promise<void> {
 
     store.deleteSession(parentSession.id)
     history.clearHistory(parentSession.id)
+  }
+
+  section('what one turn may spend')
+  {
+    saveConfig({ ...defaultConfig(), maxTurnTokens: 120_000, autoApprove: true })
+    const runaway = store.createSession({
+      title: 'runaway',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: 'build',
+      model: 'mock/mock',
+      autoApprove: true
+    })
+    history.clearHistory(runaway.id)
+    providers.setModelResolverOverride(() => ({
+      providerId: 'mock',
+      modelId: 'mock',
+      label: 'Mock',
+      model: expensiveLoopingModel(50_000)
+    }))
+
+    await runTurn({ sessionId: runaway.id, userText: 'go' })
+    providers.setModelResolverOverride(null)
+
+    const stopped = store.getSession(runaway.id)!
+    const spent = stopped.usage.input + stopped.usage.output
+    check('a turn that will not stop is stopped', spent >= 120_000, stopped.usage)
+    check(
+      'and well before maxSteps would have done it',
+      store.listBlocks(runaway.id).length < (defaultConfig().maxSteps ?? 60),
+      store.listBlocks(runaway.id).length
+    )
+    check(
+      'it is handed back rather than failed',
+      stopped.status === 'blocked',
+      stopped.status
+    )
+    check(
+      'the reason says what happened and what to do',
+      (stopped.blockedReason ?? '').includes('maxTurnTokens') &&
+        (stopped.blockedReason ?? '').includes('reply to carry on'),
+      stopped.blockedReason
+    )
+    check(
+      'and the transcript says it too, where the answer stopped',
+      store
+        .listMessages(runaway.id)
+        .some((message) =>
+          message.parts.some(
+            (part) => part.type === 'error' && (part.text ?? '').includes('stopped at its ceiling')
+          )
+        )
+    )
+    check(
+      'what it spent is on the session, not lost with the turn',
+      spent > 0 && (store.getSession(runaway.id)?.usage.output ?? 0) > 0,
+      stopped.usage
+    )
+
+    store.deleteSession(runaway.id)
+    history.clearHistory(runaway.id)
+    saveConfig(defaultConfig())
+  }
+
+  section('the queue as the app actually drains it')
+  {
+    /*
+     * Every other check here calls `tick()` directly, and the wedge that pinned
+     * a core for thirteen minutes lived in the subscriber `startScheduler()`
+     * installs — so it was invisible to a suite that never installed it. This
+     * boots the queue the way `index.ts` does and lets it drain on its own.
+     */
+    providers.setModelResolverOverride(() => ({
+      providerId: 'mock',
+      modelId: 'mock',
+      label: 'Mock',
+      model: replyingModel('Queued work done.')
+    }))
+
+    const board = createBoard({ name: 'Live queue', cwd: process.cwd(), environmentId: 'local' })
+    const todo = columnOfKind(board, 'todo')!
+    const queue = ['first', 'second'].map((name, index) => {
+      const session = store.createSession({
+        title: `live ${name}`,
+        cwd: process.cwd(),
+        environmentId: 'local',
+        agentId: 'auto',
+        model: 'mock/mock',
+        autoApprove: true
+      })
+      history.clearHistory(session.id)
+      store.updateSession(session.id, {
+        status: 'queued',
+        boardId: board.id,
+        columnId: todo.id,
+        order: index + 1,
+        queuedPrompt: `do the ${name} piece`
+      })
+      return session.id
+    })
+
+    let writes = 0
+    const countWrites = bus.subscribe((event) => {
+      if (event.type === 'session.updated' && queue.includes(event.session.id)) writes++
+    })
+
+    startScheduler()
+    const settled = await new Promise<boolean>((resolve) => {
+      const deadline = Date.now() + 15_000
+      const poll = setInterval(() => {
+        const states = queue.map((id) => store.getSession(id)?.status)
+        if (states.every((state) => state === 'done')) {
+          clearInterval(poll)
+          resolve(true)
+        } else if (Date.now() > deadline) {
+          clearInterval(poll)
+          resolve(false)
+        }
+      }, 50)
+    })
+    stopScheduler()
+    countWrites()
+    providers.setModelResolverOverride(null)
+
+    check('two queued cards drain without anyone calling tick', settled, queue.map((id) => store.getSession(id)?.status))
+    check('and the queue is empty afterwards', queuedTasks().every((task) => !queue.includes(task.id)))
+    check(
+      'each ran its turn',
+      queue.every((id) => store.listMessages(id).some((message) => message.role === 'assistant')),
+      queue.map((id) => store.listMessages(id).length)
+    )
+    /*
+     * The wedge wrote ten thousand of these a second. A generous bound catches
+     * it without pinning the check to today's exact number of status changes.
+     */
+    check('and the scheduler did not write in a loop', writes < 60, writes)
+
+    for (const id of queue) {
+      store.deleteSession(id)
+      history.clearHistory(id)
+    }
+    deleteBoard(board.id)
+  }
+
+  section('a spend limit that belongs to the key')
+  {
+    /*
+     * A $400-a-month key is a budget, not a token bucket, and it is shared by
+     * every model under it — so the limit lives on the provider, the meter
+     * counts money beside the tokens, and what is compared against the cap is
+     * the whole key's spend rather than one model's.
+     */
+    const priced: AppConfig = {
+      ...defaultConfig(),
+      provider: {
+        claude: {
+          id: 'claude',
+          npm: '@ai-sdk/anthropic',
+          name: 'Vendor',
+          options: {},
+          allowance: { usd: 400, period: 'month' },
+          models: {
+            big: {
+              id: 'big',
+              name: 'Big',
+              price: { input: 5, output: 25 },
+              billing: 'allowance',
+              iq: 5,
+              cost: 4
+            },
+            small: {
+              id: 'small',
+              name: 'Small',
+              price: { input: 1, output: 5 },
+              billing: 'allowance',
+              iq: 3,
+              cost: 2
+            }
+          }
+        }
+      }
+    }
+
+    resetMeter()
+    const big = priced.provider.claude.models.big
+    check(
+      'the limit on the key covers a model that declares none of its own',
+      allowanceFor(priced, 'claude', big)?.usd === 400
+    )
+    check('an untouched allowance is the cheapest thing there is', marginalCost(big, { tokens: 0, cost: 0 }, allowanceFor(priced, 'claude', big)) === CHEAPEST)
+
+    // 1M in and 1M out on the small model: $1 + $5 of the $400.
+    const smallUsage = { input: 1_000_000, output: 1_000_000 }
+    const smallCost = costOf(priced, 'claude/small', smallUsage)
+    check('a priced model turns tokens into money', smallCost === 6, smallCost)
+    meterRecord('claude/small', { ...smallUsage, cost: smallCost ?? 0 })
+    check('and the meter keeps both', spentOn('claude/small', 'month').cost === 6, spentOn('claude/small', 'month'))
+    check(
+      'what one model spent counts against the whole key',
+      spentLookup(priced)('claude/big')?.cost === 6,
+      spentLookup(priced)('claude/big')
+    )
+
+    // Up to $380: nine tenths of the budget is gone, so the next token is no
+    // longer free, but it is not full price either.
+    meterRecord('claude/big', { input: 0, output: 0, cost: 374 })
+    const nearly = spentLookup(priced)('claude/big')
+    check('the spend adds up across the key', nearly?.cost === 380, nearly)
+    check(
+      'past nine tenths it stops being free',
+      marginalCost(big, nearly, allowanceFor(priced, 'claude', big)) > CHEAPEST,
+      marginalCost(big, nearly, allowanceFor(priced, 'claude', big))
+    )
+    check(
+      'and the fraction is what the settings page shows',
+      Math.round((allowanceUsed(allowanceFor(priced, 'claude', big), nearly) ?? 0) * 100) === 95
+    )
+
+    meterRecord('claude/big', { input: 0, output: 0, cost: 30 })
+    const over = spentLookup(priced)('claude/big')
+    check(
+      'once it is spent the model costs what it costs',
+      marginalCost(big, over, allowanceFor(priced, 'claude', big)) === costTier(big),
+      { spent: over, tier: costTier(big) }
+    )
+    // Its own allowance means its own spend: $404 against the model, not the
+    // $410 the key has been charged in total.
+    const own: AppConfig = {
+      ...priced,
+      provider: {
+        claude: {
+          ...priced.provider.claude,
+          models: {
+            ...priced.provider.claude.models,
+            big: { ...big, allowance: { usd: 500, period: 'month' } }
+          }
+        }
+      }
+    }
+    check(
+      'a model with its own allowance is judged on its own spend',
+      spentLookup(own)('claude/big')?.cost === 404 && spentLookup(priced)('claude/big')?.cost === 410,
+      { own: spentLookup(own)('claude/big'), shared: spentLookup(priced)('claude/big') }
+    )
+
+    /*
+     * And a key nobody has pasted is not a candidate at all: the app ships more
+     * providers than any one person has keys for, and routing to one that
+     * cannot authenticate turns a saving into a failed turn.
+     */
+    const unusable: AppConfig = {
+      ...priced,
+      provider: {
+        claude: { ...priced.provider.claude, options: { apiKey: '' } }
+      }
+    }
+    check('a provider with an empty key is not routed to', candidates(unusable).length === 0)
+    check(
+      'while one that reads its own environment is left alone',
+      candidates({
+        ...priced,
+        provider: { claude: { ...priced.provider.claude, options: {} } }
+      }).length === 2
+    )
+    resetMeter()
   }
 
   section('which tools each switch puts on the table')

@@ -15,23 +15,23 @@ import {
   type Message
 } from '@shared/types'
 import { savingsOf, type Savings } from '@shared/savings'
-import { pickModel } from '@shared/routing'
+import { allowanceFor, allowanceUsed, pickModel } from '@shared/routing'
 import { mentionToken, mentionedAgents } from '@shared/mentions'
-import { costOf } from '@shared/cost'
+import { costOf, formatCost } from '@shared/cost'
 import { isAbort } from '@shared/errors'
 import { budgetFor } from '@shared/context'
 import { effectivePermissions, resolvedConfig } from '../config'
 import { bus } from '../bus'
 import { cancelSessionApprovals, withoutPrompts } from '../approvals'
 import { resolveModel } from '../providers'
-import { getRuntime } from '../runtime'
+import { getRuntime, type Runtime } from '../runtime'
 import { rtkStatus } from '../rtk'
 import { workerIsTheSameModel } from '../shunt'
 import { record as meterRecord, spentLookup } from '../meter'
 import { logError, logLine } from '../log'
 import * as store from '../store'
 import * as history from '../history'
-import { createTools, type ToolContext } from './tools'
+import { MUTATING_TOOLS, createTools, type ToolContext } from './tools'
 import { expandSkills } from '../skills'
 import { modelAcceptsImages, readAttachment } from '../attachments'
 
@@ -101,7 +101,10 @@ handful of edits.
 
 Pick the agent whose description actually matches the piece. A subagent starts
 with no memory of this conversation, so its prompt must stand alone: say what to
-do, where, and what to report back.
+do, where, and what to report back. Hand over what you already know with
+\`context_paths\` and \`context_notes\` — the files you have read that it will need,
+and what you worked out that is not in them. Rediscovering the repository is
+most of what delegating costs, and this is how you stop paying for it twice.
 
 When the subagents return, you own the result. Read their reports, reconcile
 anything that conflicts, verify what matters, and give the user one answer —
@@ -121,7 +124,7 @@ Answer in the language the user wrote in.`
  * into a task handed back.
  */
 function restrictions(available: string[]): string {
-  const missing = ['write', 'edit', 'bash'].filter((name) => !available.includes(name))
+  const missing = MUTATING_TOOLS.filter((name) => !available.includes(name))
   if (missing.length === 0) return ''
 
   const cannot: string[] = []
@@ -290,6 +293,68 @@ export function buildUserMessage(
 }
 
 /**
+ * The files and notes a lead hands to a subagent, as the model sees them.
+ *
+ * A subagent starts with no memory of the conversation, so it re-reads and
+ * re-derives whatever the lead already had: measured here, three one-file fixes
+ * split three ways cost 2.4x the tokens of doing them in one session, and most
+ * of that was rediscovery. Handing the files over costs their length once,
+ * against reading them again plus the round trips to find them.
+ *
+ * Capped, because a lead that names a directory's worth of files would
+ * otherwise fill the child's window before its brief arrives. Anything dropped
+ * is said, so the subagent knows to read the rest itself.
+ */
+const HANDOVER_CHARS = 80_000
+
+async function handover(
+  runtime: Runtime,
+  cwd: string,
+  paths: string[] | undefined,
+  notes: string | undefined
+): Promise<string | undefined> {
+  if ((!paths || paths.length === 0) && !notes) return undefined
+
+  const parts: string[] = []
+  let budget = HANDOVER_CHARS
+  const skipped: string[] = []
+
+  for (const path of paths ?? []) {
+    const resolved = runtime.resolve(cwd, path)
+    if (budget <= 0) {
+      skipped.push(path)
+      continue
+    }
+    try {
+      const text = await runtime.readFile(resolved)
+      if (text.length > budget) {
+        skipped.push(path)
+        continue
+      }
+      budget -= text.length
+      parts.push(`<file name="${path}">\n${text}\n</file>`)
+    } catch {
+      // A path the lead got wrong is not worth failing the delegation over:
+      // the subagent can read it itself, and now it knows to.
+      skipped.push(path)
+    }
+  }
+
+  if (parts.length === 0 && !notes) return undefined
+
+  return (
+    `<handover from="the lead agent">\n` +
+    `These were read for you and are current as of now; you do not need to read them again.\n` +
+    (notes ? `\n<notes>\n${notes}\n</notes>\n` : '') +
+    (parts.length > 0 ? `\n${parts.join('\n\n')}\n` : '') +
+    (skipped.length > 0
+      ? `\nNot included (read them yourself if you need them): ${skipped.join(', ')}\n`
+      : '') +
+    `</handover>\n\n`
+  )
+}
+
+/**
  * Resolves the `@names` in a message to agent ids for the model.
  *
  * The visible message keeps what the user typed. The model is handed the
@@ -412,7 +477,7 @@ async function compactIfNeeded(
         output: answer.usage.outputTokens ?? 0
       }
       store.creditUsage(sessionId, { ...used, cost: costOf(config, ref, used) ?? 0 })
-      meterRecord(ref, used)
+      meterRecord(ref, { ...used, cost: costOf(config, ref, used) ?? 0 })
       return answer.text
     },
     {
@@ -460,6 +525,47 @@ export async function compactNow(sessionId: string): Promise<boolean> {
     contextTokens: history.estimateTokens(history.getHistory(sessionId))
   })
   return done
+}
+
+/**
+ * Says so when a paid key is running out of the budget it was given.
+ *
+ * Nothing on the other side reports a balance, so this is what this app has
+ * spent, counted locally and labelled that way. Said at nine tenths and again
+ * when it is gone, once each per period per key — a warning repeated every turn
+ * is one nobody reads, and this one costs real money to ignore.
+ */
+const allowanceSaid = new Set<string>()
+
+function warnOnAllowance(config: AppConfig, ref: string): void {
+  const slash = ref.indexOf('/')
+  if (slash === -1) return
+  const providerId = ref.slice(0, slash)
+  const model = config.provider?.[providerId]?.models[ref.slice(slash + 1)]
+  if (!model || (model.billing ?? 'pay-as-you-go') !== 'allowance') return
+
+  const allowance = allowanceFor(config, providerId, model)
+  const spent = spentLookup(config)(ref)
+  const used = allowanceUsed(allowance, spent)
+  if (used === null) return
+
+  const stage = used >= 1 ? 'spent' : used > 0.9 ? 'nearly spent' : null
+  if (stage === null) return
+  const key = `${providerId}|${allowance?.period ?? 'month'}|${stage}`
+  if (allowanceSaid.has(key)) return
+  allowanceSaid.add(key)
+
+  const of = allowance?.usd
+    ? `${formatCost(spent?.cost ?? 0)} of ${formatCost(allowance.usd)}`
+    : `${(spent?.tokens ?? 0).toLocaleString('en-US')} of ${(allowance?.tokens ?? 0).toLocaleString('en-US')} tokens`
+  const period = allowance?.period === 'day' ? 'today' : 'this month'
+  const message =
+    stage === 'spent'
+      ? `${providerId}'s included allowance is spent ${period} — ${of} by this app's own count. Anything more is charged at the model's price.`
+      : `${providerId} has used ${Math.round(used * 100)}% of its allowance ${period} — ${of}, counted here.`
+
+  logLine('warn', `allowance ${providerId}: ${stage} (${of}, ${period})`)
+  bus.emit({ type: 'toast', level: 'warn', message })
 }
 
 /**
@@ -537,6 +643,14 @@ async function announceSavingsProblems(input: {
 interface TurnInput {
   sessionId: string
   userText: string
+  /**
+   * What the lead already knew, handed to a subagent with its brief: the files
+   * it would otherwise have opened, and what the lead learned that is not in
+   * them. Put in front of the model, kept out of the visible message — the
+   * transcript should read as the brief that was given, not as a paste of the
+   * repository.
+   */
+  handover?: string
   attachments?: Attachment[]
   /** Set for subagent turns so the reply is returned instead of only rendered. */
   collectFinalText?: boolean
@@ -606,6 +720,30 @@ export async function runTurn(input: TurnInput): Promise<string> {
    */
   let silence: NodeJS.Timeout | null = null
 
+  /**
+   * The two ceilings on one turn, and what to say when one of them is hit.
+   *
+   * A turn stopped for spending too much is not a turn the user stopped and not
+   * a turn that failed, so it needs its own answer: the reason goes in the
+   * transcript, the card goes to Blocked, and replying carries the work on from
+   * where it stopped. The wall-clock one exists because tokens are not the only
+   * way a turn runs away — a shell command that never returns spends nothing.
+   */
+  let budgetStop: string | null = null
+  let clock: NodeJS.Timeout | null = null
+  let budgetWarned = false
+  let budgetSaid = false
+  const startedAt = Date.now()
+  let steps = 0
+
+  const sayBudgetStop = (): void => {
+    if (!budgetStop || budgetSaid) return
+    budgetSaid = true
+    store.pushPart(session.id, assistant.id, { type: 'error', text: budgetStop })
+    store.updateSession(session.id, { status: 'blocked', blockedReason: budgetStop })
+    bus.emit({ type: 'toast', level: 'warn', message: budgetStop })
+  }
+
   /*
    * What this turn has already added to the session's running totals.
    *
@@ -653,6 +791,20 @@ export async function runTurn(input: TurnInput): Promise<string> {
         null)
       : null
 
+    /*
+     * One line when a turn starts and one when it ends.
+     *
+     * The log was only ever written when something went wrong, so an ordinary
+     * turn left no trace — and the one time it mattered, a turn that hung for
+     * thirteen minutes could not be told from a turn that never started. Two
+     * lines per turn is a file you can read a day's work out of.
+     */
+    logLine(
+      'info',
+      `turn ${session.id} start agent=${agent.id} model=${modelRef} env=${session.environmentId}` +
+        `${input.depth ? ` depth=${input.depth}` : ''} cwd=${session.cwd}`
+    )
+
     const ctx: ToolContext = {
       config,
       agent,
@@ -675,7 +827,14 @@ export async function runTurn(input: TurnInput): Promise<string> {
       currentMessageId: () => assistant.id,
       depth: input.depth ?? 0,
       parentBlockId: input.parentBlockId,
-      spawnSubagent: async ({ agentId, prompt, description, parentBlockId }) => {
+      spawnSubagent: async ({
+        agentId,
+        prompt,
+        description,
+        parentBlockId,
+        contextPaths,
+        contextNotes
+      }) => {
         const child = store.createSession({
           title: description,
           cwd: session.cwd,
@@ -690,6 +849,7 @@ export async function runTurn(input: TurnInput): Promise<string> {
         const report = await runTurn({
           sessionId: child.id,
           userText: prompt,
+          handover: await handover(runtime, session.cwd, contextPaths, contextNotes),
           collectFinalText: true,
           depth: (input.depth ?? 0) + 1,
           parentBlockId
@@ -718,7 +878,7 @@ export async function runTurn(input: TurnInput): Promise<string> {
     const userMessage = buildUserMessage(
       config,
       session.model,
-      expanded.prompt + mentionDirective(config, input.userText),
+      (input.handover ?? '') + expanded.prompt + mentionDirective(config, input.userText),
       input.attachments
     )
     const messages: ModelMessage[] = [...history.getHistory(session.id), userMessage]
@@ -766,6 +926,18 @@ export async function runTurn(input: TurnInput): Promise<string> {
         store.pushPart(session.id, assistant.id, { type: 'error', text: streamFailure })
       }
     })
+
+    const wallCeiling = config.maxTurnMs ?? 0
+    if (wallCeiling > 0) {
+      clock = setTimeout(() => {
+        if (budgetStop) return
+        budgetStop =
+          `This turn stopped at its time limit: ${Math.round(wallCeiling / 60_000)} minutes ` +
+          `(maxTurnMs). Whatever it had already done stands — reply to carry on.`
+        logLine('warn', `turn ${session.id} hit maxTurnMs after ${Date.now() - startedAt}ms`)
+        controller.abort()
+      }, wallCeiling)
+    }
 
     const QUIET_MS = 90_000
     silence = setTimeout(() => {
@@ -815,6 +987,7 @@ export async function runTurn(input: TurnInput): Promise<string> {
           break
         }
         case 'finish-step': {
+          steps++
           lastStepInput = part.usage.inputTokens ?? lastStepInput
           usedInput += part.usage.inputTokens ?? 0
           usedOutput += part.usage.outputTokens ?? 0
@@ -830,6 +1003,30 @@ export async function runTurn(input: TurnInput): Promise<string> {
             }
           })
           creditSession(usedInput, usedOutput, so_far)
+
+          const ceiling = config.maxTurnTokens ?? 0
+          const spentSoFar = usedInput + usedOutput
+          if (ceiling > 0 && !budgetStop) {
+            if (spentSoFar >= ceiling) {
+              budgetStop =
+                `This turn stopped at its ceiling: ${spentSoFar.toLocaleString('en-US')} tokens ` +
+                `across ${steps} steps, against a limit of ${ceiling.toLocaleString('en-US')} ` +
+                `(maxTurnTokens). Nothing is lost — reply to carry on, or raise the limit in ` +
+                `Settings if this is ordinary work for this project.`
+              logLine('warn', `turn ${session.id} hit maxTurnTokens (${spentSoFar} >= ${ceiling})`)
+              controller.abort()
+            } else if (!budgetWarned && spentSoFar > ceiling * 0.6) {
+              budgetWarned = true
+              logLine('info', `turn ${session.id} past 60% of maxTurnTokens (${spentSoFar}/${ceiling})`)
+              bus.emit({
+                type: 'toast',
+                level: 'warn',
+                message:
+                  `This turn has spent ${spentSoFar.toLocaleString('en-US')} tokens of its ` +
+                  `${ceiling.toLocaleString('en-US')} ceiling.`
+              })
+            }
+          }
           break
         }
         case 'tool-call':
@@ -848,6 +1045,16 @@ export async function runTurn(input: TurnInput): Promise<string> {
       }
     }
 
+    /*
+     * A ceiling reached is the end of this turn, not a failure of it.
+     *
+     * Aborting the stream only breaks the loop above — the rest of the turn
+     * still runs, records what was spent and keeps what was produced, which is
+     * what makes "reply to carry on" mean anything. Said here rather than in
+     * the catch because this is the path an abort actually takes.
+     */
+    if (budgetStop) sayBudgetStop()
+
     const responseMessages = await result.responseMessages
     history.appendHistory(session.id, responseMessages as ModelMessage[])
     await tighten(config, session.id, agent.model ?? session.model, lastStepInput)
@@ -864,7 +1071,8 @@ export async function runTurn(input: TurnInput): Promise<string> {
     // Worked out now and kept on the message: a price edited next week must not
     // change what this turn is recorded as having cost.
     const turnCost = costOf(config, modelRef, { input: inputTokens, output: outputTokens })
-    meterRecord(modelRef, { input: inputTokens, output: outputTokens })
+    meterRecord(modelRef, { input: inputTokens, output: outputTokens, cost: turnCost ?? 0 })
+    warnOnAllowance(config, modelRef)
     store.updateMessage(session.id, assistant.id, {
       completedAt: Date.now(),
       usage: {
@@ -883,6 +1091,14 @@ export async function runTurn(input: TurnInput): Promise<string> {
     store.updateSession(session.id, {
       status: ended?.status === 'blocked' ? 'blocked' : streamFailure !== null ? 'error' : 'idle'
     })
+    logLine(
+      'info',
+      `turn ${session.id} done model=${modelRef} steps=${steps} ` +
+        `tokens=${inputTokens}/${outputTokens}${turnCost === null ? '' : ` cost=${turnCost.toFixed(4)}`} ` +
+        `calls=${store.listBlocks(session.id).filter((block) => block.messageId === assistant.id).length} ` +
+        `${Date.now() - startedAt}ms${streamFailure === null ? '' : ' (stream failed)'}`
+    )
+
     /*
      * Told, not left to be noticed. A provider that fails mid-stream used to
      * end the turn quietly: the session went idle, the answer simply stopped,
@@ -896,10 +1112,16 @@ export async function runTurn(input: TurnInput): Promise<string> {
     const aborted = isAbort(err, controller.signal.aborted)
     // The whole chain, not the outermost wrapper: "Failed to process
     // successful response" is a sentence about nothing on its own.
-    const message = aborted ? 'Stopped by the user.' : logError(`turn ${session.id}`, err)
-    store.pushPart(session.id, assistant.id, { type: 'error', text: message })
+    const message = budgetStop ?? (aborted ? 'Stopped by the user.' : logError(`turn ${session.id}`, err))
+    if (budgetStop) {
+      // Handed back, not failed: the work is fine, there is just more of it
+      // than one turn was allowed to spend.
+      sayBudgetStop()
+    } else {
+      store.pushPart(session.id, assistant.id, { type: 'error', text: message })
+      store.setSessionStatus(session.id, aborted ? 'idle' : 'error')
+    }
     store.updateMessage(session.id, assistant.id, { completedAt: Date.now() })
-    store.setSessionStatus(session.id, aborted ? 'idle' : 'error')
 
     // Charged for what it used before it broke. The tokens were spent whether
     // or not an answer came back, and a turn that fails is exactly when
@@ -910,17 +1132,23 @@ export async function runTurn(input: TurnInput): Promise<string> {
         output: usedOutput
       })
       creditSession(usedInput, usedOutput, spentCost)
-      meterRecord(agent.model ?? session.model, { input: usedInput, output: usedOutput })
+      meterRecord(agent.model ?? session.model, {
+        input: usedInput,
+        output: usedOutput,
+        cost: spentCost ?? 0
+      })
       logLine(
         'warn',
-        `turn ${session.id} failed after ${usedInput} in / ${usedOutput} out on ${
-          agent.model ?? session.model
-        }`
+        `turn ${session.id} ${budgetStop ? 'stopped at its ceiling' : 'failed'} after ` +
+          `${steps} steps, ${usedInput} in / ${usedOutput} out on ${agent.model ?? session.model}, ` +
+          `${Date.now() - startedAt}ms`
       )
     }
-    if (!aborted) bus.emit({ type: 'toast', level: 'error', message })
+    // The ceiling has already said its piece, through sayBudgetStop.
+    if (!budgetStop && !aborted) bus.emit({ type: 'toast', level: 'error', message })
   } finally {
     if (silence) clearTimeout(silence)
+    if (clock) clearTimeout(clock)
     controllers.delete(session.id)
     if (store.getSession(session.id)?.status === 'running') store.setSessionStatus(session.id, 'idle')
     store.flush()
