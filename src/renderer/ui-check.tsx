@@ -603,6 +603,30 @@ async function run(): Promise<void> {
         ?.getBoundingClientRect().height
     )
 
+    /*
+     * Adding a provider must be a choice, not a data-entry exercise. The list
+     * of providers is what the catalogue says, and picking Anthropic has to bring
+     * its models with it — that is the whole difference between "add Anthropic"
+     * and "type three model ids and six prices".
+     */
+    const addButton = [...host.querySelectorAll('button')].find(
+      (button) => button.getAttribute('title') === 'Add a provider'
+    ) as HTMLElement | undefined
+    check('there is a way to add a provider', Boolean(addButton))
+    addButton?.click()
+    await settle()
+    const adding = host.textContent ?? ''
+    check(
+      'the providers it knows are offered by name, not by npm package',
+      adding.includes('Anthropic · Claude') && adding.includes('OpenAI · ChatGPT models'),
+      adding.slice(adding.indexOf('Which provider'), adding.indexOf('Which provider') + 160)
+    )
+    check(
+      'and picking one says how many models come with it',
+      /\d+ models come with it/.test(adding),
+      adding.slice(adding.indexOf('models come with it') - 60, adding.indexOf('models come with it') + 40)
+    )
+
     const sliders = host.querySelectorAll('button[aria-label$="of 5"]')
     check('the judgements are coarse on purpose — five steps', sliders.length === 20, sliders.length)
 

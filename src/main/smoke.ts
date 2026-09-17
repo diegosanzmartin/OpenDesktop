@@ -68,6 +68,8 @@ import {
   stripFences
 } from './shunt'
 import { NOTHING, savingsLabel, savingsOf } from '@shared/savings'
+import { PROVIDER_PRESETS, knownModel, mergeDiscovered, presetFor } from '@shared/catalog'
+import { discoverModels } from './discover'
 import {
   CHEAPEST,
   allowanceFor,
@@ -3985,6 +3987,176 @@ async function main(): Promise<void> {
       history.clearHistory(id)
     }
     deleteBoard(board.id)
+  }
+
+  section('adding a provider without typing it out')
+  {
+    /*
+     * Adding a provider used to mean inventing an id, recognising an npm package
+     * and then typing three model ids, three context windows and six prices
+     * off a pricing page. The catalogue is what makes it one choice, and the
+     * merge is what lets the key fill in the rest without overwriting anything
+     * somebody set by hand.
+     */
+    const anthropic = PROVIDER_PRESETS.find((preset) => preset.id === 'anthropic')!
+    check('Anthropic comes with its models', Object.keys(anthropic.models ?? {}).length >= 3)
+    check(
+      'and with the prices the provider publishes',
+      claude.models?.['claude-opus-5']?.price?.input === 5 &&
+        claude.models?.['claude-opus-5']?.price?.output === 25,
+      claude.models?.['claude-opus-5']?.price
+    )
+    check(
+      'the ones whose line-up moves too fast ship no prices at all',
+      PROVIDER_PRESETS.filter((preset) => preset.id !== 'anthropic').every(
+        (preset) => preset.models === undefined
+      )
+    )
+    check(
+      'and every preset says which package talks to it',
+      PROVIDER_PRESETS.every((preset) => presetFor(preset.npm)?.id === preset.id)
+    )
+    check('a known model id is priced wherever it turns up', knownModel('claude-sonnet-5')?.price?.input === 2)
+    check('an unknown one is not invented', knownModel('gpt-nonexistent-9') === undefined)
+
+    const discovered = mergeDiscovered(
+      {
+        'claude-opus-5': {
+          id: 'claude-opus-5',
+          name: 'My Opus',
+          price: { input: 99, output: 99 },
+          iq: 1
+        }
+      },
+      [
+        { id: 'claude-opus-5', name: 'Claude Opus 5', contextWindow: 1_000_000 },
+        { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5' },
+        { id: 'some-new-model', name: 'Something New', contextWindow: 32_000 }
+      ]
+    )
+    check(
+      'what was configured by hand survives being asked again',
+      discovered.models['claude-opus-5'].price?.input === 99 &&
+        discovered.models['claude-opus-5'].name === 'My Opus' &&
+        discovered.models['claude-opus-5'].iq === 1,
+      discovered.models['claude-opus-5']
+    )
+    check(
+      'a missing context window is filled in',
+      discovered.models['claude-opus-5'].contextWindow === 1_000_000
+    )
+    check(
+      'a model the key offers is added, priced when we publish its price',
+      discovered.added.includes('claude-haiku-4-5') &&
+        discovered.models['claude-haiku-4-5'].price?.output === 5,
+      discovered.models['claude-haiku-4-5']
+    )
+    check(
+      'and one nobody publishes a price for arrives without one',
+      discovered.added.includes('some-new-model') &&
+        discovered.models['some-new-model'].price === undefined &&
+        discovered.models['some-new-model'].contextWindow === 32_000,
+      discovered.models['some-new-model']
+    )
+    check(
+      'a model the key no longer offers is left alone rather than dropped',
+      mergeDiscovered({ old: { id: 'old', name: 'Old' } }, []).models.old !== undefined
+    )
+  }
+
+  section('asking a provider what its key can see')
+  {
+    /*
+     * Three different APIs, three different shapes, one answer. Driven against
+     * a stubbed fetch: what matters is the request that goes out — the right
+     * URL and the right auth header for each provider — and that nothing about
+     * the key comes back in the result.
+     */
+    const asked: { url: string; headers: Record<string, string> }[] = []
+    const realFetch = globalThis.fetch
+    const stub = (body: unknown, status = 200): void => {
+      globalThis.fetch = (async (url: string | URL, init?: { headers?: Record<string, string> }) => {
+        asked.push({ url: String(url), headers: (init?.headers ?? {}) as Record<string, string> })
+        return {
+          ok: status >= 200 && status < 300,
+          status,
+          json: async () => body,
+          text: async () => JSON.stringify(body)
+        }
+      }) as unknown as typeof fetch
+    }
+
+    const withProvider = (npm: string, options: Record<string, unknown>): AppConfig => ({
+      ...defaultConfig(),
+      provider: {
+        p: { id: 'p', npm, name: 'P', options: options as never, models: {} }
+      }
+    })
+
+    stub({
+      data: [
+        { id: 'claude-opus-5', display_name: 'Claude Opus 5', max_input_tokens: 1_000_000, max_tokens: 128_000 },
+        { id: 'claude-haiku-4-5', display_name: 'Claude Haiku 4.5' }
+      ]
+    })
+    const anthropic = await discoverModels(withProvider('@ai-sdk/anthropic', { apiKey: 'k-anthropic' }), 'p')
+    check('Anthropic is asked at its own endpoint', asked[0]?.url.startsWith('https://api.anthropic.com/v1/models'), asked[0]?.url)
+    check(
+      'with the header it wants, and a version',
+      asked[0]?.headers['x-api-key'] === 'k-anthropic' && Boolean(asked[0]?.headers['anthropic-version']),
+      Object.keys(asked[0]?.headers ?? {})
+    )
+    check(
+      'and its answer becomes ids, names and windows',
+      anthropic.models.length === 2 &&
+        anthropic.models[0].id === 'claude-opus-5' &&
+        anthropic.models[0].contextWindow === 1_000_000,
+      anthropic.models
+    )
+    check('nothing in the answer mentions the key', !JSON.stringify(anthropic).includes('k-anthropic'))
+
+    asked.length = 0
+    stub({ data: [{ id: 'gpt-something' }, { id: 'o-something' }] })
+    const openai = await discoverModels(withProvider('@ai-sdk/openai', { apiKey: 'k-openai' }), 'p')
+    check('OpenAI is asked with a bearer token', asked[0]?.headers.Authorization === 'Bearer k-openai')
+    check('at its default base', asked[0]?.url === 'https://api.openai.com/v1/models', asked[0]?.url)
+    check('and returns the ids it lists', openai.models.map((m) => m.id).join(',') === 'gpt-something,o-something')
+
+    asked.length = 0
+    const compat = await discoverModels(
+      withProvider('@ai-sdk/openai-compatible', { apiKey: 'k-compat', baseURL: 'https://api.helmcode.com/v1/' }),
+      'p'
+    )
+    check(
+      'a compatible endpoint is asked where it lives, without a double slash',
+      asked[0]?.url === 'https://api.helmcode.com/v1/models',
+      asked[0]?.url
+    )
+    check('and answers in the same shape', compat.models.length === 2)
+
+    asked.length = 0
+    stub({ models: [{ name: 'models/gemini-x', displayName: 'Gemini X', inputTokenLimit: 1_048_576 }] })
+    const google = await discoverModels(withProvider('@ai-sdk/google', { apiKey: 'k-google' }), 'p')
+    check('Google takes its key in the query, as it insists', asked[0]?.url.includes('key=k-google'))
+    check(
+      'and its "models/" prefix is dropped, since a ref has its own',
+      google.models[0]?.id === 'gemini-x' && google.models[0]?.contextWindow === 1_048_576,
+      google.models
+    )
+
+    stub({ error: 'nope' }, 401)
+    const refused = await discoverModels(withProvider('@ai-sdk/anthropic', { apiKey: 'bad' }), 'p')
+    check('a refused key says so plainly', refused.error?.includes('refused the key') === true, refused.error)
+    check('and returns no models rather than half a list', refused.models.length === 0)
+
+    const keyless = await discoverModels(withProvider('@ai-sdk/anthropic', { apiKey: '' }), 'p')
+    check(
+      'no key at all is answered before any request',
+      keyless.error?.includes('store one first') === true,
+      keyless.error
+    )
+
+    globalThis.fetch = realFetch
   }
 
   section('a spend limit that belongs to the key')

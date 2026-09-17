@@ -16,6 +16,7 @@ import type {
   Skill
 } from '@shared/types'
 import type { Savings } from '@shared/savings'
+import type { DiscoveredModel } from '@shared/catalog'
 
 const api = {
   config: {
@@ -61,7 +62,10 @@ const api = {
   },
   models: {
     list: (): Promise<{ ref: string; label: string; provider: string }[]> =>
-      ipcRenderer.invoke('models:list')
+      ipcRenderer.invoke('models:list'),
+    /** What this provider's key can see. Ids, names and context windows; never prices. */
+    discover: (providerId: string): Promise<{ models: DiscoveredModel[]; error?: string }> =>
+      ipcRenderer.invoke('models:discover', providerId)
   },
   meter: {
     get: (): Promise<Record<string, MeterEntry>> => ipcRenderer.invoke('meter:get'),

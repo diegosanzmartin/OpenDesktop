@@ -10,6 +10,7 @@ import type {
   ProviderConfig
 } from '@shared/types'
 import { rememberSecret } from '@shared/errors'
+import { PROVIDER_PRESETS } from '@shared/catalog'
 
 /**
  * Everything the app stores lives under one root, and the root is overridable.
@@ -80,60 +81,18 @@ const DEFAULT_PERMISSIONS: Permissions = {
   denylist: [...CATASTROPHIC, ':(){*', 'mkfs*', 'dd if=*of=/dev/*', 'shutdown*', 'reboot*']
 }
 
-/**
- * Anthropic, as a second provider, with the prices it publishes.
- *
- * Priced in whole dollars per million tokens, copied from the pricing page so
- * nothing here needs arithmetic to check. The key is read from the keychain
- * like every other one; paste it under Settings → Models & providers. Declare
- * an allowance on the provider if the key has a spend limit — that is a
- * property of the credential, not of one model.
- */
-const CLAUDE_MODELS: ProviderConfig['models'] = {
-  'claude-opus-5': {
-    id: 'claude-opus-5',
-    name: 'Claude Opus 5',
-    contextWindow: 1_000_000,
-    maxOutputTokens: 64_000,
-    reasoning: true,
-    toolCall: true,
-    vision: true,
-    price: { input: 5, output: 25 },
-    iq: 5,
-    cost: 4
-  },
-  'claude-sonnet-5': {
-    id: 'claude-sonnet-5',
-    name: 'Claude Sonnet 5',
-    contextWindow: 1_000_000,
-    maxOutputTokens: 64_000,
-    reasoning: true,
-    toolCall: true,
-    vision: true,
-    price: { input: 2, output: 10 },
-    iq: 4,
-    cost: 3
-  },
-  'claude-haiku-4-5': {
-    id: 'claude-haiku-4-5',
-    name: 'Claude Haiku 4.5',
-    contextWindow: 200_000,
-    maxOutputTokens: 64_000,
-    toolCall: true,
-    vision: true,
-    price: { input: 1, output: 5 },
-    iq: 3,
-    cost: 2
-  }
-}
-
 const DEFAULT_PROVIDERS: Record<string, ProviderConfig> = {
+  /*
+   * Anthropic ships declared, from the catalogue the settings page adds providers
+   * from — one list of what this app knows about a provider, rather than a copy
+   * here and another there to drift apart.
+   */
   anthropic: {
     id: 'anthropic',
     npm: '@ai-sdk/anthropic',
     name: 'Anthropic',
     options: { apiKey: '{secret:anthropic}' },
-    models: CLAUDE_MODELS
+    models: PROVIDER_PRESETS.find((preset) => preset.id === 'anthropic')?.models ?? {}
   },
   helmcode: {
     id: 'helmcode',

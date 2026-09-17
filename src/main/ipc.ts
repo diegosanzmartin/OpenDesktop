@@ -12,6 +12,7 @@ import {
   writeConfigText
 } from './config'
 import { invalidateProviderCache, listModels } from './providers'
+import { discoverModels } from './discover'
 import { getRuntime, resetRuntimes, testEnvironment } from './runtime'
 import { cachedRtkStatus, forgetRtkStatus, rtkStatus } from './rtk'
 import { browse, dirIndex, forgetDirIndex, searchRoot } from './browse'
@@ -155,6 +156,16 @@ export function registerIpc(): void {
     deleteSecret(name)
     invalidateProviderCache()
   })
+
+  /**
+   * What models this key can see, asked of the provider itself.
+   *
+   * The alternative is typing ids by hand, which is how a provider ends up
+   * configured with a typo that only shows as a failed turn much later.
+   */
+  ipcMain.handle('models:discover', (_e, providerId: string) =>
+    discoverModels(resolvedConfig(), providerId)
+  )
 
   /** What has been spent on each model, for the allowance counters. */
   ipcMain.handle('meter:get', () => meterSnapshot())

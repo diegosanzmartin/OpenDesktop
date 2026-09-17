@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Check, CircleAlert, Eye, EyeOff, Plus, Trash2 } from 'lucide-react'
 import type { AppConfig, MeterEntry, ProviderConfig } from '@shared/types'
 import { formatCost } from '@shared/cost'
+import { PROVIDER_PRESETS, mergeDiscovered, presetFor } from '@shared/catalog'
 import { SWITCHES, savingsOf, type Savings } from '@shared/savings'
 import {
   BILLINGS,
@@ -18,17 +19,7 @@ import {
 import { useStore } from '../state/store'
 import { Hint, IconButton, Row, RowInput, RowSelect, RowSlider, Section, Toggle } from './settings-ui'
 
-const PRESETS: { id: string; label: string; npm: string; baseURL?: string }[] = [
-  {
-    id: 'openai-compatible',
-    label: 'OpenAI-compatible endpoint',
-    npm: '@ai-sdk/openai-compatible',
-    baseURL: 'https://'
-  },
-  { id: 'anthropic', label: 'Anthropic', npm: '@ai-sdk/anthropic' },
-  { id: 'openai', label: 'OpenAI', npm: '@ai-sdk/openai' },
-  { id: 'google', label: 'Google', npm: '@ai-sdk/google' }
-]
+const PRESETS = PROVIDER_PRESETS
 
 /**
  * A price as typed. An empty box means unknown, which is not the same as free,
@@ -198,6 +189,40 @@ function ProviderSection({
   const models = Object.values(provider.models)
   const usesBaseUrl = provider.npm === '@ai-sdk/openai-compatible' || provider.npm === '@ai-sdk/openai'
 
+  const [asking, setAsking] = useState(false)
+  const [found, setFound] = useState<string | null>(null)
+
+  /**
+   * Asks the provider which models this key can see, and adds what is missing.
+   *
+   * What is already configured is never overwritten — a price typed by hand or
+   * a slider moved outranks a list of ids. Prices do not come back from any of
+   * these endpoints; the ones this app publishes itself are filled in, and the
+   * rest are left empty, because an unknown price must not read as free.
+   */
+  const discover = async (): Promise<void> => {
+    setAsking(true)
+    setFound(null)
+    try {
+      const answer = await window.opendesktop.models.discover(provider.id)
+      if (answer.error) {
+        setFound(`Could not ask: ${answer.error}`)
+        return
+      }
+      const merged = mergeDiscovered(provider.models, answer.models)
+      onChange({ ...provider, models: merged.models })
+      setFound(
+        merged.added.length === 0
+          ? `${answer.models.length} models offered, all of them already here.`
+          : `Added ${merged.added.length} of the ${answer.models.length} models this key can see` +
+            `${merged.priced.length > 0 ? `, ${merged.priced.length} with prices this app publishes` : ''}` +
+            `. Anything without a price needs one typed in.`
+      )
+    } finally {
+      setAsking(false)
+    }
+  }
+
   const setModels = (
     list: {
       id: string
@@ -325,8 +350,22 @@ function ProviderSection({
 
       <Row
         label="Models"
-        description="Id, name, context window, then the price per million tokens in and out — copied straight from the provider's page. Mark a model as vision to let images be attached."
+        description={
+          found
+            ? found
+            : "Id, name, context window, then the price per million tokens in and out — copied straight from the provider's page. Mark a model as vision to let images be attached."
+        }
       >
+        {presetFor(provider.npm)?.discoverable ? (
+          <button
+            type="button"
+            disabled={asking}
+            onClick={() => void discover()}
+            className="border-ink-800 text-ink-300 hover:text-ink-100 hover:border-ink-600 rounded-lg border px-2.5 py-1.5 text-[12px] disabled:opacity-50"
+          >
+            {asking ? 'Asking…' : 'Ask the provider'}
+          </button>
+        ) : null}
         <IconButton
           title="Add a model"
           onClick={() => setModels([...models, { id: '', name: '' }])}
@@ -568,17 +607,27 @@ export function ModelsTab(): ReactNode {
     }))
   )
 
-  const startNew = (): void => {
+  /**
+   * Starting a new provider is one choice: which provider.
+   *
+   * It used to be three things the app already knew — an id to invent, an npm
+   * package to recognise, and then every model id, context window and price
+   * typed off a pricing page. Picking Anthropic now fills all of that in; the
+   * ones whose line-ups move too fast to ship arrive from the key instead.
+   */
+  const startFrom = (preset: (typeof PRESETS)[number]): void => {
     setCreating({
-      id: '',
-      name: '',
-      npm: PRESETS[0].npm,
-      options: { baseURL: PRESETS[0].baseURL, apiKey: '' },
-      models: {}
+      id: preset.id,
+      name: preset.label.split(' · ')[0],
+      npm: preset.npm,
+      options: { ...(preset.baseURL ? { baseURL: preset.baseURL } : {}), apiKey: '' },
+      models: preset.models ? { ...preset.models } : {}
     })
-    setNewId('')
+    setNewId(preset.id)
     setError(null)
   }
+
+  const startNew = (): void => startFrom(PRESETS[0])
 
   /** Commits the new provider once its id is something that can be a key. */
   const commitNew = (): void => {
@@ -1052,23 +1101,26 @@ export function ModelsTab(): ReactNode {
               mono
               width="w-[160px]"
               value={newId}
-              placeholder="helmcode"
+              placeholder={creating.id || 'helmcode'}
               onChange={setNewId}
             />
             <IconButton title="Create" tone="accent" disabled={!newId.trim()} onClick={commitNew}>
               <Check className="h-4 w-4" />
             </IconButton>
           </Row>
-          <Row label="Kind" description="Which SDK package talks to it.">
+          <Row
+            label="Which provider"
+            description={
+              creating.models && Object.keys(creating.models).length > 0
+                ? `${Object.keys(creating.models).length} models come with it, priced as the provider publishes them. Paste the key afterwards.`
+                : 'Its models are asked of the key once you have stored it — prices are typed once, from the page they are published on.'
+            }
+          >
             <RowSelect
               value={creating.npm}
               onChange={(event) => {
                 const preset = PRESETS.find((p) => p.npm === event.target.value) ?? PRESETS[0]
-                setCreating({
-                  ...creating,
-                  npm: preset.npm,
-                  options: { ...creating.options, baseURL: preset.baseURL }
-                })
+                startFrom(preset)
               }}
               options={PRESETS.map((preset) => ({ value: preset.npm, label: preset.label }))}
             />
