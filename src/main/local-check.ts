@@ -377,9 +377,12 @@ async function main(): Promise<void> {
   await runTurn({
     sessionId: madeSession.id,
     userText:
-      'Two steps, in this order. First run this exact command with bash: ' +
-      "grep -o 'port [0-9]*' notes.md > ports.txt . Then pass ports.txt to the deliver tool so I " +
-      'can open it. Say nothing else.'
+      'Make me two files from notes.md and hand them both over, in this order. ' +
+      '1) Write report.md with a heading and two bullet points saying which port the service ' +
+      'listens on and which team owns it. ' +
+      '2) Run this exact command to turn it into a PDF: cupsfilter report.md > report.pdf ' +
+      '3) Call the deliver tool once with both paths: report.md and report.pdf. ' +
+      'Say nothing else.'
   })
   const madeBlocks = store.listBlocks(madeSession.id)
   const delivered = madeBlocks.find((entry) => entry.tool === 'deliver' && entry.status === 'success')
@@ -412,23 +415,38 @@ async function main(): Promise<void> {
       depth: 0,
       signal: new AbortController().signal
     })
+    const write = tools.write as unknown as { execute: (input: unknown) => Promise<string> }
+    await write.execute({
+      path: 'report.md',
+      content:
+        '# Quote service\n\n- Listens on port 8443, behind the shared ingress.\n' +
+        '- Owned by the payments team (rota in #pay-oncall).\n'
+    })
     const bash = tools.bash as unknown as { execute: (input: unknown) => Promise<string> }
     await bash.execute({
-      command: "grep -o 'port [0-9]*' notes.md > ports.txt",
-      description: 'pull the port out of the notes'
+      command: 'cupsfilter report.md > report.pdf',
+      description: 'turn the report into a PDF'
     })
     const hand = tools.deliver as unknown as { execute: (input: unknown) => Promise<string> }
-    const out = await hand.execute({ paths: ['ports.txt'], note: 'the port, pulled out of the notes' })
-    check('handed over directly, then', out.includes('ports.txt'), out)
+    const out = await hand.execute({
+      paths: ['report.md', 'report.pdf'],
+      note: 'the runbook summary, as markdown and as a PDF'
+    })
+    check('handed over directly, then', out.includes('report.md') && out.includes('report.pdf'), out)
     console.log('       (the model would not do two steps in one turn, so the file was handed over here)')
   }
 
   if (keep) {
-    // The room has to survive too: a card fetches the file when it is clicked.
-    const kept = join(LOCAL_DIR, 'check-output')
+    /*
+     * The room has to survive too, because a card fetches the file when it is
+     * clicked — and one directory per run, because the first version used a
+     * single one and wiped it on the next run: the older conversation kept its
+     * card and the card pointed at nothing.
+     */
+    const kept = join(LOCAL_DIR, 'check-output', madeSession.id)
     rmSync(kept, { recursive: true, force: true })
     mkdirSync(kept, { recursive: true })
-    for (const name of ['notes.md', 'ports.txt']) {
+    for (const name of ['notes.md', 'report.md', 'report.pdf']) {
       if (existsSync(join(room, name))) writeFileSync(join(kept, name), readFileSync(join(room, name)))
     }
     for (const entry of store.listBlocks(madeSession.id)) {

@@ -35,7 +35,7 @@ import { createServer } from 'node:http'
 import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as store from './store'
@@ -58,6 +58,7 @@ import {
   scrubSecrets
 } from '@shared/errors'
 import { logError, logLine, logPath } from './log'
+import { previewUrl, startPreviewServer, stopPreviewServer } from './preview'
 import { connectMcp, statusOf, stopMcp } from './mcp'
 import { toolEnvironment } from './tool-env'
 import type { ExecOptions, ExecResult, Runtime } from './runtime'
@@ -6365,6 +6366,66 @@ async function main(): Promise<void> {
     history.clearHistory(hard.id)
     history.clearHistory(plain.id)
     saveConfig(defaultConfig())
+  }
+
+  section('looking at what was handed over')
+  {
+    /*
+     * The other half of a card: clicking it opens the file in the pane on the
+     * right, which is a local HTTP server handing the bytes to a webview. So
+     * the question is what it says the bytes are — Chromium renders a handful
+     * of types inline and tries to download the rest, which inside a webview
+     * is a blank page.
+     */
+    const room = join(tmpdir(), `opendesktop-preview-${Date.now()}`)
+    mkdirSync(room, { recursive: true })
+    writeFileSync(join(room, 'report.md'), '# Report\n\nThe service listens on port 8443.\n')
+    // A real PDF, made the way the agent can make one on a Mac.
+    await new Promise<void>((done) => {
+      const out = createWriteStream(join(room, 'report.pdf'))
+      const filter = spawn('cupsfilter', [join(room, 'report.md')], { stdio: ['ignore', 'pipe', 'ignore'] })
+      filter.stdout.pipe(out)
+      filter.on('close', () => done())
+      filter.on('error', () => done())
+    })
+
+    const port = await startPreviewServer()
+    check('the preview server is listening', port > 0, port)
+
+    const fetchPreview = async (name: string): Promise<{ type: string; body: string }> => {
+      const res = await fetch(previewUrl('local', join(room, name)))
+      // The whole page: the interesting part is the article at the end of it,
+      // not the style block at the top.
+      return { type: res.headers.get('content-type') ?? '', body: await res.text() }
+    }
+
+    const markdown = await fetchPreview('report.md')
+    check(
+      'a markdown file comes back as a page, not as a download',
+      markdown.type.startsWith('text/html'),
+      markdown.type
+    )
+    check(
+      'with its heading rendered rather than its source shown',
+      markdown.body.includes('<h1>Report</h1>') && markdown.body.includes('port 8443'),
+      markdown.body.slice(-160)
+    )
+
+    if (existsSync(join(room, 'report.pdf')) && statSync(join(room, 'report.pdf')).size > 0) {
+      const pdf = await fetchPreview('report.pdf')
+      check(
+        'a PDF comes back as a PDF, which is what the webview renders',
+        pdf.type === 'application/pdf',
+        pdf.type
+      )
+      check('and is one', pdf.body.startsWith('%PDF-'), pdf.body.slice(0, 8))
+    }
+
+    const missing = await fetch(previewUrl('local', join(room, 'nope.pdf')))
+    check('and a path that is not there says so rather than hanging', missing.status === 404, missing.status)
+
+    stopPreviewServer()
+    rmSync(room, { recursive: true, force: true })
   }
 
   section('tools from somewhere else')
