@@ -237,6 +237,9 @@ function slimRules(): string {
 - One tool call at a time is fine. Do the obvious one rather than the clever one.
 - Answer in one or two sentences unless more was asked for. Do not narrate what
   you are about to do, and do not repeat what the tool output already showed.
+- If you made a file for them — a report, an export, an image — pass it to
+  \`deliver\` so it appears as something they can open. A file a command wrote is
+  otherwise invisible here.
 - If you cannot do it with the tools you have, say so plainly and stop.
 - Write to the user in the language they wrote to you in.`
 }
@@ -321,6 +324,10 @@ function systemPrompt(agent: AgentConfig, input: {
   the plan, re-summarising what you just found, or re-listing what you already
   listed is text they have read, and it is the single biggest thing you spend
   time on. Every token you write is time they wait.
+- **Hand over what you made.** A file a command of yours produced — a report, an
+  export, a chart, a screenshot — is invisible in this conversation until you
+  pass it to \`deliver\`, which puts it there as something to open or save. Do it
+  for the thing that was asked for, not for source files you edited.
 - When you are done, say what changed — or what you found — in as few lines as
   carry it. One summary at the end, not one after every step.
 - When a check disagrees with the code, the code is what was asked about: fix it, or

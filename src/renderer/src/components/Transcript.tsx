@@ -226,6 +226,12 @@ function chunkParts(parts: MessagePart[], blocks: Record<string, Block>): Chunk[
     if (part.type === 'block') {
       const block = part.blockId ? blocks[part.blockId] : undefined
       if (!block) continue
+      /*
+       * A handed-over file is drawn as its card, once, at the end of the
+       * message. Drawing the call as well would say the same thing twice, in
+       * the smaller of the two ways.
+       */
+      if (block.tool === 'deliver' && block.status === 'success') continue
       const last = out[out.length - 1]
       if (last && last.kind === 'tools') last.blocks.push(block)
       else out.push({ kind: 'tools', blocks: [block] })
@@ -358,11 +364,36 @@ export function EditedFiles({ blocks }: { blocks: Block[] }): ReactNode {
     return [...map.values()]
   }, [blocks])
 
-  // A document is something to open; a source file is something to diff.
-  const documents = written.filter((file) => isDocument(file.path))
-  const files = written.filter((file) => !isDocument(file.path))
+  /*
+   * What was handed over, which is not the same as what was written.
+   *
+   * A report is made by a script, not by the write tool, so this used to know
+   * nothing about the one file the whole turn was for: it sat on disk and the
+   * conversation said "Ran 4 commands". A handed-over file always gets a card,
+   * whatever its extension — that is what handing it over means.
+   */
+  const delivered = useMemo(() => {
+    const map = new Map<string, { path: string; environmentId: string }>()
+    for (const block of blocks) {
+      if (block.tool !== 'deliver' || block.status !== 'success') continue
+      const paths = (block.input as { paths?: unknown })?.paths
+      if (!Array.isArray(paths)) continue
+      for (const path of paths) {
+        if (typeof path === 'string') map.set(path, { path, environmentId: block.environmentId })
+      }
+    }
+    return [...map.values()]
+  }, [blocks])
 
-  if (written.length === 0) return null
+  // A document is something to open; a source file is something to diff.
+  const handed = new Set(delivered.map((file) => file.path))
+  const documents = [
+    ...delivered,
+    ...written.filter((file) => isDocument(file.path) && !handed.has(file.path))
+  ]
+  const files = written.filter((file) => !isDocument(file.path) && !handed.has(file.path))
+
+  if (written.length === 0 && delivered.length === 0) return null
 
   return (
     <>

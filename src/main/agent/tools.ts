@@ -31,6 +31,7 @@ import {
   workerModelRef
 } from '../shunt'
 import { costOf } from '@shared/cost'
+import { fileSize } from '@shared/documents'
 import { scrubSecrets } from '@shared/errors'
 import { record as meterRecord, spentLookup } from '../meter'
 
@@ -782,6 +783,75 @@ export function createTools(ctx: ToolContext): ToolSet {
               .join('\n')
             store.appendBlockOutput(ctx.sessionId, block.id, body)
             return { output: body || '(empty directory)' }
+          }
+        )
+      }
+    })
+  }
+
+  if (enabled(ctx, 'deliver')) {
+    tools.deliver = tool({
+      /*
+       * The one way a finished file reaches the person.
+       *
+       * The interface already turns a document into a card you can open and
+       * save — but it only knew about files written with `write` or `edit`,
+       * which is not how a report gets made. A thirteen-page PDF and a
+       * two-hundred-row CSV come out of a script the agent ran, and those sat
+       * on disk with nothing in the conversation to say they existed. This is
+       * the agent saying so.
+       */
+      description:
+        'Hand finished files to the person: each one appears in the conversation as a card they ' +
+        'can open or save. Use it for the thing they asked for — a report, an export, a chart, a ' +
+        'screenshot — however it was made. A file written by a script you ran is invisible until ' +
+        'you hand it over. Not for source files you changed: those are already in the diff.',
+      inputSchema: z.object({
+        paths: z
+          .array(z.string())
+          .min(1)
+          .max(10)
+          .describe('Paths to the finished files, in the order they should be shown.'),
+        note: z
+          .string()
+          .optional()
+          .describe('One short line about what they are, when the names do not say it.')
+      }),
+      execute: async ({ paths, note }) => {
+        const resolved = paths.map((path) => ctx.runtime.resolve(ctx.cwd, path))
+        return withBlock(
+          ctx,
+          {
+            tool: 'deliver',
+            title: note ?? resolved.map((path) => shortPath(ctx.cwd, path)).join(', '),
+            subtitle: `${resolved.length} file${resolved.length === 1 ? '' : 's'}`,
+            input: { paths: resolved, note }
+          },
+          async () => {
+            /*
+             * Every one of them has to be there. Handing over a path that does
+             * not exist produces a card that fails when it is clicked, which
+             * is a worse answer than saying so now — and a wrong path is the
+             * likeliest mistake here, since the file was made by something
+             * else.
+             */
+            const sized = await Promise.all(
+              resolved.map(async (path) => ({
+                path,
+                stat: await ctx.runtime.stat(path).catch(() => null)
+              }))
+            )
+            const missing = sized.filter((entry) => entry.stat === null).map((entry) => entry.path)
+            if (missing.length > 0) {
+              throw new Error(
+                `Nothing at ${missing.join(', ')}. Check the path — a file made by a command is ` +
+                  `wherever that command put it, not necessarily in the working directory.`
+              )
+            }
+            const lines = sized.map(
+              (entry) => `${shortPath(ctx.cwd, entry.path)} — ${fileSize(entry.stat?.size ?? 0)}`
+            )
+            return { output: lines.join('\n') }
           }
         )
       }

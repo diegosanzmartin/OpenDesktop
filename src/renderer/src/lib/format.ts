@@ -78,7 +78,8 @@ export const TOOL_LABEL: Record<string, string> = {
   glob: 'Find files',
   list: 'List',
   fetch: 'Fetch',
-  task: 'Subagent'
+  task: 'Subagent',
+  deliver: 'Files for you'
 }
 
 const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*[A-Za-z]`, 'g')

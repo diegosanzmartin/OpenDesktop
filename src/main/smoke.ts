@@ -6366,6 +6366,86 @@ async function main(): Promise<void> {
     saveConfig(defaultConfig())
   }
 
+  section('handing a finished file over')
+  {
+    /*
+     * The gap this closes: the interface turned a document into a card you
+     * could open, but only knew about files written with `write` or `edit` —
+     * and a report is written by a script, so the one file a whole turn was
+     * for sat on disk with nothing in the conversation to say it existed.
+     */
+    const room = join(tmpdir(), `opendesktop-deliver-${Date.now()}`)
+    mkdirSync(room, { recursive: true })
+    writeFileSync(join(room, 'report.csv'), 'account,verdict\nalice,clear\n')
+    writeFileSync(join(room, 'chart.png'), 'not really a png')
+
+    const ctx: ToolContext = {
+      config: loadConfig(),
+      agent: { id: 'build', name: 'Build', description: '', mode: 'all' },
+      permissions: { ...loadConfig().permissions, read: 'allow' },
+      sessionId: session.id,
+      environmentId: 'local',
+      cwd: room,
+      runtime: getRuntime('local'),
+      savings: { rtk: false, shunt: false },
+      modelRef: 'mock/mock',
+      currentMessageId: () => 'm-deliver',
+      depth: 0,
+      signal: new AbortController().signal
+    }
+    const tools = createTools(ctx)
+    check('the tool is there to be called', 'deliver' in tools, Object.keys(tools).length)
+
+    const deliver = tools.deliver as unknown as {
+      execute: (input: unknown) => Promise<string>
+    }
+    const handed = await deliver.execute({
+      paths: ['report.csv', 'chart.png'],
+      note: 'the triage export and its chart'
+    })
+    check('it answers with what it handed over, and how big', /report\.csv — \d+ B/.test(handed), handed)
+    check('both of them', /chart\.png/.test(handed), handed)
+
+    const block = store
+      .listBlocks(session.id)
+      .filter((entry) => entry.tool === 'deliver')
+      .slice(-1)[0]
+    check('and records a block the transcript can draw cards from', Boolean(block), block?.tool)
+    check(
+      'with absolute paths, since the card has to fetch them',
+      ((block?.input as { paths?: string[] })?.paths ?? []).every((path) => path.startsWith('/')),
+      (block?.input as { paths?: string[] })?.paths
+    )
+    check('and the note as its title', block?.title === 'the triage export and its chart', block?.title)
+
+    /*
+     * A path that is not there is the likeliest mistake, because the file was
+     * made by something else — and a card that fails when it is clicked is a
+     * worse answer than saying so now.
+     */
+    const wrong = await deliver
+      .execute({ paths: ['report.csv', 'nope.pdf'] })
+      .then(() => null, (err: Error) => err)
+    check('a path that is not there is refused', wrong !== null, wrong?.message)
+    check(
+      'naming which one, and where a command puts its output',
+      /nope\.pdf/.test(wrong?.message ?? '') && /working directory/.test(wrong?.message ?? ''),
+      wrong?.message
+    )
+    check(
+      'and nothing was handed over on that call',
+      store.listBlocks(session.id).filter((entry) => entry.tool === 'deliver' && entry.status === 'success')
+        .length === 1
+    )
+
+    // The card is chosen by what a document is, and a handed-over file is one
+    // whatever its extension: that is what handing it over means.
+    check('a csv is a document', isDocument('/x/report.csv') && isDocument('/x/a.pdf'))
+    check('a source file is not', !isDocument('/x/runner.ts'))
+
+    rmSync(room, { recursive: true, force: true })
+  }
+
   section('a switch with nowhere cheaper to send the work')
   {
     /*

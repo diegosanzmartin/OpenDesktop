@@ -19,6 +19,7 @@ import { ApprovalCard } from './src/components/ApprovalCard'
 import { Mentions } from './src/components/Markdown'
 import { DocumentCard } from './src/components/DocumentCard'
 import { Composer } from './src/components/Composer'
+import { EditedFiles } from './src/components/Transcript'
 import { ContextMeter } from './src/components/ContextMeter'
 import { EffortDial } from './src/components/EffortDial'
 import { ModelsTab } from './src/components/ModelsTab'
@@ -1376,6 +1377,66 @@ async function run(): Promise<void> {
       'and the ring did not',
       /%/.test(narrow.querySelector('[data-footer-right]')?.textContent ?? ''),
       narrow.querySelector('[data-footer-right]')?.textContent
+    )
+  }
+
+
+  section('a file handed over')
+  {
+    /*
+     * What the person actually sees when a turn produces something: a card,
+     * not a line saying "Ran 4 commands". The call itself is not drawn — it
+     * would say the same thing twice, in the smaller of the two ways.
+     */
+    const handed = block({
+      tool: 'deliver',
+      title: 'the triage export and its chart',
+      subtitle: '2 files',
+      input: { paths: ['/home/user/w/report.csv', '/home/user/w/chart.png'] },
+      output: 'report.csv — 91.5 KB\nchart.png — 45.3 KB'
+    })
+    const host = mount(<EditedFiles blocks={[handed]} />, 620)
+    await settle()
+    const text = host.textContent ?? ''
+    check('both files get a card', text.includes('report.csv') && text.includes('chart.png'), text)
+    check(
+      'each said by its kind, which is what you look for',
+      text.includes('CSV') && text.includes('PNG'),
+      text
+    )
+    check(
+      'and there is no diff row for them — a report is not a diff',
+      !text.includes('+') || !/\+\d/.test(text),
+      text
+    )
+
+    // A file that was written by the write tool and also handed over is one
+    // card, not a card and a row.
+    const both = mount(
+      <EditedFiles
+        blocks={[
+          handed,
+          block({ tool: 'write', input: { path: '/home/user/w/report.csv' }, added: 12 })
+        ]}
+      />,
+      620
+    )
+    await settle()
+    const twice = (both.textContent ?? '').split('report.csv').length - 1
+    check('a file written and handed over is shown once', twice === 1, twice)
+
+    // And a source file it edited on the way is still a diff row.
+    const mixed = mount(
+      <EditedFiles
+        blocks={[handed, block({ tool: 'edit', input: { path: '/home/user/w/src/runner.ts' }, added: 8, removed: 2 })]}
+      />,
+      620
+    )
+    await settle()
+    check(
+      'while a source file it touched is still a diff',
+      (mixed.textContent ?? '').includes('runner.ts') && /\+8/.test(mixed.textContent ?? ''),
+      mixed.textContent
     )
   }
 
