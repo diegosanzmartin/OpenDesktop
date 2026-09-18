@@ -4,6 +4,7 @@ import {
   stepCountIs,
   streamText,
   type ModelMessage,
+  type ToolSet,
   type UserContent
 } from 'ai'
 import {
@@ -33,7 +34,7 @@ import { record as meterRecord, spentLookup } from '../meter'
 import { logError, logLine } from '../log'
 import * as store from '../store'
 import * as history from '../history'
-import { MUTATING_TOOLS, createTools, type ToolContext } from './tools'
+import { MUTATING_TOOLS, createTools, externalTools, type ToolContext } from './tools'
 import { expandSkills } from '../skills'
 import { modelAcceptsImages, readAttachment } from '../attachments'
 
@@ -1044,6 +1045,15 @@ export async function runTurn(input: TurnInput): Promise<string> {
      * does less than you hoped. Everything else it touches is the step
      * ceiling, which every model has.
      */
+    /*
+     * The tool servers this session switched on, if any. Resolved here because
+     * the line that opens the turn reports them: what a turn was carrying is
+     * the first thing to know when it cost more than it should have.
+     */
+    const servers = (session.mcp ?? [])
+      .map((id) => config.mcp?.[id])
+      .filter((server): server is NonNullable<typeof server> => Boolean(server))
+
     const effort = effortLevel(session.effort)
     const thinks = canReason(declared)
     const reasoning = thinks
@@ -1083,7 +1093,8 @@ export async function runTurn(input: TurnInput): Promise<string> {
     logLine(
       'info',
       `turn ${session.id} start agent=${agent.id} model=${modelRef} env=${session.environmentId}` +
-        `${slim ? ' harness=slim' : ''} effort=${effort.label.toLowerCase()}` +
+        `${slim ? ' harness=slim' : ''}${servers.length > 0 ? ` mcp=${servers.map((server) => server.id).join(',')}` : ''}` +
+        ` effort=${effort.label.toLowerCase()}` +
         `${reasoning ? `(${effort.reasoning})` : ''} steps<=${stepCeiling}` +
         `${input.depth ? ` depth=${input.depth}` : ''} cwd=${session.cwd}`
     )
@@ -1130,8 +1141,10 @@ export async function runTurn(input: TurnInput): Promise<string> {
           autoApprove,
           // The same work at the same effort: a subagent asked to think less
           // than the conversation that delegated to it is a surprise nobody
-          // asked for.
+          // asked for. And the same tool servers, since the brief it was given
+          // may be the half of the work that needs them.
           effort: session.effort,
+          mcp: session.mcp,
           parentSessionId: session.id
         })
         store.updateSession(child.id, { taskLabel: description })
@@ -1162,7 +1175,19 @@ export async function runTurn(input: TurnInput): Promise<string> {
       }
     }
 
-    const tools = createTools(ctx)
+    /*
+     * ...and whatever this session switched on, which is nothing by default.
+     *
+     * Merged after the app's own tools so a server cannot shadow `bash` by
+     * calling something `bash`: the names are prefixed with the server's id
+     * anyway, and this is the second lock on the same door. A server that is
+     * declared but unreachable contributes nothing and says why in its status,
+     * rather than offering a tool that fails when it is called.
+     */
+    const tools: ToolSet = {
+      ...(servers.length > 0 ? await externalTools(ctx, servers) : {}),
+      ...createTools(ctx)
+    }
 
     const userMessage = buildUserMessage(
       config,

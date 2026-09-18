@@ -155,14 +155,22 @@ export function deniedSegment(permissions: Permissions, command: string): string
  */
 export function withoutPrompts(permissions: Permissions): Permissions {
   const lift = (mode: PermissionMode): PermissionMode => (mode === 'ask' ? 'allow' : mode)
-  return {
-    ...permissions,
-    bash: lift(permissions.bash),
-    edit: lift(permissions.edit),
-    write: lift(permissions.write),
-    read: lift(permissions.read),
-    fetch: lift(permissions.fetch)
+  /*
+   * Every mode, not a list of them.
+   *
+   * This used to name the five keys it knew about, so a key added later was
+   * silently left asking — and an auto-approving session that hits one waits
+   * for an answer from a dialog nobody is looking at, for as long as the turn
+   * ceiling allows. That is how `mcp` arrived: the turn simply stopped. A
+   * `deny` still denies, which is the whole point of lifting only `ask`.
+   */
+  const out: Permissions = { ...permissions }
+  for (const [key, value] of Object.entries(permissions)) {
+    if (value === 'ask' || value === 'allow' || value === 'deny') {
+      ;(out as unknown as Record<string, PermissionMode>)[key] = lift(value)
+    }
   }
+  return out
 }
 
 export interface PermissionDecision {

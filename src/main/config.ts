@@ -62,6 +62,7 @@ const DEFAULT_PERMISSIONS: Permissions = {
   write: 'ask',
   read: 'allow',
   fetch: 'ask',
+  mcp: 'ask',
   allowlist: [
     'ls *',
     'cat *',

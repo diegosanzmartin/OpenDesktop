@@ -31,6 +31,8 @@ import {
   workerModelRef
 } from '../shunt'
 import { costOf } from '@shared/cost'
+import { mcpTools } from '../mcp'
+import type { McpServerConfig } from '@shared/types'
 import { fileSize } from '@shared/documents'
 import { scrubSecrets } from '@shared/errors'
 import { record as meterRecord, spentLookup } from '../meter'
@@ -268,6 +270,47 @@ async function rtkUsable(ctx: ToolContext): Promise<string | null> {
   if (!ctx.savings.rtk) return null
   const status = await rtkStatus(ctx.environmentId, ctx.runtime, ctx.cwd)
   return status.state === 'ready' ? (status.bin ?? 'rtk') : null
+}
+
+/**
+ * The tools of the servers a session switched on, wrapped in this app's rules.
+ *
+ * The wrapping is the point: a call to somebody else's server gets a block in
+ * the transcript like everything else, an approval prompt of its own by
+ * default, and its output scrubbed of this app's own secrets on the way back.
+ * A tool nobody can see is a tool nobody can refuse.
+ */
+export async function externalTools(
+  ctx: ToolContext,
+  servers: McpServerConfig[]
+): Promise<ToolSet> {
+  return mcpTools(servers, async (input) =>
+    withBlock(
+      ctx,
+      {
+        tool: 'mcp',
+        title: input.tool,
+        subtitle: input.serverName,
+        input: { server: input.serverId, tool: input.tool, arguments: input.args },
+        permission: {
+          key: 'mcp',
+          detail: `${input.serverName}: ${input.tool}`,
+          /*
+           * The arguments, because that is the decision. "Let the ticket
+           * tracker do something" is not a question anybody can answer; "close
+           * PROJ-412" is.
+           */
+          preview: `${input.description}\n\n${JSON.stringify(input.args, null, 2)}`
+        }
+      },
+      async (block) => {
+        const answer = await input.call()
+        const safe = scrubSecrets(answer)
+        store.appendBlockOutput(ctx.sessionId, block.id, safe)
+        return { output: safe }
+      }
+    )
+  )
 }
 
 export function createTools(ctx: ToolContext): ToolSet {

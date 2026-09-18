@@ -155,6 +155,41 @@ export interface ProviderConfig {
   models: Record<string, ProviderModelConfig>
 }
 
+/**
+ * A tool server the app can talk to, declared once and switched on per session.
+ *
+ * Per session rather than globally because a tool is a schema in the prefix of
+ * every step of every turn: a list of a hundred and thirty of them is fifty
+ * thousand tokens resent all day, and a schema that changes throws away the
+ * provider's cache of everything in front of it. So a server is a thing you
+ * turn on for the conversation that needs it.
+ */
+export interface McpServerConfig {
+  id: string
+  name: string
+  /** The command that speaks MCP on its stdin and stdout. */
+  command: string
+  args?: string[]
+  /** Added to the environment the command gets, which never has this app's keys in it. */
+  env?: Record<string, string>
+  cwd?: string
+}
+
+/** What a declared server turned out to be, once somebody asked it. */
+export interface McpStatus {
+  id: string
+  name: string
+  state: 'idle' | 'starting' | 'ready' | 'failed'
+  tools: { name: string; description: string }[]
+  /**
+   * What its schemas add to the prefix of every step of every turn. The number
+   * that decides whether a server is worth switching on, which is why it is
+   * measured rather than described.
+   */
+  tokens: number
+  message?: string
+}
+
 export type PermissionMode = 'ask' | 'allow' | 'deny'
 
 export interface Permissions {
@@ -163,6 +198,13 @@ export interface Permissions {
   write: PermissionMode
   read: PermissionMode
   fetch: PermissionMode
+  /**
+   * Calling a tool that belongs to an MCP server, which is a program this app
+   * did not write doing something it did not define. Asked by default, and
+   * asked per tool rather than per server: "connect the ticket tracker" is not
+   * the same decision as "close this ticket".
+   */
+  mcp: PermissionMode
   /** Commands matching these glob-ish patterns skip the bash prompt. */
   allowlist: string[]
   /** Commands matching these are always refused. */
@@ -218,6 +260,8 @@ export interface AppConfig {
   provider: Record<string, ProviderConfig>
   environment: Record<string, EnvironmentConfig>
   agent: Record<string, AgentConfig>
+  /** Tool servers, declared here and enabled per session. */
+  mcp?: Record<string, McpServerConfig>
   permissions: Permissions
   maxSteps: number
   /** What a session starts with, unless it says otherwise. */
@@ -378,6 +422,13 @@ export interface Session {
    * elsewhere and is not quietly rewritten by a slider.
    */
   effort?: number
+  /**
+   * The ids of the tool servers this session has switched on.
+   *
+   * Empty or absent means none, which is what every session is until somebody
+   * chooses: what is not here is not in the prefix and is not paid for.
+   */
+  mcp?: string[]
   status: SessionStatus
   createdAt: number
   updatedAt: number

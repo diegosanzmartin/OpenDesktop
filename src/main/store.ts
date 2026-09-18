@@ -92,6 +92,8 @@ export function createSession(input: {
   autoApprove?: boolean
   /** How hard to try, 1 to 5. Unset means the middle. */
   effort?: number
+  /** Ids of the tool servers this session carries. */
+  mcp?: string[]
   parentSessionId?: string
 }): Session {
   const now = Date.now()
@@ -105,6 +107,7 @@ export function createSession(input: {
     savings: input.savings,
     autoApprove: input.autoApprove,
     effort: input.effort,
+    mcp: input.mcp,
     status: 'idle',
     createdAt: now,
     updatedAt: now,

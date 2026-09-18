@@ -18,6 +18,7 @@ import { killAllTerminals } from './terminal'
 import { killAllBackgroundTasks } from './background'
 import { startWedgeWatch, stopWedgeWatch } from './watchdog'
 import { disposeLocalModel } from './local-model'
+import { disposeMcp } from './mcp'
 import { deliverQueuedFollowUps } from './agent/runner'
 
 const isDev = !app.isPackaged
@@ -148,5 +149,7 @@ app.on('before-quit', () => {
   stopPreviewServer()
   // The local model server is this app's child process, so it goes when we do.
   disposeLocalModel()
+  // ...and so is every tool server a session switched on.
+  disposeMcp()
   void disposeRuntimes()
 })

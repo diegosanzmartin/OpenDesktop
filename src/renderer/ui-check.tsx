@@ -21,6 +21,8 @@ import { DocumentCard } from './src/components/DocumentCard'
 import { Composer } from './src/components/Composer'
 import { EditedFiles } from './src/components/Transcript'
 import { ContextMeter } from './src/components/ContextMeter'
+import { ToolServerChip } from './src/components/ToolServerChip'
+import { ToolServersTab } from './src/components/ToolServersTab'
 import { EffortDial } from './src/components/EffortDial'
 import { ModelsTab } from './src/components/ModelsTab'
 import { RoutingTab } from './src/components/RoutingTab'
@@ -86,6 +88,19 @@ const REPLIES: Record<string, unknown> = {
    * differently. The local model's row is the reason: it reads a status of its
    * own, and getting the keychain's back made the section render as nothing.
    */
+  'mcp.list': [
+    {
+      id: 'tickets',
+      name: 'Tickets',
+      state: 'ready',
+      tools: [
+        { name: 'search', description: 'Search tickets.' },
+        { name: 'comment', description: 'Comment on one.' }
+      ],
+      tokens: 1_900
+    },
+    { id: 'broken', name: 'Broken', state: 'failed', tools: [], tokens: 0, message: 'no such command' }
+  ],
   'meter.get': {
     'helmcode/glm5.3-flash': { day: 412_000, month: 3_140_000, dayCost: 0, monthCost: 0 },
     'anthropic/claude-sonnet-5': { day: 9_400, month: 148_000, dayCost: 0.21, monthCost: 3.42 },
@@ -169,7 +184,7 @@ function seedStore(): void {
       agent: {
         infra: { id: 'infra', name: 'Infrastructure', description: 'IaC', mode: 'all', color: '#d3a84c' }
       },
-      permissions: { bash: 'ask', edit: 'ask', write: 'ask', read: 'allow', fetch: 'ask', allowlist: [], denylist: [] },
+      permissions: { bash: 'ask', edit: 'ask', write: 'ask', read: 'allow', fetch: 'ask', mcp: 'ask', allowlist: [], denylist: [] },
       maxSteps: 60,
       smoothStreamMs: 0,
       theme: 'dark'
@@ -1440,6 +1455,68 @@ async function run(): Promise<void> {
     )
   }
 
+
+  section('tool servers, per session')
+  {
+    /*
+     * The reason this is a per-session choice and not a setting: a tool is a
+     * schema in the prefix of every step of every turn. So the chip is absent
+     * when nothing is declared, and when something is, it says what carrying
+     * it costs.
+     */
+    const withNone = mount(<ToolServerChip session={session} />, 300)
+    await settle()
+    check(
+      'no chip at all when no server is declared',
+      (withNone.textContent ?? '') === '',
+      withNone.textContent
+    )
+
+    const before = useStore.getState().config!
+    useStore.setState({
+      config: {
+        ...before,
+        mcp: {
+          tickets: { id: 'tickets', name: 'Tickets', command: 'npx', args: ['-y', 'x'] },
+          broken: { id: 'broken', name: 'Broken', command: 'nope' }
+        }
+      }
+    })
+
+    const off = mount(<ToolServerChip session={session} />, 300)
+    await settle()
+    check('with servers declared it says none are on', (off.textContent ?? '').includes('No tools'), off.textContent)
+
+    off.querySelector('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await settle()
+    const panel = off.textContent ?? ''
+    check('the panel lists them', panel.includes('Tickets') && panel.includes('Broken'), panel)
+    check(
+      'with what each one weighs, which is the whole point',
+      panel.includes('2 tools · 1.9k tokens'),
+      panel
+    )
+    check(
+      'and says plainly when one would not start',
+      panel.includes('would not start'),
+      panel
+    )
+    check('and that off costs nothing', panel.includes('Off is free'), panel)
+
+    const on = mount(<ToolServerChip session={{ ...session, mcp: ['tickets'] }} />, 300)
+    await settle()
+    check('a session carrying one says so', (on.textContent ?? '').includes('1 server'), on.textContent)
+    on.querySelector('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await settle()
+    check(
+      'and the total it adds to every step is on the header',
+      /\+1\.9k \/ step/.test(on.textContent ?? ''),
+      on.textContent
+    )
+
+    useStore.setState({ config: before })
+  }
+
   console.log(`\n${checks - failures.length}/${checks} checks passed`)
   if (failures.length > 0) {
     console.log(`\nfailed:\n${failures.map((f) => `  - ${f}`).join('\n')}`)
@@ -1628,6 +1705,26 @@ async function run(): Promise<void> {
             } as Session
           }
         />
+      </div>
+    )
+    await settle()
+  }
+
+  // The tool servers page, with one that answered and one that would not start.
+  if (new URLSearchParams(location.search).get('shot') === 'tools') {
+    document.body.innerHTML = ''
+    useStore.setState({
+      config: {
+        ...useStore.getState().config!,
+        mcp: {
+          tickets: { id: 'tickets', name: 'Tickets', command: 'npx', args: ['-y', 'tickets-mcp'] },
+          broken: { id: 'broken', name: 'Broken', command: 'nope', args: [] }
+        }
+      }
+    })
+    mount(
+      <div className="w-[760px] p-6">
+        <ToolServersTab />
       </div>
     )
     await settle()

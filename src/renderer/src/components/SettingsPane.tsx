@@ -8,6 +8,7 @@ import {
   FolderOpen,
   Save,
   Search,
+  Plug,
   Server,
   Sparkles
 } from 'lucide-react'
@@ -17,9 +18,10 @@ import { RoutingTab } from './RoutingTab'
 import { EnvironmentsTab } from './EnvironmentsTab'
 import { AgentsTab } from './AgentsTab'
 import { SkillsTab } from './SkillsTab'
+import { ToolServersTab } from './ToolServersTab'
 import { Hint, IconButton, Row, Section, Toggle } from './settings-ui'
 
-type Page = 'providers' | 'routing' | 'agents' | 'skills' | 'environments' | 'config'
+type Page = 'providers' | 'routing' | 'agents' | 'skills' | 'tools' | 'environments' | 'config'
 
 interface NavItem {
   id: Page
@@ -58,6 +60,12 @@ const GROUPS: { title: string; items: NavItem[] }[] = [
         label: 'Skills',
         icon: <Sparkles className="h-4 w-4" />,
         keywords: 'slash command import claude'
+      },
+      {
+        id: 'tools',
+        label: 'Tool servers',
+        icon: <Plug className="h-4 w-4" />,
+        keywords: 'mcp server tool external stdio command connector schema tokens'
       }
     ]
   },
@@ -287,6 +295,7 @@ export function SettingsPane(): ReactNode {
           ) : null}
           {page === 'agents' ? <AgentsTab /> : null}
           {page === 'skills' ? <SkillsTab /> : null}
+          {page === 'tools' ? <ToolServersTab /> : null}
           {page === 'environments' ? <EnvironmentsTab /> : null}
           {page === 'providers' ? <ModelsTab /> : null}
           {page === 'routing' ? <RoutingTab /> : null}

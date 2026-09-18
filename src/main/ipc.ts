@@ -17,6 +17,7 @@ import { getRuntime, resetRuntimes, testEnvironment } from './runtime'
 import { cachedRtkStatus, forgetRtkStatus, rtkStatus } from './rtk'
 import { browse, dirIndex, forgetDirIndex, searchRoot } from './browse'
 import { installRtk } from './rtk'
+import { connectMcp, statusOf, stopMcp } from './mcp'
 import {
   installLocalModel,
   localStatus,
@@ -237,6 +238,31 @@ export function registerIpc(): void {
     const status = removeLocalModel(modelId)
     invalidateProviderCache()
     return status
+  })
+
+  /*
+   * Tool servers: declared in the config, connected on demand, and measured.
+   *
+   * `mcp:connect` is what the settings page presses to find out what a server
+   * offers and what its schemas weigh — the number that decides whether it is
+   * worth switching on for a session.
+   */
+  ipcMain.handle('mcp:list', () =>
+    Object.values(rawConfig().mcp ?? {}).map((server) => statusOf(server))
+  )
+  ipcMain.handle('mcp:connect', async (_e, id: string) => {
+    const server = resolvedConfig().mcp?.[id]
+    if (!server) return null
+    const status = await connectMcp(server)
+    logLine(
+      status.state === 'ready' ? 'info' : 'warn',
+      `mcp ${id}: ${status.state}${status.state === 'ready' ? ` (${status.tools.length} tools, ~${status.tokens} tokens)` : `: ${status.message ?? ''}`}`
+    )
+    return status
+  })
+  ipcMain.handle('mcp:stop', (_e, id?: string) => {
+    stopMcp(id)
+    return Object.values(rawConfig().mcp ?? {}).map((server) => statusOf(server))
   })
 
   /* ---------- models & environments ---------- */

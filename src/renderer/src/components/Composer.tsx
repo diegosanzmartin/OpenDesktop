@@ -20,6 +20,7 @@ import type { Attachment, Session, Skill } from '@shared/types'
 import { isManager } from '@shared/types'
 import { SWITCHES, savingsLabel, savingsOf, type Savings } from '@shared/savings'
 import { ContextMeter } from './ContextMeter'
+import { ToolServerChip } from './ToolServerChip'
 import { EffortDial } from './EffortDial'
 import { workerModelRef } from '@shared/routing'
 import { mentionToken } from '@shared/mentions'
@@ -808,6 +809,10 @@ export function Composer({ session }: { session: Session }): ReactNode {
           <SavingsChip session={session} />
 
           <ApprovalChip session={session} />
+
+          {/* Only when servers are declared: a control for a thing you do not
+              have is furniture. */}
+          <ToolServerChip session={session} />
           </div>
 
           {/* The right-hand end: what is answering, how hard it is trying, and

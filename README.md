@@ -273,6 +273,53 @@ thinking budget, OpenAI and Google their own spelling of the same thing, and an
 OpenAI-compatible endpoint gets `reasoning_effort`. A model that declares nothing is sent
 nothing rather than a guess that might fail the request.
 
+### Files it made for you
+
+A document the agent produces gets a card in the conversation — its kind, its name, its
+weight, a click to preview it in the pane on the right and an arrow to keep a copy. That used
+to cover only files written with the `write` tool, which is not how a report gets made: a PDF
+or a CSV comes out of a script the agent ran, and those sat on disk with nothing in the
+conversation to say they existed. The turn said "Ran 4 commands".
+
+So there is a `deliver` tool, and the rules tell the agent to use it for the thing that was
+asked for. A handed-over file always gets a card, whatever its extension, and the call itself
+is not drawn — the card already says it. A path that is not there is refused with the name of
+the one that is missing, because a file made by a command is wherever that command put it.
+
+### Tool servers (MCP)
+
+A server is a program that offers the agent tools this app did not write, over MCP. They are
+declared under **Settings → Tool servers** and switched on **per session**, from the line under
+the composer. Nothing is on by default, and a session that has switched nothing on starts no
+processes and sends no schemas.
+
+That is the whole design, and the reason is a number. A tool is a schema resent in the prefix
+of *every step of every turn*: one desktop client's list comes to 130 tools and **57,800
+tokens** — four times this app's entire prompt, and more than the whole context window of the
+model that runs on this machine. Worse, a schema that changes invalidates the provider's cache
+of everything in front of it, which is what turns a 63k conversation into 4k of charged input.
+So the settings page measures each server — *"2 tools · 1.9k tokens on every step"* — and the
+session picker adds up what the conversation is carrying.
+
+The client is this app's own: MCP over stdio is newline-delimited JSON-RPC with three methods,
+so it is two hundred lines rather than a dependency, and a server's JSON Schema goes to the
+model as it is. What the wrapper adds is this app's rules — a block in the transcript like any
+other tool, its output scrubbed of this app's own secrets, and an approval **per call** rather
+than per server, because connecting a ticket tracker is not the same decision as closing a
+ticket. Tools are named `<server>__<tool>`, so nothing from a server can shadow `bash`. A
+server that will not start contributes no tools and says why, instead of offering one that
+fails when it is called.
+
+```json
+"mcp": {
+  "tickets": { "name": "Tickets", "command": "npx", "args": ["-y", "some-mcp-server"] }
+}
+```
+
+The command runs on this machine with the same environment an agent's commands get — this
+app's own API keys stripped out of it — plus whatever the server was declared with. Only stdio
+servers for now: the HTTP-and-OAuth ones are a different problem and are not here yet.
+
 ## Remote execution over SSH
 
 **Settings → Remote hosts** adds and edits them. Give the environment an id, press *Add remote

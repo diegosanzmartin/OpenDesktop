@@ -30,7 +30,7 @@ import {
   startBackgroundTask
 } from './background'
 import { buildUserMessage } from './agent/runner'
-import { createTools, type ToolContext } from './agent/tools'
+import { createTools, externalTools, type ToolContext } from './agent/tools'
 import { createServer } from 'node:http'
 import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
@@ -58,6 +58,7 @@ import {
   scrubSecrets
 } from '@shared/errors'
 import { logError, logLine, logPath } from './log'
+import { connectMcp, statusOf, stopMcp } from './mcp'
 import { toolEnvironment } from './tool-env'
 import type { ExecOptions, ExecResult, Runtime } from './runtime'
 import {
@@ -6364,6 +6365,252 @@ async function main(): Promise<void> {
     history.clearHistory(hard.id)
     history.clearHistory(plain.id)
     saveConfig(defaultConfig())
+  }
+
+  section('tools from somewhere else')
+  {
+    /*
+     * A real server, speaking the real protocol, written into a temp file: the
+     * client is two hundred lines of JSON-RPC and the only way to know it
+     * speaks it is to speak it back. It answers initialize, lists two tools
+     * and one of them fails on purpose.
+     */
+    const room = join(tmpdir(), `opendesktop-mcp-${Date.now()}`)
+    mkdirSync(room, { recursive: true })
+    const serverPath = join(room, 'server.mjs')
+    writeFileSync(
+      serverPath,
+      [
+        "process.stderr.write('starting up\\n')",
+        "let tail = ''",
+        "const send = (m) => process.stdout.write(JSON.stringify(m) + '\\n')",
+        "process.stdin.on('data', (chunk) => {",
+        '  tail += chunk.toString()',
+        '  for (;;) {',
+        "    const at = tail.indexOf('\\n')",
+        '    if (at === -1) break',
+        '    const line = tail.slice(0, at).trim()',
+        '    tail = tail.slice(at + 1)',
+        '    if (!line) continue',
+        '    const msg = JSON.parse(line)',
+        "    if (msg.method === 'initialize') {",
+        "      send({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: msg.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'probe', version: '1' } } })",
+        "    } else if (msg.method === 'tools/list') {",
+        '      send({ jsonrpc: "2.0", id: msg.id, result: { tools: [',
+        '        { name: "ping", description: "Answer with pong and whatever it was given.", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },',
+        '        { name: "explode", description: "Always fails.", inputSchema: { type: "object", properties: {} } }',
+        '      ] } })',
+        "    } else if (msg.method === 'tools/call') {",
+        "      if (msg.params.name === 'explode') {",
+        '        send({ jsonrpc: "2.0", id: msg.id, result: { isError: true, content: [{ type: "text", text: "as promised" }] } })',
+        '      } else {',
+        '        send({ jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text: "pong: " + (msg.params.arguments?.text ?? "") }] } })',
+        '      }',
+        '    }',
+        '  }',
+        '})'
+      ].join('\n')
+    )
+
+    const server = {
+      id: 'probe',
+      name: 'Probe',
+      command: process.execPath,
+      args: [serverPath]
+    }
+
+    const status = await connectMcp(server)
+    check('a server it can start comes back ready', status.state === 'ready', status)
+    check('with the tools it offers', status.tools.map((entry) => entry.name).join(',') === 'explode,ping' || status.tools.map((entry) => entry.name).join(',') === 'ping,explode', status.tools)
+    check(
+      'and what those schemas weigh, which is the number that decides anything',
+      status.tokens > 10 && status.tokens < 400,
+      status.tokens
+    )
+    check('its startup chatter on stderr is not mistaken for a message', !status.message, status.message)
+
+    const ctx: ToolContext = {
+      config: { ...loadConfig(), mcp: { probe: server } },
+      agent: { id: 'build', name: 'Build', description: '', mode: 'all' },
+      permissions: { ...loadConfig().permissions, mcp: 'allow' },
+      sessionId: session.id,
+      environmentId: 'local',
+      cwd: room,
+      runtime: getRuntime('local'),
+      savings: { rtk: false, shunt: false },
+      modelRef: 'mock/mock',
+      currentMessageId: () => 'm-mcp',
+      depth: 0,
+      signal: new AbortController().signal
+    }
+
+    const external = await externalTools(ctx, [server])
+    check(
+      'the tools are named for the server they came from',
+      'probe__ping' in external && 'probe__explode' in external,
+      Object.keys(external)
+    )
+    check('and cannot shadow one of ours', !('bash' in external))
+
+    const ping = external.probe__ping as unknown as {
+      execute: (input: unknown) => Promise<string>
+    }
+    const answer = await ping.execute({ text: 'hello' })
+    check('calling one gets the server’s answer back', answer === 'pong: hello', answer)
+
+    const mcpBlock = store
+      .listBlocks(session.id)
+      .filter((entry) => entry.tool === 'mcp')
+      .slice(-1)[0]
+    check('it happened in a block, like everything else', Boolean(mcpBlock), mcpBlock?.tool)
+    check(
+      'which says which server and which tool, and with what',
+      mcpBlock?.subtitle === 'Probe' &&
+        mcpBlock?.title === 'ping' &&
+        JSON.stringify(mcpBlock?.input).includes('hello'),
+      { title: mcpBlock?.title, subtitle: mcpBlock?.subtitle, input: mcpBlock?.input }
+    )
+
+    const boom = external.probe__explode as unknown as {
+      execute: (input: unknown) => Promise<string>
+    }
+    const failed = await boom.execute({}).then(() => null, (err: Error) => err)
+    check('a tool that fails fails here too, with what it said', /as promised/.test(failed?.message ?? ''), failed?.message)
+
+    /*
+     * The whole reason this is per session: a session that switched nothing on
+     * sends nothing. Not fewer tools — none, and no process started either.
+     */
+    const none = await externalTools(ctx, [])
+    check('a session with no servers gets no external tools at all', Object.keys(none).length === 0)
+
+    // And a server that cannot start says so instead of hanging a turn.
+    const broken = await connectMcp({
+      id: 'broken',
+      name: 'Broken',
+      command: join(room, 'does-not-exist'),
+      args: []
+    })
+    check('a server that cannot be started is reported failed', broken.state === 'failed', broken)
+    check('with something to go on', (broken.message ?? '').length > 0, broken.message)
+    check('and offers no tools', broken.tools.length === 0)
+
+    /*
+     * And the seam that matters: a whole turn, with the model calling the
+     * server's tool by its prefixed name. Everything above tests the client;
+     * this tests that what the client produces is what the runner hands to the
+     * model — and that a session which asked for nothing is handed nothing.
+     */
+    const callingModel = (name: string): LanguageModel => {
+      let step = 0
+      return new MockLanguageModelV4({
+        doStream: async (params: Record<string, unknown>) => {
+          step++
+          const offered = ((params.tools as { name: string }[]) ?? []).map((entry) => entry.name)
+          if (step === 1 && offered.includes(name)) {
+            return {
+              stream: new ReadableStream({
+                start(controller) {
+                  controller.enqueue({ type: 'stream-start', warnings: [] })
+                  const input = JSON.stringify({ text: 'from a turn' })
+                  controller.enqueue({ type: 'tool-input-start', id: 'x-1', toolName: name })
+                  controller.enqueue({ type: 'tool-input-delta', id: 'x-1', delta: input })
+                  controller.enqueue({ type: 'tool-input-end', id: 'x-1' })
+                  controller.enqueue({ type: 'tool-call', toolCallId: 'x-1', toolName: name, input })
+                  controller.enqueue(finish('tool-calls', 20, 6))
+                  controller.close()
+                }
+              })
+            }
+          }
+          return {
+            stream: new ReadableStream({
+              start(controller) {
+                controller.enqueue({ type: 'stream-start', warnings: [] })
+                controller.enqueue({ type: 'text-start', id: 't1' })
+                controller.enqueue({
+                  type: 'text-delta',
+                  id: 't1',
+                  delta: offered.includes(name) ? 'it answered' : 'no such tool here'
+                })
+                controller.enqueue({ type: 'text-end', id: 't1' })
+                controller.enqueue(finish('stop', 12, 3))
+                controller.close()
+              }
+            })
+          }
+        }
+      }) as unknown as LanguageModel
+    }
+
+    saveConfig({ ...defaultConfig(), mcp: { probe: server } })
+    providers.setModelResolverOverride(() => ({
+      providerId: 'mock',
+      modelId: 'mock',
+      label: 'Mock',
+      model: callingModel('probe__ping')
+    }))
+
+    const carrying = store.createSession({
+      title: 'mcp turn',
+      cwd: room,
+      environmentId: 'local',
+      agentId: 'build',
+      model: 'mock/mock',
+      mcp: ['probe'],
+      autoApprove: true
+    })
+    history.clearHistory(carrying.id)
+    await runTurn({ sessionId: carrying.id, userText: 'ask the probe' })
+    const called = store.listBlocks(carrying.id).filter((entry) => entry.tool === 'mcp')
+    check('a turn can call a tool the session switched on', called.length === 1, called.map((b) => b.title))
+    /*
+     * Found by this test hanging for ten minutes: auto-approve named the five
+     * permission keys it knew about, so a key added later kept asking and the
+     * turn waited on a dialog nobody was looking at.
+     */
+    check(
+      'and auto-approve covers a permission key nobody thought about when it was written',
+      withoutPrompts({ ...defaultConfig().permissions, mcp: 'ask' }).mcp === 'allow' &&
+        withoutPrompts({ ...defaultConfig().permissions, mcp: 'deny' }).mcp === 'deny'
+    )
+    check(
+      'and gets the server’s answer into the block',
+      (called[0]?.output ?? '').includes('pong: from a turn'),
+      called[0]?.output
+    )
+
+    const carryingNone = store.createSession({
+      title: 'mcp turn off',
+      cwd: room,
+      environmentId: 'local',
+      agentId: 'build',
+      model: 'mock/mock',
+      autoApprove: true
+    })
+    history.clearHistory(carryingNone.id)
+    await runTurn({ sessionId: carryingNone.id, userText: 'ask the probe' })
+    check(
+      'a session that switched nothing on is not offered it at all',
+      store.listBlocks(carryingNone.id).filter((entry) => entry.tool === 'mcp').length === 0 &&
+        (store
+          .listMessages(carryingNone.id)
+          .slice(-1)[0]
+          ?.parts.map((part) => part.text ?? '')
+          .join(' ') ?? '').includes('no such tool here')
+    )
+
+    providers.setModelResolverOverride(null)
+    store.deleteSession(carrying.id)
+    store.deleteSession(carryingNone.id)
+    history.clearHistory(carrying.id)
+    history.clearHistory(carryingNone.id)
+    saveConfig(defaultConfig())
+
+    stopMcp()
+    check('stopping it takes it back to idle', statusOf(server).state === 'idle', statusOf(server))
+
+    rmSync(room, { recursive: true, force: true })
   }
 
   section('handing a finished file over')

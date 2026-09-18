@@ -10,6 +10,7 @@ import type {
   Board,
   FileEntry,
   Message,
+  McpStatus,
   MeterEntry,
   RepoChanges,
   Session,
@@ -82,6 +83,12 @@ const api = {
     stop: (): Promise<LocalModelStatus> => ipcRenderer.invoke('local:stop'),
     remove: (modelId?: string): Promise<LocalModelStatus> =>
       ipcRenderer.invoke('local:remove', modelId)
+  },
+  /** Tool servers: what is declared, what it offers, and what it weighs. */
+  mcp: {
+    list: (): Promise<McpStatus[]> => ipcRenderer.invoke('mcp:list'),
+    connect: (id: string): Promise<McpStatus | null> => ipcRenderer.invoke('mcp:connect', id),
+    stop: (id?: string): Promise<McpStatus[]> => ipcRenderer.invoke('mcp:stop', id)
   },
   rtk: {
     status: (
