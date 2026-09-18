@@ -19,7 +19,8 @@ export default defineConfig({
         smoke: resolve('src/main/smoke.ts'),
         'secrets-check': resolve('src/main/secrets-check.ts'),
         'ui-check': resolve('src/main/ui-check.ts'),
-        'local-check': resolve('src/main/local-check.ts')
+        'local-check': resolve('src/main/local-check.ts'),
+        'mcp-check': resolve('src/main/mcp-check.ts')
       },
       external: [...Object.keys(pkg.dependencies), 'ai/test', 'electron', 'cpu-features', /^node:/],
       output: { format: 'esm', entryFileNames: '[name].mjs' }

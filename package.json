@@ -16,7 +16,8 @@
     "icon": "electron scripts/make-icon.cjs",
     "secrets:check": "vite build -c vite.smoke.config.ts && OPENDESKTOP_HOME=\"${TMPDIR:-/tmp}/opendesktop-smoke\" electron out/smoke/secrets-check.mjs",
     "ui:check": "vite build -c vite.uicheck.config.ts && vite build -c vite.smoke.config.ts && electron out/smoke/ui-check.mjs",
-    "local:check": "vite build -c vite.smoke.config.ts && node out/smoke/local-check.mjs"
+    "local:check": "vite build -c vite.smoke.config.ts && node out/smoke/local-check.mjs",
+    "mcp:check": "vite build -c vite.smoke.config.ts && node out/smoke/mcp-check.mjs"
   },
   "build": {
     "appId": "com.opendesktop.app",

@@ -320,6 +320,21 @@ The command runs on this machine with the same environment an agent's commands g
 app's own API keys stripped out of it — plus whatever the server was declared with. Only stdio
 servers for now: the HTTP-and-OAuth ones are a different problem and are not here yet.
 
+`pnpm mcp:check` talks to a real server the way the app does, and is the thing to run before
+switching one on:
+
+```bash
+pnpm mcp:check -- npx -y @modelcontextprotocol/server-filesystem /tmp/room
+pnpm mcp:check -- --call list_directory --args '{"path":"/tmp/room"}' -- npx -y @modelcontextprotocol/server-filesystem /tmp/room
+pnpm mcp:check -- --turn 'what is in that folder?' -- npx -y @modelcontextprotocol/server-filesystem /tmp/room
+```
+
+Measured on that server: **14 tools, ~2,000 tokens on every step**, ready in 0.7s — and a
+session's prefix went from 2k to 4k with it switched on, which is the measurement and the
+reality agreeing. `--turn` runs the whole path on a real model; run it under `electron` instead
+of `node` when the model's key is in the keychain, and note that a key stored by the packaged
+app cannot be read by a dev build.
+
 ## Remote execution over SSH
 
 **Settings → Remote hosts** adds and edits them. Give the environment an id, press *Add remote

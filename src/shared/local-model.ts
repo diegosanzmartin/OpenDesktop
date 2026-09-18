@@ -167,6 +167,11 @@ export const LOCAL_MODELS: LocalModelSpec[] = [
   }
 ]
 
+/** The model ref a local model is declared as, for anything that needs one. */
+export function localModelRef(id?: string): string {
+  return `${LOCAL_PROVIDER_ID}/${localSpec(id).id}`
+}
+
 export function localSpec(id?: string): LocalModelSpec {
   return LOCAL_MODELS.find((spec) => spec.id === id) ?? LOCAL_MODELS[0]
 }
