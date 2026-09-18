@@ -821,7 +821,7 @@ async function run(): Promise<void> {
     // Typing four letters, the way the deep folder would actually be found.
     const react = Object.keys(box).find((key) => key.startsWith('__reactProps')) as string
     ;(box as unknown as Record<string, { onChange: (e: unknown) => void }>)[react].onChange({
-      target: { value: 'hgsj' }
+      target: { value: 'agci' }
     })
     await settle()
     const results = host.textContent ?? ''

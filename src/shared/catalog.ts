@@ -39,7 +39,7 @@ export interface ProviderPreset {
  * and the output cap come from the same place; `iq` and `cost` are this app's
  * own relative judgements and are meant to be adjusted.
  */
-const CLAUDE_MODELS: Record<string, ProviderModelConfig> = {
+const ANTHROPIC_MODELS: Record<string, ProviderModelConfig> = {
   'claude-opus-5': {
     id: 'claude-opus-5',
     name: 'Claude Opus 5',
@@ -84,7 +84,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     keyName: 'Anthropic API key',
     npm: '@ai-sdk/anthropic',
     discoverable: true,
-    models: CLAUDE_MODELS
+    models: ANTHROPIC_MODELS
   },
   {
     /*

@@ -638,13 +638,13 @@ async function main(): Promise<void> {
   check('an allowed tool stays allowed', roundTrip.tools?.bash === true)
 
   // Some tools write the allow-list as a comma-separated string.
-  const claudeStyle = parseAgentFile(
+  const commaSeparated = parseAgentFile(
     'imported',
     ['---', 'name: Imported', 'description: From elsewhere.', 'tools: read, grep, glob', '---', '', 'Prompt.'].join('\n')
   )
-  check('a comma-separated tool list is understood', claudeStyle.tools?.read === true)
-  check('tools outside that list are off', claudeStyle.tools?.write === false, claudeStyle.tools)
-  check('a file with no mode defaults to usable everywhere', claudeStyle.mode === 'all')
+  check('a comma-separated tool list is understood', commaSeparated.tools?.read === true)
+  check('tools outside that list are off', commaSeparated.tools?.write === false, commaSeparated.tools)
+  check('a file with no mode defaults to usable everywhere', commaSeparated.mode === 'all')
   check('a file with no frontmatter still yields a prompt', parseAgentFile('x', 'Just a prompt.').prompt === 'Just a prompt.')
   check('streaming is smoothed by default', config.smoothStreamMs > 0, config.smoothStreamMs)
   check(
@@ -4588,9 +4588,9 @@ async function main(): Promise<void> {
     check('Anthropic comes with its models', Object.keys(anthropic.models ?? {}).length >= 3)
     check(
       'and with the prices the provider publishes',
-      claude.models?.['claude-opus-5']?.price?.input === 5 &&
-        claude.models?.['claude-opus-5']?.price?.output === 25,
-      claude.models?.['claude-opus-5']?.price
+      anthropic.models?.['claude-opus-5']?.price?.input === 5 &&
+        anthropic.models?.['claude-opus-5']?.price?.output === 25,
+      anthropic.models?.['claude-opus-5']?.price
     )
     check(
       'the ones whose line-up moves too fast ship no prices at all',
@@ -4756,8 +4756,8 @@ async function main(): Promise<void> {
     const priced: AppConfig = {
       ...defaultConfig(),
       provider: {
-        claude: {
-          id: 'claude',
+        vendor: {
+          id: 'vendor',
           npm: '@ai-sdk/anthropic',
           name: 'Vendor',
           options: {},
@@ -4796,32 +4796,32 @@ async function main(): Promise<void> {
     const reread = normalizeConfig(JSON.parse(JSON.stringify(priced)) as Record<string, unknown>)
     check(
       "a key's spend limit survives a config load",
-      reread.provider.claude.allowance?.usd === 400,
-      reread.provider.claude.allowance
+      reread.provider.vendor.allowance?.usd === 400,
+      reread.provider.vendor.allowance
     )
     saveConfig(priced)
     const roundTripped = loadConfig(true)
     check(
       'and a save and load round trip',
-      roundTripped.provider.claude.allowance?.usd === 400,
-      roundTripped.provider.claude.allowance
+      roundTripped.provider.vendor.allowance?.usd === 400,
+      roundTripped.provider.vendor.allowance
     )
     check(
       'with the models under it still sharing it rather than each having one',
-      Object.values(roundTripped.provider.claude.models).every((m) => m.allowance === undefined) &&
-        Object.keys(roundTripped.provider.claude.models).every(
-          (id) => allowanceFor(roundTripped, 'claude', roundTripped.provider.claude.models[id])?.usd === 400
+      Object.values(roundTripped.provider.vendor.models).every((m) => m.allowance === undefined) &&
+        Object.keys(roundTripped.provider.vendor.models).every(
+          (id) => allowanceFor(roundTripped, 'vendor', roundTripped.provider.vendor.models[id])?.usd === 400
         ),
       Object.fromEntries(
-        Object.entries(roundTripped.provider.claude.models).map(([id, m]) => [id, m.allowance])
+        Object.entries(roundTripped.provider.vendor.models).map(([id, m]) => [id, m.allowance])
       )
     )
 
     resetMeter()
-    const big = priced.provider.claude.models.big
+    const big = priced.provider.vendor.models.big
     check(
       'the limit on the key covers a model that declares none of its own',
-      allowanceFor(priced, 'claude', big)?.usd === 400
+      allowanceFor(priced, 'vendor', big)?.usd === 400
     )
     /*
      * A budget is a cap, not a discount. Included *tokens* are free at the
@@ -4832,18 +4832,18 @@ async function main(): Promise<void> {
      */
     check(
       'money inside a budget still costs what the model costs',
-      marginalCost(big, { tokens: 0, cost: 0 }, allowanceFor(priced, 'claude', big)) === costTier(big),
-      marginalCost(big, { tokens: 0, cost: 0 }, allowanceFor(priced, 'claude', big))
+      marginalCost(big, { tokens: 0, cost: 0 }, allowanceFor(priced, 'vendor', big)) === costTier(big),
+      marginalCost(big, { tokens: 0, cost: 0 }, allowanceFor(priced, 'vendor', big))
     )
     check(
       'so the cheapest model under one budget is the one that gets the reading',
-      pickModel(priced, 'delegate')?.ref === 'claude/small',
+      pickModel(priced, 'delegate')?.ref === 'vendor/small',
       pickModel(priced, 'delegate')
     )
     check(
       'while a quota of tokens is free at the margin, as before',
       marginalCost(
-        priced.provider.claude.models.small,
+        priced.provider.vendor.models.small,
         { tokens: 0, cost: 0 },
         { tokens: 1_000_000, period: 'month' }
       ) === CHEAPEST
@@ -4851,31 +4851,31 @@ async function main(): Promise<void> {
 
     // 1M in and 1M out on the small model: $1 + $5 of the $400.
     const smallUsage = { input: 1_000_000, output: 1_000_000 }
-    const smallCost = costOf(priced, 'claude/small', smallUsage)
+    const smallCost = costOf(priced, 'vendor/small', smallUsage)
     check('a priced model turns tokens into money', smallCost === 6, smallCost)
-    meterRecord('claude/small', { ...smallUsage, cost: smallCost ?? 0 })
-    check('and the meter keeps both', spentOn('claude/small', 'month').cost === 6, spentOn('claude/small', 'month'))
+    meterRecord('vendor/small', { ...smallUsage, cost: smallCost ?? 0 })
+    check('and the meter keeps both', spentOn('vendor/small', 'month').cost === 6, spentOn('vendor/small', 'month'))
     check(
       'what one model spent counts against the whole key',
-      spentLookup(priced)('claude/big')?.cost === 6,
-      spentLookup(priced)('claude/big')
+      spentLookup(priced)('vendor/big')?.cost === 6,
+      spentLookup(priced)('vendor/big')
     )
 
     // Up to $380: nine tenths of the budget is gone, so the next token is no
     // longer free, but it is not full price either.
-    meterRecord('claude/big', { input: 0, output: 0, cost: 374 })
-    const nearly = spentLookup(priced)('claude/big')
+    meterRecord('vendor/big', { input: 0, output: 0, cost: 374 })
+    const nearly = spentLookup(priced)('vendor/big')
     check('the spend adds up across the key', nearly?.cost === 380, nearly)
     check(
       'and the fraction is what the settings page shows',
-      Math.round((allowanceUsed(allowanceFor(priced, 'claude', big), nearly) ?? 0) * 100) === 95
+      Math.round((allowanceUsed(allowanceFor(priced, 'vendor', big), nearly) ?? 0) * 100) === 95
     )
 
-    meterRecord('claude/big', { input: 0, output: 0, cost: 30 })
-    const over = spentLookup(priced)('claude/big')
+    meterRecord('vendor/big', { input: 0, output: 0, cost: 30 })
+    const over = spentLookup(priced)('vendor/big')
     check(
       'and over the cap nothing changes about the price either',
-      marginalCost(big, over, allowanceFor(priced, 'claude', big)) === costTier(big),
+      marginalCost(big, over, allowanceFor(priced, 'vendor', big)) === costTier(big),
       { spent: over, tier: costTier(big) }
     )
     // Its own allowance means its own spend: $404 against the model, not the
@@ -4883,10 +4883,10 @@ async function main(): Promise<void> {
     const own: AppConfig = {
       ...priced,
       provider: {
-        claude: {
-          ...priced.provider.claude,
+        vendor: {
+          ...priced.provider.vendor,
           models: {
-            ...priced.provider.claude.models,
+            ...priced.provider.vendor.models,
             big: { ...big, allowance: { usd: 500, period: 'month' } }
           }
         }
@@ -4894,8 +4894,8 @@ async function main(): Promise<void> {
     }
     check(
       'a model with its own allowance is judged on its own spend',
-      spentLookup(own)('claude/big')?.cost === 404 && spentLookup(priced)('claude/big')?.cost === 410,
-      { own: spentLookup(own)('claude/big'), shared: spentLookup(priced)('claude/big') }
+      spentLookup(own)('vendor/big')?.cost === 404 && spentLookup(priced)('vendor/big')?.cost === 410,
+      { own: spentLookup(own)('vendor/big'), shared: spentLookup(priced)('vendor/big') }
     )
 
     /*
@@ -4906,7 +4906,7 @@ async function main(): Promise<void> {
     const unusable: AppConfig = {
       ...priced,
       provider: {
-        claude: { ...priced.provider.claude, options: { apiKey: '' } }
+        vendor: { ...priced.provider.vendor, options: { apiKey: '' } }
       }
     }
     check('a provider with an empty key is not routed to', candidates(unusable).length === 0)
@@ -4914,7 +4914,7 @@ async function main(): Promise<void> {
       'while one that reads its own environment is left alone',
       candidates({
         ...priced,
-        provider: { claude: { ...priced.provider.claude, options: {} } }
+        provider: { vendor: { ...priced.provider.vendor, options: {} } }
       }).length === 2
     )
     resetMeter()
@@ -5189,11 +5189,11 @@ async function main(): Promise<void> {
 
     // The folder from the screenshot, typed the way anyone would type it.
     const deep = '/home/user/w/sec/acme--global--core/acme--global--core~identity'
-    const match = fuzzyMatch(deep, 'hgsj')
+    const match = fuzzyMatch(deep, 'agci')
     check('initials find a long hyphenated name', match !== null, deep)
     check(
       'and they land on the word starts, not the first letters going',
-      match !== null && match.positions.every((at) => 'hgsj'.includes(deep[at].toLowerCase())),
+      match !== null && match.positions.every((at) => 'agci'.includes(deep[at].toLowerCase())),
       match?.positions
     )
 
@@ -5212,9 +5212,9 @@ async function main(): Promise<void> {
     )
     check(
       'a query spanning segments still finds the deep one',
-      ranked(tree, 'soarjump')[0] ===
+      ranked(tree, 'coreident')[0] ===
         '/home/user/w/sec/acme--global--core/acme--global--core~identity',
-      ranked(tree, 'soarjump')
+      ranked(tree, 'coreident')
     )
     check(
       'the last segment counts for more than a parent',
@@ -5314,9 +5314,9 @@ async function main(): Promise<void> {
     check('nor is .git', !index.dirs.some((dir) => dir.includes('.git')))
     check(
       'and typing four letters finds the deep one',
-      fuzzyFilter(index.dirs, 'hgsj')[0]?.value ===
+      fuzzyFilter(index.dirs, 'agci')[0]?.value ===
         join(root, 'w/sec/acme--global--core/acme--global--core~identity'),
-      fuzzyFilter(index.dirs, 'hgsj')
+      fuzzyFilter(index.dirs, 'agci')
         .slice(0, 3)
         .map((match) => match.value)
     )
