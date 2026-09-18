@@ -29,6 +29,7 @@ import { meterSnapshot, resetMeter } from './meter'
 import { logLine, logPath } from './log'
 import { describeError } from '@shared/errors'
 import { readForEditor, writeFromEditor } from './editor'
+import { describeNeighbours } from './coordination'
 import { listSshAliases } from './runtime/ssh'
 import * as store from './store'
 import * as history from './history'
@@ -749,6 +750,14 @@ export function registerIpc(): void {
     await runtime.connect()
     return runtime.readFile(path)
   })
+
+  /**
+   * Who else has changed the files this conversation has changed. Asked by the
+   * line above the composer, on open and whenever a claim is recorded.
+   */
+  ipcMain.handle('coordination:neighbours', (_e, sessionId: string) =>
+    describeNeighbours(sessionId)
+  )
 
   /* The editor pane. Its failures are values; see `editor.ts` for why. */
   ipcMain.handle('editor:read', (_e, environmentId: string, path: string) =>

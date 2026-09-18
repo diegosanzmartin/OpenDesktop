@@ -6,6 +6,7 @@ import { isRunning, runTurn } from './agent/runner'
 import { resolvedConfig } from './config'
 import {
   assessRelated,
+  clearClaims,
   coordinationNote,
   forgetJudgements,
   type Relatedness
@@ -222,7 +223,11 @@ function tickSoon(): void {
 export function startScheduler(): void {
   stopScheduler()
   unsubscribe = bus.subscribe((event) => {
-    if (event.type === 'session.deleted') forgetJudgements(event.sessionId)
+    if (event.type === 'session.deleted') {
+      forgetJudgements(event.sessionId)
+      // Its writes are nobody's neighbour now, and the registry is on disk.
+      clearClaims(event.sessionId)
+    }
     if (event.type === 'session.updated' || event.type === 'session.created') {
       // A task that stopped running cannot be overlapping anything any more.
       if (event.type === 'session.updated' && event.session.status === 'done') {

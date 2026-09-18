@@ -199,8 +199,13 @@ import { createBoard, deleteBoard, getBoard, listBoards, loadBoards } from './bo
 import { startBoardSync } from './board-sync'
 import { queuedTasks, startScheduler, stopScheduler, tick } from './scheduler'
 import {
+  claimOverlap,
   clearClaims,
   coordinationNote,
+  describeNeighbours,
+  flushClaims,
+  loadClaims,
+  resetClaims,
   forgetJudgements,
   judgementCount,
   keywords,
@@ -3094,6 +3099,131 @@ async function main(): Promise<void> {
       store.deleteSession(id)
       history.clearHistory(id)
     }
+  }
+
+  section('who else is in this file')
+  {
+    /*
+     * The registry of who changed what, as the person sees it rather than as
+     * the agent is told it — and as it has to survive a restart.
+     *
+     * The rule worth testing is the quiet one: two tasks that touched the same
+     * file are only neighbours while there is still something to tread on. Once
+     * the other task has finished *and* its change is committed, the file on
+     * disk is settled and the bar goes away by itself. Without that this names
+     * the same three conversations for the rest of the week.
+     */
+    const room = join(tmpdir(), `opendesktop-neighbours-${Date.now()}`)
+    mkdirSync(join(room, 'src'), { recursive: true })
+    const file = join(room, 'src', 'shared.ts')
+    writeFileSync(file, 'export const a = 1\n')
+
+    const run = (args: string[]): Promise<void> =>
+      new Promise((done) => {
+        const proc = spawn('git', args, { cwd: room, stdio: 'ignore' })
+        proc.on('close', () => done())
+        proc.on('error', () => done())
+      })
+    await run(['init'])
+    await run(['config', 'user.email', 'test@localhost'])
+    await run(['config', 'user.name', 'Test'])
+    await run(['add', '-A'])
+    await run(['commit', '-m', 'the file as it was'])
+
+    const make = (title: string): Session =>
+      store.createSession({
+        title,
+        cwd: room,
+        environmentId: 'local',
+        agentId: 'auto',
+        model: 'test/mock'
+      })
+    const mine = make('rename the export')
+    const yours = make('add a second export')
+    const elsewhere = make('something on another machine')
+    store.updateSession(elsewhere.id, { environmentId: 'remote-box' })
+
+    resetClaims()
+    check('a conversation that has changed nothing has no neighbours',
+      (await describeNeighbours(mine.id)).length === 0)
+
+    recordWrite(mine.id, file)
+    check('nor one whose files nobody else has touched',
+      (await describeNeighbours(mine.id)).length === 0)
+
+    recordWrite(yours.id, file)
+    recordWrite(elsewhere.id, file)
+    check('the overlap is by path, so it finds the other task', claimOverlap(mine.id).has(yours.id))
+    check(
+      'but never one on another machine, whatever the path says',
+      !claimOverlap(mine.id).has(elsewhere.id)
+    )
+
+    // The change is sitting there uncommitted, which is the hazard.
+    writeFileSync(file, 'export const a = 2\n')
+    const found = await describeNeighbours(mine.id)
+    check('so an uncommitted shared change is a neighbour', found.length === 1, found)
+    check('named, with the file, so the person can recognise it',
+      found[0].title === 'add a second export' && found[0].shared.includes(file), found[0])
+    check('and not live, because it is not running', !found[0].live)
+
+    store.updateSession(yours.id, { status: 'running' })
+    const live = await describeNeighbours(mine.id)
+    check('a running task is marked live', live[0]?.live === true, live[0])
+
+    await run(['commit', '-am', 'their change, committed'])
+    check(
+      'a running task stays a neighbour even once its change is committed',
+      (await describeNeighbours(mine.id)).length === 1
+    )
+    store.updateSession(yours.id, { status: 'done' })
+    check(
+      'but a finished task whose change is committed is history, not a hazard',
+      (await describeNeighbours(mine.id)).length === 0
+    )
+
+    /* A guess, with no file in common: weaker, and only while it is working. */
+    resetClaims()
+    store.updateSession(mine.id, { relatedSessionIds: [yours.id] })
+    check('a guessed neighbour that has finished is not shown',
+      (await describeNeighbours(mine.id)).length === 0)
+    store.updateSession(yours.id, { status: 'running' })
+    const guessed = await describeNeighbours(mine.id)
+    check('a guessed neighbour that is running is, with a reason and no files',
+      guessed.length === 1 && guessed[0].shared.length === 0 && Boolean(guessed[0].why), guessed)
+    store.updateSession(mine.id, { relatedSessionIds: [] })
+    store.updateSession(yours.id, { status: 'idle' })
+
+    /* ---- across a restart ---- */
+    resetClaims()
+    recordWrite(mine.id, file)
+    recordWrite(yours.id, file)
+    flushClaims()
+    resetClaims()
+    check('nothing is remembered in memory alone', claimOverlap(mine.id).size === 0)
+    loadClaims()
+    check(
+      'but the registry is read back off the disk, which is what a restart lost',
+      claimOverlap(mine.id).has(yours.id)
+    )
+
+    store.deleteSession(yours.id)
+    flushClaims()
+    loadClaims()
+    check(
+      'and a deleted conversation is pruned on the way in, not left naming nothing',
+      claimOverlap(mine.id).size === 0
+    )
+
+    for (const id of [mine.id, elsewhere.id]) {
+      clearClaims(id)
+      store.deleteSession(id)
+      history.clearHistory(id)
+    }
+    history.clearHistory(yours.id)
+    resetClaims()
+    flushClaims()
+    rmSync(room, { recursive: true, force: true })
   }
 
   section('filtered output: what may run in place of what was asked for')

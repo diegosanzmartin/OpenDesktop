@@ -9,6 +9,7 @@ import { installMenu } from './menu'
 import { startPreviewServer, stopPreviewServer } from './preview'
 import { disposeRuntimes } from './runtime'
 import { flush, listSessions, loadStore } from './store'
+import { flushClaims, loadClaims } from './coordination'
 import { dropOrphans } from './history'
 import { loadBoards } from './boards'
 import { reconcileOnStart, startBoardSync } from './board-sync'
@@ -112,6 +113,8 @@ void app.whenReady().then(async () => {
 
   loadConfig()
   loadStore()
+  // After the store, which is what says whose claims are still worth keeping.
+  loadClaims()
   // Transcripts whose session is gone, now that the store has said what exists.
   const orphans = dropOrphans(listSessions().map((session) => session.id))
   if (orphans > 0 && process.env.OPENDESKTOP_DEBUG) {
@@ -164,6 +167,7 @@ app.on('before-quit', () => {
   killAllTerminals()
   killAllBackgroundTasks()
   flush()
+  flushClaims()
   stopPreviewServer()
   // The local model server is this app's child process, so it goes when we do.
   disposeLocalModel()

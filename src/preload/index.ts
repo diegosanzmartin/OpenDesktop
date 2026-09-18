@@ -12,6 +12,7 @@ import type {
   Message,
   McpStatus,
   MeterEntry,
+  Neighbour,
   RepoChanges,
   Session,
   Skill
@@ -129,6 +130,9 @@ const api = {
   },
   sessions: {
     list: (): Promise<Session[]> => ipcRenderer.invoke('session:list'),
+    /** Other conversations that have changed the same files as this one. */
+    neighbours: (sessionId: string): Promise<Neighbour[]> =>
+      ipcRenderer.invoke('coordination:neighbours', sessionId),
     create: (input: {
       cwd?: string
       environmentId?: string

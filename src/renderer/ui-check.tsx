@@ -36,6 +36,7 @@ import { RoutingTab } from './src/components/RoutingTab'
 import { FolderPicker } from './src/components/FolderPicker'
 import { LocalModelSection } from './src/components/LocalModelSection'
 import { ChatView } from './src/components/ChatView'
+import { NeighbourBar } from './src/components/NeighbourBar'
 
 const failures: string[] = []
 let checks = 0
@@ -82,6 +83,9 @@ const REPLIES: Record<string, unknown> = {
     ]
   },
   changes: { isRepo: false, root: '', branch: '', files: [], added: 0, removed: 0 },
+  // Nobody else is in the file unless a section says so, or every composer in
+  // every other check would grow a line it is not about.
+  'sessions.neighbours': [],
   previewUrl: 'http://127.0.0.1/none',
   accepted: true,
   running: false,
@@ -1938,6 +1942,82 @@ async function run(): Promise<void> {
     useStore.setState({ editorFile: null })
   }
 
+  section('who else is in this file')
+  {
+    const bare = mount(<NeighbourBar session={session} />, 760)
+    await settle()
+    check(
+      'nothing at all when no other chat has touched these files',
+      (bare.textContent ?? '').trim() === '',
+      bare.textContent
+    )
+
+    REPLIES['sessions.neighbours'] = [
+      {
+        sessionId: 's-other',
+        title: 'Rename the export',
+        status: 'running',
+        live: true,
+        shared: ['/tmp/project/src/shared.ts', '/tmp/project/src/index.ts']
+      }
+    ]
+    const one = mount(<NeighbourBar session={session} />, 760)
+    await settle()
+    const line = one.textContent ?? ''
+    check('one neighbour is named in the line itself', /Rename the export/.test(line), line)
+    check('and said to be running now, which is the urgent case', /running now/.test(line), line)
+    check('but the files are not, until it is opened', !/shared\.ts/.test(line), line)
+
+    one.querySelector('button')?.click()
+    await settle()
+    const open = one.textContent ?? ''
+    check('opening it lists the files both have changed', /shared\.ts/.test(open) && /index\.ts/.test(open), open)
+    check(
+      'by name, not by path: the point is to recognise one',
+      !/tmp\/project/.test(open),
+      open
+    )
+
+    REPLIES['sessions.neighbours'] = [
+      { sessionId: 's-a', title: 'One', status: 'idle', live: false, shared: ['/tmp/project/a.ts'] },
+      { sessionId: 's-b', title: 'Two', status: 'running', live: true, shared: ['/tmp/project/b.ts'] },
+      {
+        sessionId: 's-c',
+        title: 'Three',
+        status: 'running',
+        live: true,
+        shared: [],
+        why: 'the coordinator thinks these are about the same thing'
+      }
+    ]
+    const many = mount(<NeighbourBar session={session} />, 760)
+    await settle()
+    const counted = many.textContent ?? ''
+    check('several are counted rather than listed', /3 other chats/.test(counted), counted)
+    check('with how many of them are working now', /2 running/.test(counted), counted)
+
+    many.querySelector('button')?.click()
+    await settle()
+    const all = many.textContent ?? ''
+    check('and all three are there once opened', /One/.test(all) && /Two/.test(all) && /Three/.test(all))
+    check(
+      'a guessed one says why instead of naming a file it does not share',
+      /about the same thing/.test(all),
+      all
+    )
+
+    // A write anywhere is a reason to ask again: the answer is a fact about
+    // the disk, and the disk just changed.
+    REPLIES['sessions.neighbours'] = []
+    pushEvent({ type: 'claims.updated', sessionId: 's-other' } as AppEvent)
+    await settle()
+    check(
+      'and the line goes away by itself when the claim does',
+      (many.textContent ?? '').trim() === '',
+      many.textContent
+    )
+  }
+
   console.log(`\n${checks - failures.length}/${checks} checks passed`)
   if (failures.length > 0) {
     console.log(`\nfailed:\n${failures.map((f) => `  - ${f}`).join('\n')}`)
@@ -2284,6 +2364,32 @@ async function run(): Promise<void> {
         }
       }
     } as AppEvent)
+    await settle()
+  }
+
+  if (new URLSearchParams(location.search).get('shot') === 'neighbours') {
+    document.body.innerHTML = ''
+    REPLIES['sessions.neighbours'] = [
+      {
+        sessionId: 's-a',
+        title: 'Rename the export in shared.ts',
+        status: 'running',
+        live: true,
+        shared: ['/tmp/project/src/shared.ts', '/tmp/project/src/index.ts']
+      },
+      {
+        sessionId: 's-b',
+        title: 'Document the new flags',
+        status: 'idle',
+        live: false,
+        shared: ['/tmp/project/README.md']
+      }
+    ]
+    const host = mount(<div className="bg-ink-900 p-4" />, 760)
+    await settle()
+    createRoot(host.firstElementChild as HTMLElement).render(<NeighbourBar session={session} />)
+    await settle()
+    host.querySelector('button')?.click()
     await settle()
   }
 

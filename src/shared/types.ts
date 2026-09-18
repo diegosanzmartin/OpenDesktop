@@ -709,6 +709,26 @@ export interface RepoChanges {
 
 /* ---------- IPC events ---------- */
 
+/**
+ * Another conversation that has changed a file this one has also changed.
+ *
+ * Fact where it can be: `shared` is the list of paths both of them actually
+ * wrote, which is why the bar can name them. `why` is only set for the weaker
+ * kind of neighbour — the coordinator's guess that two tasks are about the same
+ * subject, with no file in common yet.
+ */
+export interface Neighbour {
+  sessionId: string
+  title: string
+  status: SessionStatus
+  /** Working now, so it may write again while you read this. */
+  live: boolean
+  /** Files both conversations have changed. Empty for a guessed neighbour. */
+  shared: string[]
+  /** The coordinator's sentence, when a guess is what linked them. */
+  why?: string
+}
+
 export type AppEvent =
   | { type: 'config.updated'; config: AppConfig }
   | { type: 'session.created'; session: Session }
@@ -743,3 +763,9 @@ export type AppEvent =
    * cannot be polled into existence, and the install is minutes long.
    */
   | { type: 'local.status'; status: LocalModelStatus }
+  /**
+   * A task claimed a file it had not claimed before, so who its neighbours are
+   * may have changed. Carries no list: working out the neighbours reads the
+   * working tree, and only the conversation on screen is worth that.
+   */
+  | { type: 'claims.updated'; sessionId: string }

@@ -447,6 +447,27 @@ drops the other, so asking for counts and letters in one call returns letters an
 zeroes. And `git blame --no-color` is ambiguous (`--no-color-lines`, `--no-color-by-age`), so
 it fails the whole command with a usage message; porcelain output is not coloured anyway.
 
+### Who else is in this file
+
+Running four conversations on one repository is the point of the board, and the failure mode is
+two of them editing the same file without either noticing. The agents were already told: every
+write records the path it touched, and saving a file another task has changed appends a line to
+the tool's result naming it. The person was the one left guessing.
+
+So there is a line above the composer when — and only when — another conversation has changed a
+file this one has changed. It names it, opens it on click, and lists the files they have in
+common by name. A conversation with no overlap sees nothing at all.
+
+It is fact rather than a guess: the paths both of them actually wrote, not a model's opinion.
+The coordinator's opinion does appear, one rung down, for a task that is running and shares a
+subject but no file yet, and it says so in as many words.
+
+The registry is on disk, so a change somebody made before lunch is still there after a restart
+— losing it to a restart was most of what made the warnings unreliable. And the working tree
+gets the last word: once the other task has finished **and** its change is committed, there is
+nothing left to tread on, so the line goes away by itself instead of naming the same three
+conversations for the rest of the week.
+
 ## Remote execution over SSH
 
 **Settings → Remote hosts** adds and edits them. Give the environment an id, press *Add remote
