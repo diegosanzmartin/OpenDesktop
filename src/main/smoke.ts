@@ -6410,6 +6410,21 @@ async function main(): Promise<void> {
       markdown.body.includes('<h1>Report</h1>') && markdown.body.includes('port 8443'),
       markdown.body.slice(-160)
     )
+    /*
+     * And without the path across the top: the pane is titled with the file's
+     * name, so a header here was the same string twice above a document that
+     * opens with its own heading.
+     */
+    check(
+      'and without the path above it, which the pane already says',
+      !markdown.body.includes('<header>'),
+      markdown.body.slice(0, 200)
+    )
+    check(
+      'though the page keeps its title, which is what the history reads',
+      markdown.body.includes('<title>') && markdown.body.includes('report.md'),
+      markdown.body.slice(0, 200)
+    )
 
     if (existsSync(join(room, 'report.pdf')) && statSync(join(room, 'report.pdf')).size > 0) {
       const pdf = await fetchPreview('report.pdf')

@@ -43,8 +43,9 @@ const PAGE_STYLE = `
   :root { color-scheme: dark }
   body { margin:0; background:#1a1918; color:#cfccc6;
          font:12.5px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace }
-  header { position:sticky; top:0; background:#1a1918; border-bottom:1px solid #2f2d2b;
-           padding:10px 16px; font-size:11.5px; color:#8d8a84 }
+  /* No header rule: nothing has one. A page about one file is titled by the
+     pane showing it, and a directory listing carries its own path as an h1,
+     which is the place you are in rather than a label for a file. */
   pre { margin:0; padding:14px 16px; white-space:pre-wrap; word-break:break-word }
   .empty { padding:24px 16px; color:#6b6862 }
 `
@@ -61,16 +62,25 @@ const PAGE_STYLE = `
  */
 function markdownPage(path: string, body: string): string {
   const html = marked.parse(escapeHtml(body), { async: false, gfm: true, breaks: false })
+  /*
+   * No path across the top.
+   *
+   * It was there because the pane that shows this used to be titled "Browser",
+   * so the page had to say which file it was. The pane is titled with the
+   * file's name now, and the address bar is gone for a file, so a header here
+   * is the same string a second time above a document that usually opens with
+   * its own heading. The title stays: that is what the window and the history
+   * read.
+   */
   return `<!doctype html><meta charset="utf-8"><title>${escapeHtml(path)}</title>
 <style>${PAGE_STYLE}${PROSE_STYLE}</style>
-<header>${escapeHtml(path)}</header>
 <article>${html}</article>`
 }
 
 function sourcePage(path: string, body: string): string {
+  // Same reasoning as the markdown page: the pane names the file.
   return `<!doctype html><meta charset="utf-8"><title>${escapeHtml(path)}</title>
 <style>${PAGE_STYLE}</style>
-<header>${escapeHtml(path)}</header>
 ${body.trim() ? `<pre>${escapeHtml(body)}</pre>` : '<div class="empty">(empty file)</div>'}`
 }
 
@@ -100,7 +110,6 @@ const PROSE_STYLE = `
 function binaryPage(path: string, size: number): string {
   return `<!doctype html><meta charset="utf-8"><title>${escapeHtml(path)}</title>
 <style>${PAGE_STYLE}</style>
-<header>${escapeHtml(path)}</header>
 <div class="empty">Binary file, ${(size / 1024).toFixed(1)} KB — nothing to display.</div>`
 }
 

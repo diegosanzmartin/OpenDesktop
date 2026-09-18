@@ -292,10 +292,12 @@ A card opens its file in the pane on the right, which is a loopback HTTP server
 handing the bytes to a webview: a PDF goes across as `application/pdf`, which the webview
 renders, and a markdown file comes back as a rendered page rather than its source.
 
-A file is not a website, so it gets no address bar. The pane was showing the path twice — once
-in the bar and once in the header of the page itself — next to back, forward, reload and home,
-which a file has no use for. The pane's title is the file's name instead, and the button beside
-the widen and close ones brings the bar back when you want to type a path. The choice belongs
+A file is not a website, so it gets no address bar, and the page itself does not repeat its
+path either — the pane's title is the file's name, so a header above the document was the same
+string twice. A directory listing keeps its path, because there it is the place you are in
+rather than a label for one file. Back, forward, reload and home are of no use to
+it, and the button beside the widen and close ones brings the bar back when you want to type a
+path. The choice belongs
 to the kind of thing being looked at: going from a file to a website brings the bar back on its
 own, and going the other way takes it away again.
 
