@@ -10,7 +10,8 @@ import {
   Search,
   Plug,
   Server,
-  Sparkles
+  Sparkles,
+  Webhook
 } from 'lucide-react'
 import { useStore } from '../state/store'
 import { ModelsTab } from './ModelsTab'
@@ -19,9 +20,10 @@ import { EnvironmentsTab } from './EnvironmentsTab'
 import { AgentsTab } from './AgentsTab'
 import { SkillsTab } from './SkillsTab'
 import { ToolServersTab } from './ToolServersTab'
+import { HooksTab } from './HooksTab'
 import { Hint, IconButton, Row, Section, Toggle } from './settings-ui'
 
-type Page = 'providers' | 'routing' | 'agents' | 'skills' | 'tools' | 'environments' | 'config'
+type Page = 'providers' | 'routing' | 'agents' | 'skills' | 'tools' | 'hooks' | 'environments' | 'config'
 
 interface NavItem {
   id: Page
@@ -66,6 +68,12 @@ const GROUPS: { title: string; items: NavItem[] }[] = [
         label: 'Tool servers',
         icon: <Plug className="h-4 w-4" />,
         keywords: 'mcp server tool external stdio command connector schema tokens'
+      },
+      {
+        id: 'hooks',
+        label: 'Hooks',
+        icon: <Webhook className="h-4 w-4" />,
+        keywords: 'hook format lint stage git notify refuse guard after before turn'
       }
     ]
   },
@@ -296,6 +304,7 @@ export function SettingsPane(): ReactNode {
           {page === 'agents' ? <AgentsTab /> : null}
           {page === 'skills' ? <SkillsTab /> : null}
           {page === 'tools' ? <ToolServersTab /> : null}
+          {page === 'hooks' ? <HooksTab /> : null}
           {page === 'environments' ? <EnvironmentsTab /> : null}
           {page === 'providers' ? <ModelsTab /> : null}
           {page === 'routing' ? <RoutingTab /> : null}

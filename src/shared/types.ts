@@ -190,6 +190,34 @@ export interface McpStatus {
   message?: string
 }
 
+/**
+ * When a hook runs. Three moments, because a longer list is a longer thing to
+ * learn and these are the ones with a use: stop something, react to it, or
+ * tidy up after the whole turn.
+ */
+export type HookEvent = 'before' | 'after' | 'turn'
+
+/**
+ * A command this app runs when the agent does something.
+ *
+ * The cheapest lever in the app: it runs on the machine rather than in the
+ * conversation, so it costs no tokens and the model spends no attention on it.
+ * A `before` hook that exits non-zero refuses the call and what it printed
+ * becomes the reason; everywhere else the output is kept for you and never
+ * reaches the model.
+ */
+export interface HookConfig {
+  id: string
+  name?: string
+  event: HookEvent
+  /** A regular expression over the tool name. Absent means every tool. */
+  matcher?: string
+  /** Shell, run on the session's execution target in its working directory. */
+  command: string
+  timeoutMs?: number
+  enabled?: boolean
+}
+
 export type PermissionMode = 'ask' | 'allow' | 'deny'
 
 export interface Permissions {
@@ -262,6 +290,8 @@ export interface AppConfig {
   agent: Record<string, AgentConfig>
   /** Tool servers, declared here and enabled per session. */
   mcp?: Record<string, McpServerConfig>
+  /** Commands the app runs around a tool call or a turn. Cost no tokens. */
+  hooks?: HookConfig[]
   permissions: Permissions
   maxSteps: number
   /** What a session starts with, unless it says otherwise. */

@@ -301,6 +301,29 @@ path. The choice belongs
 to the kind of thing being looked at: going from a file to a website brings the bar back on its
 own, and going the other way takes it away again.
 
+### Hooks
+
+A command this app runs when the agent does something: format what it edited, stage it,
+refuse a path, say when a turn ended. Declared under **Settings → Hooks**, and unlike
+everything else that shapes a turn it **costs no tokens** — a rule in a prompt is in the prefix
+of every step for ever, a hook runs on the machine and the model never sees it. It runs on the
+session's own execution target, in its working directory.
+
+| When | What it can do |
+| --- | --- |
+| `before` a tool | A non-zero exit refuses the call, and what it printed becomes the reason the agent is given — the only case where a hook reaches the conversation, because a refusal it cannot read is one it will retry for ever. |
+| `after` a tool | The side effect. What it prints is kept on the block for you and never sent to the model. |
+| `turn` ends | What is about the whole of it: a notification, a commit, a sweep. |
+
+A matcher is a regular expression over the tool name (`write|edit`); absent means every tool.
+The hook is told what happened through `$OPENDESKTOP_TOOL`, `$OPENDESKTOP_PATH`,
+`$OPENDESKTOP_COMMAND`, `$OPENDESKTOP_SESSION` and `$OPENDESKTOP_OK`, exported rather than
+prefixed so a hook that starts with `if` or `case` still parses.
+
+```
+case "$OPENDESKTOP_PATH" in */vendor/*) echo "vendor/ is generated"; exit 1;; esac
+```
+
 ### Tool servers (MCP)
 
 A server is a program that offers the agent tools this app did not write, over MCP. They are
@@ -566,9 +589,24 @@ You are an infrastructure engineer working with Terraform…
 
 `mode` decides where an agent appears: `primary` in the composer picker, `subagent` to the
 `task` tool, `all` in both. `tools` is an allow-list; anything omitted is switched off.
-Six ship by default — Build, Plan, Review, Explore, Infrastructure and Docs — and each can be
-edited from **Settings → Agents**, which also imports from `~/.claude/agents`. An install that
-still had agents inside `config.json` has them moved into files on first run.
+Eight ship by default — Build, Plan, Review, Explore, Infrastructure, Docs, Triage and
+Report — and each can be edited from **Settings → Agents**, which also imports from
+`~/.claude/agents`. An install that still had agents inside `config.json` has them moved into
+files on first run.
+
+The **description** is the part that does the most work: it is what the lead reads on every
+turn to decide who gets the job, so each one says when to reach for that agent and, where it
+is not obvious, when not to. The **prompt** is deliberately short — 150 to 400 tokens, not the
+five to eight thousand bytes of "Focus Areas" the template collections ship. A subagent opens
+a new session, so its prompt is a fresh prefix with no cache behind it, paid in full on the
+first step and resent on every step after; what earns a place in it is the four things a model
+cannot infer — when to stop, what to hand back, what it may not touch, and the facts about
+this repository that are not in the code it is about to read.
+
+A built-in you have not edited is brought up to date when the app ships a better version of
+it: the app records a hash of what it last wrote, so a file that still matches is its own to
+replace and a file that does not is yours, untouched. Without that, every improvement to the
+roster would reach new installs only — and nobody would ever notice.
 
 ### Auto
 

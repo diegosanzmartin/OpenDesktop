@@ -16,7 +16,14 @@ import {
   saveConfig,
   setAgentLoader
 } from './config'
-import { listAgents, parseAgentFile, saveAgent, seedBuiltins, serializeAgent } from './agents'
+import {
+  AGENTS_DIR,
+  listAgents,
+  parseAgentFile,
+  saveAgent,
+  seedBuiltins,
+  serializeAgent
+} from './agents'
 import { SKILLS_DIR, expandSkills, listSkills } from './skills'
 import { parseDocument } from './frontmatter'
 import { addFromPaths, dropSessionAttachments, modelAcceptsImages } from './attachments'
@@ -35,7 +42,16 @@ import { createServer } from 'node:http'
 import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
-import { createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import {
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as store from './store'
@@ -60,6 +76,7 @@ import {
 import { logError, logLine, logPath } from './log'
 import { previewUrl, startPreviewServer, stopPreviewServer } from './preview'
 import { connectMcp, statusOf, stopMcp } from './mcp'
+import { hookEnvironment, matches, runHooks, withEnvironment } from './hooks'
 import { toolEnvironment } from './tool-env'
 import type { ExecOptions, ExecResult, Runtime } from './runtime'
 import {
@@ -599,6 +616,15 @@ function fakeRuntime(answer: (command: string) => { stdout?: string; exitCode?: 
 
 async function main(): Promise<void> {
   section('config')
+  /*
+   * From a known roster. A previous run of this test leaves the built-ins of
+   * whatever build wrote them, and "is the shipped description in the file"
+   * is one of the things being checked.
+   */
+  for (const stale of ['build', 'plan', 'review', 'explore', 'infra', 'docs', 'triage', 'report']) {
+    rmSync(join(AGENTS_DIR, `${stale}.md`), { force: true })
+  }
+  rmSync(join(AGENTS_DIR, '.seeded.json'), { force: true })
   // Agents are files now; seed the built-ins and serve them the way the app does.
   seedBuiltins()
   setAgentLoader(listAgents)
@@ -610,13 +636,85 @@ async function main(): Promise<void> {
   check('local environment present', config.environment.local?.kind === 'local')
   check(
     'the built-in agents are on disk',
-    ['build', 'plan', 'review', 'explore', 'infra', 'docs'].every((id) => Boolean(config.agent[id])),
+    ['build', 'plan', 'review', 'explore', 'infra', 'docs', 'triage', 'report'].every((id) =>
+      Boolean(config.agent[id])
+    ),
     Object.keys(config.agent)
   )
   check('plan agent cannot write', config.agent.plan.permissions?.write === 'deny')
+  check('and neither can the one that investigates', config.agent.triage.permissions?.write === 'deny')
+  /*
+   * The description is what the manager routes from — it is in every turn —
+   * so each one has to say when to reach for that agent. A roster of job
+   * titles makes the manager guess.
+   */
+  check(
+    'every agent says when to use it',
+    Object.values(config.agent).every((agent) => /\bUse\b/.test(agent.description)),
+    Object.values(config.agent)
+      .filter((agent) => !/\bUse\b/.test(agent.description))
+      .map((agent) => agent.id)
+  )
+  check(
+    'and they stay short enough to be worth resending every step',
+    Object.values(config.agent).every((agent) => (agent.prompt ?? '').length < 1600),
+    Object.values(config.agent)
+      .map((agent) => [agent.id, (agent.prompt ?? '').length])
+      .filter(([, size]) => (size as number) >= 1600)
+  )
   check('agents are not written into the config document', !('agent' in JSON.parse(
     require('node:fs').readFileSync(require('./config').CONFIG_PATH, 'utf8') as string
   )))
+
+  section('a built-in that moved on')
+  {
+    /*
+     * "Never overwrite" protected an edited agent and froze an unedited one:
+     * every improvement to the roster reached new installs only, and the
+     * descriptions the manager routes from stayed at whatever shipped the day
+     * the app first ran. A hash of what was last written tells the two apart.
+     */
+    const buildPath = join(AGENTS_DIR, 'build.md')
+    const shipped = readFileSync(buildPath, 'utf8')
+    check('a fresh seed writes the current version', shipped.includes('Use for a change you already know'))
+    check(
+      'and records what it wrote',
+      existsSync(join(AGENTS_DIR, '.seeded.json')),
+      readdirSync(AGENTS_DIR).filter((name) => name.startsWith('.'))
+    )
+
+    // An older version of ours, with its hash on record: ours to replace.
+    const older = shipped.replace('Use for a change you already know', 'Older wording from a past build')
+    writeFileSync(buildPath, older, 'utf8')
+    const record = JSON.parse(readFileSync(join(AGENTS_DIR, '.seeded.json'), 'utf8')) as Record<string, string>
+    record.build = createHash('sha256').update(older).digest('hex').slice(0, 16)
+    writeFileSync(join(AGENTS_DIR, '.seeded.json'), JSON.stringify(record), 'utf8')
+    seedBuiltins()
+    check(
+      'an untouched built-in is brought up to date',
+      readFileSync(buildPath, 'utf8').includes('Use for a change you already know'),
+      readFileSync(buildPath, 'utf8').slice(0, 120)
+    )
+
+    // And one the user has written in is theirs, whatever we would rather say.
+    writeFileSync(buildPath, `${shipped}\n\nAlways run pnpm smoke before you finish.\n`, 'utf8')
+    seedBuiltins()
+    check(
+      'an edited one is left exactly as it was',
+      readFileSync(buildPath, 'utf8').includes('Always run pnpm smoke'),
+      readFileSync(buildPath, 'utf8').slice(-80)
+    )
+
+    // A built-in somebody deleted comes back, because it is a built-in.
+    rmSync(buildPath, { force: true })
+    seedBuiltins()
+    check('a deleted one comes back', existsSync(buildPath))
+    check(
+      'and the roster the manager sees has both new agents in it',
+      Boolean(listAgents().triage) && Boolean(listAgents().report),
+      Object.keys(listAgents())
+    )
+  }
 
   section('agent files')
   const roundTrip = parseAgentFile(
@@ -6440,6 +6538,106 @@ async function main(): Promise<void> {
     check('and a path that is not there says so rather than hanging', missing.status === 404, missing.status)
 
     stopPreviewServer()
+    rmSync(room, { recursive: true, force: true })
+  }
+
+  section('things the app does that the model never sees')
+  {
+    /*
+     * Hooks. The cheapest lever there is — they run on the machine rather than
+     * in the conversation, so nothing here is in a prefix and nothing is paid
+     * for per step. What is checked is the bargain: that they fire on the
+     * right calls, that a `before` hook can refuse one and say why, and that
+     * everything else they print stays out of what the model reads.
+     */
+    check('a matcher picks the tools it names', matches({ id: 'h', event: 'after', matcher: 'write|edit', command: ':' }, 'write'))
+    check('and only those', !matches({ id: 'h', event: 'after', matcher: 'write|edit', command: ':' }, 'bash'))
+    check('no matcher is every tool', matches({ id: 'h', event: 'after', command: ':' }, 'anything'))
+    check('a disabled hook matches nothing', !matches({ id: 'h', event: 'after', command: ':', enabled: false }, 'write'))
+    check(
+      'a matcher that does not compile matches nothing rather than everything',
+      !matches({ id: 'h', event: 'after', matcher: '(', command: ':' }, 'write')
+    )
+    check(
+      'what a hook is told comes through the environment, exported so a case or an if still parses',
+      withEnvironment('echo hi', hookEnvironment({ event: 'after', tool: 'write', sessionId: 's1', cwd: '/w', path: '/w/a b.ts', ok: true }))
+        .includes("export OPENDESKTOP_PATH='/w/a b.ts';"),
+      withEnvironment('echo hi', hookEnvironment({ event: 'after', tool: 'write', sessionId: 's1', cwd: '/w', path: '/w/a b.ts', ok: true }))
+    )
+
+    const room = join(tmpdir(), `opendesktop-hooks-${Date.now()}`)
+    mkdirSync(room, { recursive: true })
+    const hooked: AppConfig = {
+      ...defaultConfig(),
+      hooks: [
+        {
+          id: 'note',
+          name: 'Leave a note',
+          event: 'after',
+          matcher: 'write|edit',
+          command: 'echo "staged $(basename "$OPENDESKTOP_PATH")" >> touched.log && echo staged'
+        },
+        { id: 'guard', name: 'Nothing in vendor', event: 'before', matcher: 'write', command: 'case "$OPENDESKTOP_PATH" in */vendor/*) echo "vendor/ is generated — change the generator instead"; exit 1;; esac' }
+      ]
+    }
+    const ctx = (): ToolContext => ({
+      config: hooked,
+      agent: { id: 'build', name: 'Build', description: '', mode: 'all' },
+      permissions: { ...hooked.permissions, write: 'allow', edit: 'allow', bash: 'allow' },
+      sessionId: session.id,
+      environmentId: 'local',
+      cwd: room,
+      runtime: getRuntime('local'),
+      savings: { rtk: false, shunt: false },
+      modelRef: 'mock/mock',
+      currentMessageId: () => 'm-hooks',
+      depth: 0,
+      signal: new AbortController().signal
+    })
+
+    const write = createTools(ctx()).write as unknown as {
+      execute: (input: unknown) => Promise<string>
+    }
+    const wrote = await write.execute({ path: 'notes.md', content: 'hello\n' })
+    check('the work still happens', existsSync(join(room, 'notes.md')), wrote.slice(0, 60))
+    check(
+      'and the after hook ran',
+      existsSync(join(room, 'touched.log')) &&
+        readFileSync(join(room, 'touched.log'), 'utf8').includes('notes.md'),
+      existsSync(join(room, 'touched.log')) ? readFileSync(join(room, 'touched.log'), 'utf8') : 'no log'
+    )
+    check(
+      'what it printed is kept on the block for you',
+      (store.listBlocks(session.id).slice(-1)[0]?.output ?? '').includes('Leave a note: staged'),
+      store.listBlocks(session.id).slice(-1)[0]?.output?.slice(-80)
+    )
+    check(
+      'and not in what the model was handed',
+      !wrote.includes('Leave a note') && !wrote.includes('staged'),
+      wrote
+    )
+
+    mkdirSync(join(room, 'vendor'), { recursive: true })
+    const refused = await write
+      .execute({ path: 'vendor/lib.js', content: 'x' })
+      .then(() => null, (err: Error) => err)
+    check('a before hook can refuse the call', refused !== null, refused?.message)
+    check(
+      'and what it said is the reason the agent is given',
+      /vendor\/ is generated/.test(refused?.message ?? ''),
+      refused?.message
+    )
+    check('nothing was written', !existsSync(join(room, 'vendor', 'lib.js')))
+
+    // A hook nobody declared costs nothing at all: no shell, no wait.
+    const bare = await runHooks(defaultConfig(), getRuntime('local'), {
+      event: 'after',
+      tool: 'write',
+      sessionId: session.id,
+      cwd: room
+    })
+    check('a session with no hooks runs nothing', bare.notes.length === 0 && !bare.refusal)
+
     rmSync(room, { recursive: true, force: true })
   }
 

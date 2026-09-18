@@ -23,6 +23,7 @@ import { EditedFiles } from './src/components/Transcript'
 import { ContextMeter } from './src/components/ContextMeter'
 import { ToolServerChip } from './src/components/ToolServerChip'
 import { ToolServersTab } from './src/components/ToolServersTab'
+import { HooksTab } from './src/components/HooksTab'
 import { BrowserPane } from './src/components/BrowserPane'
 import { previewTarget, previewTitle } from './src/lib/preview'
 import { EffortDial } from './src/components/EffortDial'
@@ -1582,6 +1583,52 @@ async function run(): Promise<void> {
     )
 
     useStore.setState({ browserUrl: '', browserChrome: null })
+  }
+
+
+  section('hooks, as a page')
+  {
+    const before = useStore.getState().config!
+    useStore.setState({
+      config: {
+        ...before,
+        hooks: [
+          {
+            id: 'fmt',
+            name: 'Format what was edited',
+            event: 'after',
+            matcher: 'write|edit',
+            command: 'npx prettier --write "$OPENDESKTOP_PATH"'
+          },
+          { id: 'off', name: 'Stage it', event: 'after', command: 'git add .', enabled: false }
+        ]
+      }
+    })
+    const host = mount(<HooksTab />, 760)
+    await settle()
+    const text = host.textContent ?? ''
+    check(
+      'it says the bargain: no tokens, no attention',
+      /costs no tokens/.test(text),
+      text.slice(0, 200)
+    )
+    check(
+      'each hook says when it fires and over which tools',
+      text.includes('After a tool runs') && text.includes('write|edit'),
+      text
+    )
+    check('and shows the command itself', text.includes('prettier'), text)
+    check(
+      'one that is switched off is still listed',
+      text.includes('Stage it'),
+      text
+    )
+    check(
+      'and the examples are there, because thinking of one is the hard part',
+      text.includes('Ones worth having') && text.includes('vendor/ is generated'),
+      text.slice(-300)
+    )
+    useStore.setState({ config: before })
   }
 
   console.log(`\n${checks - failures.length}/${checks} checks passed`)

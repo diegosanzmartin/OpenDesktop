@@ -32,6 +32,7 @@ import { rtkStatus } from '../rtk'
 import { workerIsTheSameModel } from '../shunt'
 import { record as meterRecord, spentLookup } from '../meter'
 import { logError, logLine } from '../log'
+import { runHooks } from '../hooks'
 import * as store from '../store'
 import * as history from '../history'
 import { MUTATING_TOOLS, createTools, externalTools, type ToolContext } from './tools'
@@ -1583,6 +1584,20 @@ export async function runTurn(input: TurnInput): Promise<string> {
         `${Date.now() - startedAt}ms(model=${Math.round((Date.now() - startedAt - toolsWall) / 1000)}s ` +
         `tools=${Math.round(toolsWall / 1000)}s)${streamFailure === null ? '' : ' (stream failed)'}`
     )
+
+    /*
+     * And whatever this session does when a turn ends — a notification, a
+     * commit, a sweep. After the log line, because a hook that takes two
+     * seconds should not make the turn look like it took two seconds longer
+     * than it did.
+     */
+    const ending = await runHooks(config, runtime, {
+      event: 'turn',
+      tool: 'turn',
+      sessionId: session.id,
+      cwd: session.cwd
+    })
+    for (const note of ending.notes) logLine('info', `turn ${session.id} hook: ${note.slice(0, 200)}`)
 
     /*
      * Told, not left to be noticed. A provider that fails mid-stream used to

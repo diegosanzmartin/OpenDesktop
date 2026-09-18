@@ -32,6 +32,7 @@ import {
 } from '../shunt'
 import { costOf } from '@shared/cost'
 import { mcpTools } from '../mcp'
+import { runHooks } from '../hooks'
 import type { McpServerConfig } from '@shared/types'
 import { fileSize } from '@shared/documents'
 import { scrubSecrets } from '@shared/errors'
@@ -186,6 +187,30 @@ async function withBlock(
       throw new Error('Aborted by the user.')
     }
 
+    /*
+     * Hooks, if this session has any. Before the work, where one can refuse
+     * it; and after, where what they print is kept on the block for the
+     * person and never sent to the model — the whole point of a hook is that
+     * it is not in the conversation.
+     */
+    const hookContext = {
+      tool: spec.tool,
+      sessionId: ctx.sessionId,
+      cwd: ctx.cwd,
+      path: typeof spec.input.path === 'string' ? spec.input.path : undefined,
+      command: typeof spec.input.command === 'string' ? spec.input.command : undefined
+    }
+    const before = await runHooks(ctx.config, ctx.runtime, { ...hookContext, event: 'before' })
+    for (const note of before.notes) store.appendBlockOutput(ctx.sessionId, block.id, `${note}\n`)
+    if (before.refusal) {
+      store.updateBlock(ctx.sessionId, block.id, {
+        status: 'error',
+        error: before.refusal,
+        endedAt: Date.now()
+      })
+      throw new Error(before.refusal)
+    }
+
     store.updateBlock(ctx.sessionId, block.id, { status: 'running', startedAt: Date.now() })
     const result = await run(block)
     const failed = result.exitCode !== undefined && result.exitCode !== 0
@@ -194,6 +219,14 @@ async function withBlock(
       exitCode: result.exitCode,
       endedAt: Date.now()
     })
+
+    const after = await runHooks(ctx.config, ctx.runtime, {
+      ...hookContext,
+      event: 'after',
+      ok: !failed
+    })
+    for (const note of after.notes) store.appendBlockOutput(ctx.sessionId, block.id, `\n${note}`)
+
     return truncate(result.output)
   } catch (err) {
     const current = store.getBlock(ctx.sessionId, block.id)
