@@ -319,6 +319,18 @@ One repository per conversation, deliberately, not one shared by all of them: tw
 committing at once is `index.lock` contention and a history nobody can read, and it would make
 "delete the conversation and its files" a surgical operation instead of removing a directory.
 
+A folder you choose is left alone unless it is in **no repository at all** — then the first
+turn starts one, so the Changes pane always has something to read and yesterday's version of a
+file still exists. Never when a repository is already above it: a `.git` inside a checkout is a
+second repository nobody asked for. Never in the home directory, a parent of it or a
+filesystem root either, because a `git init` there tracks everything you own. Only a
+conversation's own folder is committed to automatically; a repository you chose is yours to
+commit.
+
+The line under the composer shows the path of a folder you chose and **just the icon** for a
+conversation's own, since `…/workspaces/94adVYh3JLDa` is an id nobody typed and nobody can
+use — it says "somewhere" in twenty-six characters.
+
 Inside that folder **every file gets a card** — something to open and save — whatever its
 extension, because there is no project to diff against and the file exists because this
 conversation made it. In somebody's repository the old rule still holds: a document opens, a
@@ -397,6 +409,26 @@ session's prefix went from 2k to 4k with it switched on, which is the measuremen
 reality agreeing. `--turn` runs the whole path on a real model; run it under `electron` instead
 of `node` when the model's key is in the keychain, and note that a key stored by the packaged
 app cannot be read by a dev build.
+
+### Changes, and what happened before now
+
+The pane has two halves. The **working tree** answers what is different from the last commit,
+which is only useful while you are the one making the difference. The **history** answers what
+happened before now — which is how you find out what the agent did three turns ago, and in a
+conversation's own folder it *is* the conversation: one commit per turn, its subject the thing
+that was asked.
+
+Picking a commit says who, when, whether it was a merge, which files it touched with their
+counts, and opens each file's own diff from that commit. Opening any file — in a commit or in
+the working tree — also offers the two questions a diff cannot answer: **history**, every
+commit that ever touched it, and **who wrote it**, blame line by line with the commit that
+brought each one.
+
+Two things about reading git that cost an hour each and are worth writing down: `--numstat`
+and `--name-status` given together are not both honoured — git takes the last one and silently
+drops the other, so asking for counts and letters in one call returns letters and a column of
+zeroes. And `git blame --no-color` is ambiguous (`--no-color-lines`, `--no-color-by-age`), so
+it fails the whole command with a usage message; porcelain output is not coloured anyway.
 
 ## Remote execution over SSH
 

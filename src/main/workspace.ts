@@ -21,7 +21,7 @@
 import { execFile } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { isInWorkspace } from '@shared/workspace'
 import { logLine } from './log'
 
@@ -58,27 +58,91 @@ function git(args: string[], cwd: string): Promise<{ ok: boolean; out: string }>
 }
 
 /**
- * Makes the folder if it is not there, and a repository inside it once.
+ * Whether this directory, or anything above it, is already a repository.
  *
- * Lazily, at the first turn rather than when the session is created: most
- * conversations never write anything, and a directory per chat that was only
- * ever a question is litter.
+ * Walked by hand rather than asked of `git rev-parse`, because the answer has
+ * to be "no" for a directory that is not in a repository *and* for one that
+ * does not exist yet, and rev-parse cannot be run in a directory that is not
+ * there.
  */
-export async function ensureWorkspace(sessionId: string, path: string): Promise<void> {
-  if (!isWorkspace(path)) return
-  if (!existsSync(path)) mkdirSync(path, { recursive: true })
-  if (existsSync(join(path, '.git'))) return
+export function repositoryAbove(path: string): string | null {
+  let at = path
+  for (;;) {
+    if (existsSync(join(at, '.git'))) return at
+    const up = dirname(at)
+    if (up === at) return null
+    at = up
+  }
+}
+
+/**
+ * Directories a repository must never be created in.
+ *
+ * A `git init` in the home directory is a repository that tracks everything
+ * somebody owns, and the first `git add -A` after it is a mistake that takes a
+ * while to undo. The same goes for a filesystem root and for the parents of a
+ * home directory, none of which anybody means by "my project folder".
+ */
+export function tooBigToTrack(path: string): boolean {
+  const home = homedir()
+  if (path === '/' || dirname(path) === path) return true
+  if (path === home) return true
+  // A parent of the home directory: /Users, /home, / and so on.
+  return home.startsWith(`${path}/`)
+}
+
+export interface HistoryOutcome {
+  /** True when this call created the repository. */
+  created: boolean
+  /** Why not, when it did not and that is worth saying. */
+  skipped?: string
+}
+
+/**
+ * Makes sure the session's folder has a history, whatever folder it is.
+ *
+ * Two cases, one rule. A conversation's own folder is made here and made a
+ * repository, lazily at the first turn rather than when the session was
+ * created: most conversations never write anything, and a directory per chat
+ * that was only ever a question is litter.
+ *
+ * A folder somebody chose is left alone unless it is in no repository at all —
+ * then it gets one, so the Changes pane always has something to read and
+ * yesterday's version of a file still exists. Never when a repository is
+ * already above it: a `.git` inside a checkout is a second repository nobody
+ * asked for, tracking files the outer one already tracks.
+ */
+export async function ensureHistory(sessionId: string, path: string): Promise<HistoryOutcome> {
+  const own = isWorkspace(path)
+  if (own && !existsSync(path)) mkdirSync(path, { recursive: true })
+  if (!existsSync(path)) return { created: false, skipped: 'the folder is not there' }
+
+  const above = repositoryAbove(path)
+  if (above) return { created: false, skipped: above === path ? 'already a repository' : `inside ${above}` }
+  if (!own && tooBigToTrack(path)) {
+    logLine('info', `history ${sessionId}: ${path} is too broad to put a repository in`)
+    return { created: false, skipped: 'too broad to track' }
+  }
 
   const init = await git(['init', '--quiet', '--initial-branch=main'], path)
   if (!init.ok) {
     // No git on this machine, or it refused. The folder still works; only the
     // history is lost, and that is not worth failing a turn over.
-    logLine('info', `workspace ${sessionId}: no history (${init.out.slice(0, 120)})`)
-    return
+    logLine('info', `history ${sessionId}: none (${init.out.slice(0, 120)})`)
+    return { created: false, skipped: init.out.slice(0, 120) || 'git refused' }
   }
-  await git(['config', 'user.name', 'OpenDesktop'], path)
-  await git(['config', 'user.email', 'opendesktop@localhost'], path)
+  if (own) {
+    // A conversation's own repository commits as the app, since nobody else
+    // is going to. A folder somebody chose keeps their identity.
+    await git(['config', 'user.name', 'OpenDesktop'], path)
+    await git(['config', 'user.email', 'opendesktop@localhost'], path)
+  }
+  logLine('info', `history ${sessionId}: started a repository in ${path}`)
+  return { created: true }
 }
+
+/** The old name, kept for the one caller that only ever means its own folder. */
+export const ensureWorkspace = ensureHistory
 
 /**
  * Commits what the turn changed, if anything.
@@ -89,6 +153,11 @@ export async function ensureWorkspace(sessionId: string, path: string): Promise<
  * the only description of the change that exists.
  */
 export async function commitWorkspace(sessionId: string, path: string, asked: string): Promise<boolean> {
+  /*
+   * Only its own folder. A repository somebody chose is theirs: committing
+   * into it on their behalf would put this app's idea of a unit of work into
+   * a history they write themselves, and nobody asked for that.
+   */
   if (!isWorkspace(path) || !existsSync(join(path, '.git'))) return false
 
   const status = await git(['status', '--porcelain'], path)

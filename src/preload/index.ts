@@ -17,6 +17,7 @@ import type {
   Skill
 } from '@shared/types'
 import type { Savings } from '@shared/savings'
+import type { BlameLine, Commit, CommitDetail } from '@shared/history'
 import type { DiscoveredModel } from '@shared/catalog'
 import type { LocalModelStatus } from '@shared/local-model'
 
@@ -100,6 +101,24 @@ const api = {
       environmentId: string
     ): Promise<{ ok: boolean; version?: string; message: string }> =>
       ipcRenderer.invoke('rtk:install', environmentId)
+  },
+  /** The history beside the working tree: what happened before now. */
+  history: {
+    log: (
+      environmentId: string,
+      cwd: string,
+      options?: { limit?: number; path?: string }
+    ): Promise<Commit[]> => ipcRenderer.invoke('git:log', environmentId, cwd, options),
+    commit: (environmentId: string, cwd: string, hash: string): Promise<CommitDetail> =>
+      ipcRenderer.invoke('git:commit', environmentId, cwd, hash),
+    fileAt: (environmentId: string, cwd: string, hash: string, path: string): Promise<string> =>
+      ipcRenderer.invoke('git:fileAt', environmentId, cwd, hash, path),
+    blame: (
+      environmentId: string,
+      cwd: string,
+      path: string,
+      options?: { from?: number; lines?: number }
+    ): Promise<BlameLine[]> => ipcRenderer.invoke('git:blame', environmentId, cwd, path, options)
   },
   env: {
     test: (id: string): Promise<{ ok: boolean; message: string }> => ipcRenderer.invoke('env:test', id),

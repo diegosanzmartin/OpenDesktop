@@ -37,7 +37,15 @@ import { previewOrigin, previewUrl } from './preview'
 import { WORKSPACES_DIR, removeWorkspace, summariseWorkspace, workspacePath } from './workspace'
 import { deleteSecret, secretHint, secretStatus, setSecret } from './secrets'
 import { createTerminal, killTerminal, resizeTerminal, terminalBuffer, writeTerminal } from './terminal'
-import { readBranchSummary, readChanges, readFileDiff } from './git'
+import {
+  readBlame,
+  readBranchSummary,
+  readChanges,
+  readCommit,
+  readFileAt,
+  readFileDiff,
+  readLog
+} from './git'
 import { createBoard, deleteBoard, getBoard, listBoards, updateBoard, defaultBoardFor } from './boards'
 import {
   columnOfKind,
@@ -649,6 +657,30 @@ export function registerIpc(): void {
   ipcMain.handle('git:summary', (_e, environmentId: string, cwd: string) =>
     readBranchSummary(environmentId, cwd)
   )
+  /*
+   * The history, which the Changes pane reads beside the working tree. In a
+   * conversation's own folder this is the conversation: one commit per turn,
+   * its subject the thing that was asked.
+   */
+  ipcMain.handle(
+    'git:log',
+    (_e, environmentId: string, cwd: string, options?: { limit?: number; path?: string }) =>
+      readLog(environmentId, cwd, options)
+  )
+  ipcMain.handle('git:commit', (_e, environmentId: string, cwd: string, hash: string) =>
+    readCommit(environmentId, cwd, hash)
+  )
+  ipcMain.handle(
+    'git:fileAt',
+    (_e, environmentId: string, cwd: string, hash: string, path: string) =>
+      readFileAt(environmentId, cwd, hash, path)
+  )
+  ipcMain.handle(
+    'git:blame',
+    (_e, environmentId: string, cwd: string, path: string, options?: { from?: number; lines?: number }) =>
+      readBlame(environmentId, cwd, path, options)
+  )
+
   ipcMain.handle('git:diff', (_e, environmentId: string, cwd: string, path: string, untracked: boolean) =>
     readFileDiff(environmentId, cwd, path, untracked)
   )

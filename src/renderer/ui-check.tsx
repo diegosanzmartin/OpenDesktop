@@ -24,6 +24,7 @@ import { ContextMeter } from './src/components/ContextMeter'
 import { ToolServerChip } from './src/components/ToolServerChip'
 import { ToolServersTab } from './src/components/ToolServersTab'
 import { HooksTab } from './src/components/HooksTab'
+import { ChangesPane } from './src/components/ChangesPane'
 import { BrowserPane } from './src/components/BrowserPane'
 import { previewTarget, previewTitle } from './src/lib/preview'
 import { EffortDial } from './src/components/EffortDial'
@@ -1685,6 +1686,156 @@ async function run(): Promise<void> {
     check('while a document there is still a card', projectText.includes('REPORT.md'), projectText)
 
     useStore.setState({ workspacesRoot: '' })
+  }
+
+
+  section('the folder, said only when it is worth saying')
+  {
+    /*
+     * `…/workspaces/94adVYh3JLDa` is an id nobody typed and nobody can use: it
+     * says "somewhere" in twenty-six characters. Pointed at a repository, the
+     * path is the most useful thing on the line.
+     */
+    const root = '/Users/x/.opendesktop/workspaces'
+    useStore.setState({ workspacesRoot: root })
+
+    const own = mount(<Composer session={{ ...session, cwd: `${root}/94adVYh3JLDa` }} />, 900)
+    await settle()
+    check(
+      'its own folder shows the icon and no path',
+      !(own.textContent ?? '').includes('94adVYh3JLDa') &&
+        !(own.textContent ?? '').includes('workspaces'),
+      own.textContent?.slice(0, 80)
+    )
+    const ownButton = [...own.querySelectorAll('button')].find((node) =>
+      (node.getAttribute('title') ?? '').includes("conversation's own folder")
+    )
+    check('and says what it is on hover', Boolean(ownButton), ownButton?.getAttribute('title'))
+    check(
+      'while still being the way to point it somewhere else',
+      (ownButton?.getAttribute('title') ?? '').includes('point it at a repository'),
+      ownButton?.getAttribute('title')
+    )
+
+    const chosen = mount(<Composer session={{ ...session, cwd: '/home/user/w/sec' }} />, 900)
+    await settle()
+    check(
+      'a chosen folder still shows its path',
+      (chosen.textContent ?? '').includes('/sec'),
+      chosen.textContent?.slice(0, 80)
+    )
+
+    useStore.setState({ workspacesRoot: '' })
+  }
+
+
+  section('what happened before now')
+  {
+    /*
+     * The pane answered one question — what is different from the last commit —
+     * which is only useful while you are the one making the difference. The
+     * other half is the history, and in a conversation's own folder that *is*
+     * the conversation: one commit per turn, subject the thing that was asked.
+     */
+    REPLIES['history.log'] = [
+      {
+        hash: 'a'.repeat(40),
+        short: 'a1b2c3d',
+        author: 'OpenDesktop',
+        at: Date.now() - 60_000,
+        parents: ['b'.repeat(40)],
+        subject: 'Now say it differently'
+      },
+      {
+        hash: 'b'.repeat(40),
+        short: 'b4e5f6a',
+        author: 'OpenDesktop',
+        at: Date.now() - 600_000,
+        parents: ['c'.repeat(40), 'd'.repeat(40)],
+        subject: 'Write me a report about the thing'
+      }
+    ]
+    REPLIES['history.commit'] = {
+      commit: {
+        hash: 'a'.repeat(40),
+        short: 'a1b2c3d',
+        author: 'OpenDesktop',
+        at: Date.now() - 60_000,
+        parents: ['b'.repeat(40)],
+        subject: 'Now say it differently'
+      },
+      files: [{ path: 'report.md', status: 'M', added: 4, removed: 2, staged: false, untracked: false }],
+      diff: 'diff --git a/report.md b/report.md\n@@ -1 +1 @@\n-# First\n+# Second\n'
+    }
+    REPLIES.changes = {
+      isRepo: true,
+      root: '/w',
+      branch: 'main',
+      files: [{ path: 'notes.md', status: 'M', added: 1, removed: 0, staged: false, untracked: false }],
+      added: 1,
+      removed: 0
+    }
+    useStore.setState({
+      changes: REPLIES.changes as never,
+      sessions: [session],
+      activeSessionId: session.id
+    })
+
+    const host = mount(<ChangesPane />, 460)
+    await settle()
+    check(
+      'it offers both halves, and starts on the working tree',
+      (host.textContent ?? '').includes('working tree') && (host.textContent ?? '').includes('history'),
+      host.textContent?.slice(0, 120)
+    )
+    check('with the working tree showing', (host.textContent ?? '').includes('notes.md'), host.textContent)
+
+    const historyTab = [...host.querySelectorAll('button')].find(
+      (node) => node.textContent?.trim() === 'history'
+    )
+    historyTab?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await settle()
+    const log = host.textContent ?? ''
+    check(
+      'the log reads as the conversation, one entry per turn',
+      log.includes('Write me a report about the thing') && log.includes('Now say it differently'),
+      log
+    )
+    check('with the short hash of each', log.includes('a1b2c3d'), log)
+
+    const commit = [...host.querySelectorAll('button')].find((node) =>
+      node.textContent?.includes('Now say it differently')
+    )
+    commit?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await settle()
+    const detail = host.textContent ?? ''
+    check(
+      'picking one says who, when and what it touched',
+      detail.includes('OpenDesktop') && detail.includes('report.md'),
+      detail
+    )
+    check('with its counts', detail.includes('+4') && detail.includes('-2'), detail)
+
+    const fileRow = [...host.querySelectorAll('button')].find((node) =>
+      node.textContent?.includes('report.md')
+    )
+    fileRow?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await settle()
+    const withDiff = host.textContent ?? ''
+    check(
+      'and opening the file shows that commit’s own diff, not the working tree’s',
+      withDiff.includes('# Second'),
+      withDiff.slice(-200)
+    )
+    check(
+      'beside the two questions a diff cannot answer',
+      withDiff.includes('history') && withDiff.includes('who wrote it'),
+      withDiff.slice(-200)
+    )
+
+    delete REPLIES['history.log']
+    delete REPLIES['history.commit']
+    useStore.setState({ changes: null })
   }
 
   console.log(`\n${checks - failures.length}/${checks} checks passed`)

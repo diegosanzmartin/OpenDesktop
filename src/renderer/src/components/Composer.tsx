@@ -21,6 +21,7 @@ import { isManager } from '@shared/types'
 import { SWITCHES, savingsLabel, savingsOf, type Savings } from '@shared/savings'
 import { ContextMeter } from './ContextMeter'
 import { ToolServerChip } from './ToolServerChip'
+import { isInWorkspace } from '@shared/workspace'
 import { EffortDial } from './EffortDial'
 import { workerModelRef } from '@shared/routing'
 import { mentionToken } from '@shared/mentions'
@@ -568,6 +569,7 @@ export function Composer({ session }: { session: Session }): ReactNode {
   }
 
   const openFolderPicker = useStore((s) => s.openFolderPicker)
+  const workspacesRoot = useStore((s) => s.workspacesRoot)
 
   /*
    * A rewind puts what the message said back here, so it can be edited and
@@ -587,6 +589,10 @@ export function Composer({ session }: { session: Session }): ReactNode {
       area.current?.setSelectionRange(end, end)
     })
   }, [draft, session.id, setDraft])
+
+  // Its own folder rather than one somebody chose, which changes what this
+  // line is worth saying.
+  const ownFolder = isInWorkspace(workspacesRoot, session.cwd)
 
   const patch = (next: Partial<Session>): void => {
     void window.opendesktop.sessions.update(session.id, next)
@@ -763,14 +769,25 @@ export function Composer({ session }: { session: Session }): ReactNode {
           */}
         <div data-footer className="mt-1.5 flex items-center gap-x-2.5 px-1">
           <div className="flex min-w-0 flex-1 items-center gap-x-2.5 overflow-hidden">
+          {/*
+            * Just the icon when the folder is the conversation's own: the path
+            * is `…/workspaces/94adVYh3JLDa`, which is an id nobody typed and
+            * nobody can use — it says "somewhere" in twenty-six characters.
+            * Pointed at a repository, the path is the most useful thing on
+            * this line.
+            */}
           <button
             type="button"
-            title={`${session.cwd} — click to change it, ⌘R to search for one`}
+            title={
+              ownFolder
+                ? "This conversation's own folder — click to point it at a repository instead"
+                : `${session.cwd} — click to change it, ⌘R to search for one`
+            }
             onClick={() => openFolderPicker(session.id)}
             className="text-ink-500 hover:text-ink-200 flex min-w-0 shrink items-center gap-1.5 text-[11.5px]"
           >
             <FolderOpen className="h-3 w-3 shrink-0" />
-            <span className="truncate">{shortenPath(session.cwd, 26)}</span>
+            {ownFolder ? null : <span className="truncate">{shortenPath(session.cwd, 26)}</span>}
           </button>
 
           {/* Nothing is said when the manager is running it, which is almost

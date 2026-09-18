@@ -33,7 +33,7 @@ import { workerIsTheSameModel } from '../shunt'
 import { record as meterRecord, spentLookup } from '../meter'
 import { logError, logLine } from '../log'
 import { runHooks } from '../hooks'
-import { commitWorkspace, ensureWorkspace } from '../workspace'
+import { commitWorkspace, ensureHistory, isWorkspace } from '../workspace'
 import * as store from '../store'
 import * as history from '../history'
 import { MUTATING_TOOLS, createTools, externalTools, type ToolContext } from './tools'
@@ -1101,9 +1101,19 @@ export async function runTurn(input: TurnInput): Promise<string> {
         `${input.depth ? ` depth=${input.depth}` : ''} cwd=${session.cwd}`
     )
 
-    // Its own folder, made now rather than when the session was created: most
-    // conversations never write anything.
-    await ensureWorkspace(session.id, session.cwd)
+    /*
+     * A history, whatever folder this is: its own, made now rather than when
+     * the session was created, or a folder somebody chose that is in no
+     * repository yet — so the Changes pane always has something to read.
+     */
+    const history_ = await ensureHistory(session.id, session.cwd)
+    if (history_.created && !isWorkspace(session.cwd)) {
+      bus.emit({
+        type: 'toast',
+        level: 'info',
+        message: `Started a git repository in ${session.cwd} — it had none, and now there is a history to compare against.`
+      })
+    }
 
     const ctx: ToolContext = {
       config,

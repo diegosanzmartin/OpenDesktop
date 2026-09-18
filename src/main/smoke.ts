@@ -52,8 +52,8 @@ import {
   statSync,
   writeFileSync
 } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
 import * as store from './store'
 import * as history from './history'
 import { dehydrate, estimateTokens, safeBoundary, shouldCompact } from './history'
@@ -73,6 +73,8 @@ import {
   rememberSecret,
   scrubSecrets
 } from '@shared/errors'
+import { readBlame, readCommit, readFileAt, readLog } from './git'
+import { onlyFile } from '@shared/history'
 import { logError, logLine, logPath } from './log'
 import { previewUrl, startPreviewServer, stopPreviewServer } from './preview'
 import { connectMcp, statusOf, stopMcp } from './mcp'
@@ -80,6 +82,9 @@ import { hookEnvironment, matches, runHooks, withEnvironment } from './hooks'
 import {
   WORKSPACES_DIR,
   commitWorkspace,
+  ensureHistory,
+  repositoryAbove,
+  tooBigToTrack,
   ensureWorkspace,
   isOwnWorkspace,
   isWorkspace,
@@ -6640,6 +6645,118 @@ async function main(): Promise<void> {
       'and a directory that merely starts with the same letters is not',
       !isInWorkspace('/a/workspaces', '/a/workspaces-old/x.md')
     )
+  }
+
+  section('a history for whatever folder it is')
+  {
+    /*
+     * A folder somebody chose gets a repository when it is in none, so the
+     * Changes pane always has something to read and yesterday's version of a
+     * file still exists. Never inside one that already exists: a .git in a
+     * checkout is a second repository nobody asked for.
+     */
+    const room = join(tmpdir(), `opendesktop-history-${Date.now()}`)
+    mkdirSync(join(room, 'project', 'src'), { recursive: true })
+    writeFileSync(join(room, 'project', 'src', 'app.ts'), 'export const a = 1\n')
+
+    check('a bare folder is in no repository', repositoryAbove(join(room, 'project')) === null)
+    const started = await ensureHistory('s-hist', join(room, 'project'))
+    check('so it gets one', started.created && existsSync(join(room, 'project', '.git')), started)
+
+    const inside = await ensureHistory('s-hist', join(room, 'project', 'src'))
+    check(
+      'and a directory inside it gets nothing, because one is already above',
+      !inside.created && (inside.skipped ?? '').includes(join(room, 'project')),
+      inside
+    )
+    check('with no second .git', !existsSync(join(room, 'project', 'src', '.git')))
+
+    const again = await ensureHistory('s-hist', join(room, 'project'))
+    check('and asking twice changes nothing', !again.created && again.skipped === 'already a repository')
+
+    /*
+     * The guard that matters more than the feature: a `git init` in the home
+     * directory is a repository that tracks everything somebody owns.
+     */
+    check('the home directory is never turned into a repository', tooBigToTrack(homedir()))
+    check('nor a parent of it, nor the root', tooBigToTrack('/') && tooBigToTrack(dirname(homedir())))
+    check('a project folder is fine', !tooBigToTrack(join(room, 'project')))
+    const refused = await ensureHistory('s-hist', homedir())
+    check('and it refuses in so many words', !refused.created, refused)
+
+    /* ---- and what the pane reads out of it ---- */
+
+    const project = join(room, 'project')
+    const run = (args: string[]): Promise<void> =>
+      new Promise((done) => {
+        const proc = spawn('git', args, { cwd: project, stdio: 'ignore' })
+        proc.on('close', () => done())
+        proc.on('error', () => done())
+      })
+    await run(['config', 'user.email', 'test@localhost'])
+    await run(['config', 'user.name', 'Test'])
+    await run(['add', '-A'])
+    await run(['commit', '-m', 'First, as the conversation asked'])
+    writeFileSync(join(project, 'src', 'app.ts'), 'export const a = 2\n')
+    await run(['commit', '-am', 'Then the other thing'])
+
+    const log = await readLog('local', project, { limit: 10 })
+    check('the log comes back newest first', log.length === 2 && log[0].subject === 'Then the other thing', log.map((c) => c.subject))
+    check(
+      'with what a commit is: a hash, a short hash, who, when and its parents',
+      /^[0-9a-f]{40}$/.test(log[0].hash) &&
+        log[0].short.length >= 7 &&
+        log[0].author === 'Test' &&
+        log[0].at > 1_600_000_000_000 &&
+        log[0].parents.length === 1 &&
+        log[1].parents.length === 0,
+      log[0]
+    )
+
+    const only = await readLog('local', project, { path: 'src/app.ts', limit: 10 })
+    check('and one file’s history is its own', only.length === 2, only.length)
+
+    const detail = await readCommit('local', project, log[0].hash)
+    check('a commit says what it said', detail.commit?.subject === 'Then the other thing', detail.commit)
+    check(
+      'which files it touched, with counts',
+      detail.files.length === 1 &&
+        detail.files[0].path === 'src/app.ts' &&
+        detail.files[0].added === 1 &&
+        detail.files[0].removed === 1,
+      detail.files
+    )
+    check('and carries its diff', detail.diff.includes('export const a = 2'), detail.diff.slice(0, 80))
+    check(
+      'which can be cut down to one file',
+      onlyFile(detail.diff, 'src/app.ts').startsWith('diff --git') &&
+        onlyFile(detail.diff, 'nope.ts').includes('no textual diff'),
+      onlyFile(detail.diff, 'src/app.ts').split('\n')[0]
+    )
+
+    const was = await readFileAt('local', project, log[1].hash, 'src/app.ts')
+    check('a file can be read as an older commit left it', was.trim() === 'export const a = 1', was.trim())
+    check(
+      'and a path that was not in it says so rather than pretending',
+      (await readFileAt('local', project, log[1].hash, 'nope.ts')).includes('is not in'),
+    )
+
+    const blame = await readBlame('local', project, 'src/app.ts')
+    check(
+      'blame says who put the line there and when',
+      blame.length === 1 && blame[0].author === 'Test' && blame[0].text.includes('a = 2') && blame[0].at > 0,
+      blame
+    )
+    check(
+      'and it points at the commit that brought it',
+      blame[0]?.hash === log[0].hash,
+      { blamed: blame[0]?.short, head: log[0].short }
+    )
+
+    const empty = await readLog('local', join(room, 'nowhere'), { limit: 5 })
+    check('a folder with no repository has no log rather than an error', empty.length === 0)
+
+    rmSync(room, { recursive: true, force: true })
   }
 
   section('things the app does that the model never sees')
