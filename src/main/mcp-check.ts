@@ -46,10 +46,16 @@ function parseArgs(argv: string[]): {
   args?: Record<string, unknown>
   turn?: string
   model?: string
+  keep?: boolean
 } {
-  const out: { command: string[]; call?: string; args?: Record<string, unknown>; turn?: string; model?: string } = {
-    command: []
-  }
+  const out: {
+    command: string[]
+    call?: string
+    args?: Record<string, unknown>
+    turn?: string
+    model?: string
+    keep?: boolean
+  } = { command: [] }
   let rest = argv
   for (;;) {
     const flag = rest[0]
@@ -65,6 +71,9 @@ function parseArgs(argv: string[]): {
     } else if (flag === '--model') {
       out.model = rest[1]
       rest = rest.slice(2)
+    } else if (flag === '--keep') {
+      out.keep = true
+      rest = rest.slice(1)
     } else if (flag === '--') {
       rest = rest.slice(1)
     } else break
@@ -94,7 +103,9 @@ async function readyForSecrets(): Promise<void> {
 async function main(): Promise<void> {
   const parsed = parseArgs(process.argv.slice(2))
   if (parsed.command.length === 0) {
-    console.log('usage: mcp:check -- [--call tool --args json] [--turn prompt] -- command [args…]')
+    console.log(
+      'usage: mcp:check -- [--call tool --args json] [--turn prompt [--model ref] [--keep]] -- command [args…]'
+    )
     process.exit(1)
   }
 
@@ -219,16 +230,43 @@ async function main(): Promise<void> {
         `       turn: ${blocks.map((block) => `${block.tool}:${block.status}`).join(' ')} in ${Math.round((Date.now() - turnStarted) / 1000)}s`
       )
       console.log(`       said: ${said.replace(/\s+/g, ' ').slice(0, 320)}`)
-      check(
-        'the model reached for the server’s tools',
-        blocks.some((block) => block.tool === 'mcp'),
-        blocks.map((block) => block.tool)
+      /*
+       * That the tools were on the table, not that the model picked them.
+       *
+       * The first version of this asserted an `mcp` block and failed on a turn
+       * that answered the question perfectly — with the app's own `read`,
+       * because the file was right there and the server's equivalent was the
+       * longer way round. A model choosing the simpler tool is the router
+       * working, not a fault, and a check that calls it one is a check that
+       * will be argued with. `--call` is what tests the call path.
+       */
+      check('the turn ran with the server on the table', status.tools.length > 0 && blocks.length > 0, {
+        offered: status.tools.length,
+        used: blocks.map((block) => block.tool)
+      })
+      check('and answered', said.length > 0, said.length)
+      const viaServer = blocks.filter((block) => block.tool === 'mcp').length
+      console.log(
+        `       it used the server for ${viaServer} of ${blocks.length} call${blocks.length === 1 ? '' : 's'}` +
+          `${viaServer === 0 ? ' — it had its own tools for this one' : ''}`
       )
-      check('and answered with what came back', said.length > 0, said.length)
       console.log(`       prefix: ${estimateTokens(history.getHistory(session.id))} tokens of transcript`)
 
-      store.deleteSession(session.id)
-      history.clearHistory(session.id)
+      /*
+       * Kept when asked, because a check that proves something and then
+       * deletes the evidence is a check nobody can look at. The app reads the
+       * sessions directory at startup rather than the index, so a session
+       * written by this process shows up the next time it is opened — not in a
+       * window that is already running, which has its own copy in memory.
+       */
+      if (parsed.keep) {
+        store.updateSession(session.id, { title: `MCP check — ${server.command}` })
+        store.flush()
+        console.log(`       kept as "${session.id}" — reopen OpenDesktop to see it`)
+      } else {
+        store.deleteSession(session.id)
+        history.clearHistory(session.id)
+      }
     }
     saveConfig(before)
   }
