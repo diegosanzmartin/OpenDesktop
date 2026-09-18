@@ -301,6 +301,31 @@ path. The choice belongs
 to the kind of thing being looked at: going from a file to a website brings the bar back on its
 own, and going the other way takes it away again.
 
+### A folder of its own
+
+Plenty of what this app is asked is not "change this code": it is a question, an
+investigation, a report. Those still write files, and the local environment's working
+directory is `~` — so a question that produced a file put it in the home directory, and the
+next one put another beside it with nothing to say which conversation either came from.
+
+A session with no folder chosen now gets `~/.opendesktop/workspaces/<id>`, made when the first
+turn needs it rather than when the session is created, so a conversation that only ever asked
+something leaves nothing behind. It is a **git repository**, and each turn that changed
+anything is one commit whose subject is what was asked — so the fifth draft of a report can be
+compared with the first, and `git log` reads as the conversation. Deleting the conversation
+deletes the folder; `session:workspace` says how many files that would be, for the prompt.
+
+One repository per conversation, deliberately, not one shared by all of them: two sessions
+committing at once is `index.lock` contention and a history nobody can read, and it would make
+"delete the conversation and its files" a surgical operation instead of removing a directory.
+
+Inside that folder **every file gets a card** — something to open and save — whatever its
+extension, because there is no project to diff against and the file exists because this
+conversation made it. In somebody's repository the old rule still holds: a document opens, a
+source file diffs. Choosing a folder in the composer points the session at a real repository
+instead, and then nothing is ever deleted with the chat. A remote session keeps its
+environment's directory, since a workspace is a folder on this machine.
+
 ### Hooks
 
 A command this app runs when the agent does something: format what it edited, stage it,

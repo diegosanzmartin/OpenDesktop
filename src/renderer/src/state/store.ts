@@ -79,6 +79,8 @@ interface State {
   gitSummaries: Record<string, GitSummary>
   sessionQuery: SessionQuery
   activityQuery: ActivityQuery
+  /** Where conversations' own folders live, read once at startup. */
+  workspacesRoot: string
   browserUrl: string
   /**
    * Whether the browser pane shows its address bar. Null is "decide from what
@@ -203,6 +205,7 @@ export const useStore = create<State>((set, get) => ({
     sessionId: null,
     since: null
   },
+  workspacesRoot: '',
   browserUrl: '',
   browserChrome: null,
   expanded: {},
@@ -226,7 +229,8 @@ export const useStore = create<State>((set, get) => ({
       secrets,
       skills,
       backgroundTasks,
-      boards
+      boards,
+      workspacesRoot
     ] =
       await Promise.all([
         api().config.get(),
@@ -238,7 +242,8 @@ export const useStore = create<State>((set, get) => ({
         api().secrets.status(),
         api().skills.list(),
         api().background.list(),
-        api().boards.list()
+        api().boards.list(),
+        api().files.workspacesRoot()
       ])
     const blocks: Record<string, Block> = {}
     for (const block of activity) blocks[block.id] = block
@@ -255,6 +260,7 @@ export const useStore = create<State>((set, get) => ({
       skills,
       backgroundTasks,
       boards,
+      workspacesRoot,
       ready: true
     })
 

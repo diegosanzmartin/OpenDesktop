@@ -33,6 +33,7 @@ import { workerIsTheSameModel } from '../shunt'
 import { record as meterRecord, spentLookup } from '../meter'
 import { logError, logLine } from '../log'
 import { runHooks } from '../hooks'
+import { commitWorkspace, ensureWorkspace } from '../workspace'
 import * as store from '../store'
 import * as history from '../history'
 import { MUTATING_TOOLS, createTools, externalTools, type ToolContext } from './tools'
@@ -1100,6 +1101,10 @@ export async function runTurn(input: TurnInput): Promise<string> {
         `${input.depth ? ` depth=${input.depth}` : ''} cwd=${session.cwd}`
     )
 
+    // Its own folder, made now rather than when the session was created: most
+    // conversations never write anything.
+    await ensureWorkspace(session.id, session.cwd)
+
     const ctx: ToolContext = {
       config,
       // The slimmed one: `enabled()` reads its tool map, which is how a small
@@ -1584,6 +1589,15 @@ export async function runTurn(input: TurnInput): Promise<string> {
         `${Date.now() - startedAt}ms(model=${Math.round((Date.now() - startedAt - toolsWall) / 1000)}s ` +
         `tools=${Math.round(toolsWall / 1000)}s)${streamFailure === null ? '' : ' (stream failed)'}`
     )
+
+    /*
+     * What the turn changed in the conversation's own folder, as one commit.
+     * Its subject is what was asked, which is the only description of the
+     * change anybody wrote.
+     */
+    if (await commitWorkspace(session.id, session.cwd, input.userText)) {
+      logLine('info', `turn ${session.id} committed its workspace`)
+    }
 
     /*
      * And whatever this session does when a turn ends — a notification, a

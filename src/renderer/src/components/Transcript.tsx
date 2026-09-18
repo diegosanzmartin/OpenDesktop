@@ -8,6 +8,7 @@ import { duration } from '../lib/format'
 import { BlockCard } from './BlockCard'
 import { DocumentCard } from './DocumentCard'
 import { isDocument } from '@shared/documents'
+import { isInWorkspace } from '@shared/workspace'
 import { Markdown } from './Markdown'
 
 function basename(path: string): string {
@@ -348,6 +349,7 @@ export function Reasoning({ thoughts }: { thoughts: string[] }): ReactNode {
 /* ---------------- end-of-turn file summary ---------------- */
 
 export function EditedFiles({ blocks }: { blocks: Block[] }): ReactNode {
+  const workspacesRoot = useStore((s) => s.workspacesRoot)
   const written = useMemo(() => {
     const map = new Map<string, { path: string; environmentId: string; added: number; removed: number }>()
     for (const block of blocks) {
@@ -385,13 +387,19 @@ export function EditedFiles({ blocks }: { blocks: Block[] }): ReactNode {
     return [...map.values()]
   }, [blocks])
 
-  // A document is something to open; a source file is something to diff.
+  /*
+   * A document is something to open; a source file is something to diff.
+   *
+   * Except in the conversation's own folder, where everything is something to
+   * open: there is no project to diff against, the file exists because this
+   * conversation made it, and a `.mobileconfig` or a `.sh` written there is
+   * exactly as much the point as a PDF would be.
+   */
   const handed = new Set(delivered.map((file) => file.path))
-  const documents = [
-    ...delivered,
-    ...written.filter((file) => isDocument(file.path) && !handed.has(file.path))
-  ]
-  const files = written.filter((file) => !isDocument(file.path) && !handed.has(file.path))
+  const openable = (file: { path: string }): boolean =>
+    isDocument(file.path) || isInWorkspace(workspacesRoot, file.path)
+  const documents = [...delivered, ...written.filter((file) => openable(file) && !handed.has(file.path))]
+  const files = written.filter((file) => !openable(file) && !handed.has(file.path))
 
   if (written.length === 0 && delivered.length === 0) return null
 

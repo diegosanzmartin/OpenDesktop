@@ -34,6 +34,7 @@ import { compactNow, isRunning, queueFollowUp, runTurn, stop } from './agent/run
 import { forkFrom, rewind } from './rewind'
 import { deniedSegment, listPending, resolveApproval, type ApprovalAnswer } from './approvals'
 import { previewOrigin, previewUrl } from './preview'
+import { WORKSPACES_DIR, removeWorkspace, summariseWorkspace, workspacePath } from './workspace'
 import { deleteSecret, secretHint, secretStatus, setSecret } from './secrets'
 import { createTerminal, killTerminal, resizeTerminal, terminalBuffer, writeTerminal } from './terminal'
 import { readBranchSummary, readChanges, readFileDiff } from './git'
@@ -295,21 +296,51 @@ export function registerIpc(): void {
     ) => {
       const config = rawConfig()
       const environmentId = input.environmentId ?? 'local'
-      const cwd = input.cwd ?? config.environment[environmentId]?.cwd ?? homedir()
-      return store.createSession({
+      /*
+       * No folder chosen means the conversation's own, not the home directory.
+       *
+       * The default used to be the local environment's working directory,
+       * which is `~` — so a question that produced a file put it in the home
+       * directory, and the next one put another beside it with nothing to say
+       * which conversation either came from. A remote session keeps the
+       * environment's directory: a workspace is a folder on this machine and
+       * would mean nothing over there.
+       */
+      const remote = config.environment[environmentId]?.kind !== 'local'
+      const fallback = config.environment[environmentId]?.cwd ?? homedir()
+      const session = store.createSession({
         title: input.title,
-        cwd,
+        cwd: input.cwd ?? fallback,
         environmentId,
         agentId: input.agentId ?? MANAGER_AGENT,
         model: input.model ?? config.model,
         savings: input.savings ?? config.savings,
         autoApprove: input.autoApprove ?? config.autoApprove
       })
+      /*
+       * Pointed at its own folder once it has an id to name it after — the
+       * folder is not made until the first turn needs it, so a conversation
+       * that only ever asked a question leaves nothing behind.
+       */
+      if (!input.cwd && !remote) {
+        return store.updateSession(session.id, { cwd: workspacePath(session.id) }) ?? session
+      }
+      return session
     }
   )
   ipcMain.handle('session:update', (_e, id: string, patch: Record<string, unknown>) =>
     store.updateSession(id, patch)
   )
+  /**
+   * Where conversations' own folders live, asked once by the interface: it
+   * decides from a path whether a file is something to open, and the root
+   * moves with the app's own root.
+   */
+  ipcMain.handle('workspace:root', () => WORKSPACES_DIR)
+
+  /** What deleting this conversation would take with it, for the prompt. */
+  ipcMain.handle('session:workspace', (_e, id: string) => summariseWorkspace(id))
+
   ipcMain.handle('session:delete', (_e, id: string) => {
     /*
      * The subagents go with it. A `task` call runs in its own session, and
@@ -328,6 +359,8 @@ export function registerIpc(): void {
     history.clearHistory(id)
     killSessionTasks(id)
     dropSessionAttachments(id)
+    // Its own folder goes with it — only ever the one named after it.
+    removeWorkspace(id)
     store.deleteSession(id)
   })
   ipcMain.handle('session:clear', (_e, id: string) => {

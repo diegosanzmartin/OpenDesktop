@@ -244,6 +244,8 @@ const api = {
     }> => ipcRenderer.invoke('fs:findDirs', environmentId, cwd, refresh),
     previewUrl: (environmentId: string, path: string): Promise<string> =>
       ipcRenderer.invoke('preview:url', environmentId, path),
+    /** Where conversations' own folders live, for deciding what a path is. */
+    workspacesRoot: (): Promise<string> => ipcRenderer.invoke('workspace:root'),
     stat: (
       environmentId: string,
       path: string

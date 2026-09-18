@@ -1631,6 +1631,62 @@ async function run(): Promise<void> {
     useStore.setState({ config: before })
   }
 
+
+  section('everything a conversation made is something to open')
+  {
+    /*
+     * In a folder of its own there is no project to diff against: the file
+     * exists because this conversation made it, so a .mobileconfig or a .sh is
+     * exactly as much the point as a PDF would be. In somebody's repository
+     * the old rule holds — a document opens, a source file diffs.
+     */
+    const root = '/Users/x/.opendesktop/workspaces'
+    useStore.setState({ workspacesRoot: root })
+
+    const inWorkspace = mount(
+      <EditedFiles
+        blocks={[
+          block({ tool: 'write', input: { path: `${root}/abc/profile.mobileconfig` }, added: 40 }),
+          block({ tool: 'write', input: { path: `${root}/abc/notes.md` }, added: 8 })
+        ]}
+      />,
+      620
+    )
+    await settle()
+    const workspaceText = inWorkspace.textContent ?? ''
+    check(
+      'a file with an extension nobody cards gets a card here',
+      workspaceText.includes('profile.mobileconfig') && workspaceText.includes('MOBILECONFIG'),
+      workspaceText
+    )
+    check('and so does the markdown', workspaceText.includes('notes.md'), workspaceText)
+    check(
+      'with no diff row for either, because there is nothing to diff against',
+      !/\+40/.test(workspaceText),
+      workspaceText
+    )
+
+    const inProject = mount(
+      <EditedFiles
+        blocks={[
+          block({ tool: 'write', input: { path: '/Users/x/Dev/app/src/runner.ts' }, added: 40 }),
+          block({ tool: 'write', input: { path: '/Users/x/Dev/app/REPORT.md' }, added: 8 })
+        ]}
+      />,
+      620
+    )
+    await settle()
+    const projectText = inProject.textContent ?? ''
+    check(
+      'in a project a source file is still a diff',
+      projectText.includes('runner.ts') && /\+40/.test(projectText),
+      projectText
+    )
+    check('while a document there is still a card', projectText.includes('REPORT.md'), projectText)
+
+    useStore.setState({ workspacesRoot: '' })
+  }
+
   console.log(`\n${checks - failures.length}/${checks} checks passed`)
   if (failures.length > 0) {
     console.log(`\nfailed:\n${failures.map((f) => `  - ${f}`).join('\n')}`)

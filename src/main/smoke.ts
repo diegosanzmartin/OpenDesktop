@@ -77,6 +77,17 @@ import { logError, logLine, logPath } from './log'
 import { previewUrl, startPreviewServer, stopPreviewServer } from './preview'
 import { connectMcp, statusOf, stopMcp } from './mcp'
 import { hookEnvironment, matches, runHooks, withEnvironment } from './hooks'
+import {
+  WORKSPACES_DIR,
+  commitWorkspace,
+  ensureWorkspace,
+  isOwnWorkspace,
+  isWorkspace,
+  removeWorkspace,
+  summariseWorkspace,
+  workspacePath
+} from './workspace'
+import { isInWorkspace } from '@shared/workspace'
 import { toolEnvironment } from './tool-env'
 import type { ExecOptions, ExecResult, Runtime } from './runtime'
 import {
@@ -6539,6 +6550,96 @@ async function main(): Promise<void> {
 
     stopPreviewServer()
     rmSync(room, { recursive: true, force: true })
+  }
+
+  section('a folder of its own for a conversation that has none')
+  {
+    /*
+     * What this replaces: the local environment's working directory is `~`, so
+     * a question that produced a file wrote it into the home directory and the
+     * next one wrote another beside it, with nothing to say which conversation
+     * either came from.
+     */
+    const id = 'wk-check-1'
+    const path = workspacePath(id)
+    check('a workspace is named after its conversation', path.endsWith(id), path)
+    check('and is recognisable by where it is', isWorkspace(path) && isOwnWorkspace(id, path))
+    check(
+      'somebody’s own repository is not one, whatever its name',
+      !isWorkspace('/Users/x/Dev/OpenDesktop') && !isWorkspace(undefined)
+    )
+    check(
+      'and one conversation does not own another’s',
+      !isOwnWorkspace('wk-check-2', path)
+    )
+
+    check('nothing exists before a turn needs it', !existsSync(path))
+    await ensureWorkspace(id, path)
+    check('the first turn makes it', existsSync(path))
+    check('with a history, so a fifth draft can be compared with the first', existsSync(join(path, '.git')))
+
+    // A turn that changed nothing commits nothing.
+    check('an empty turn leaves no commit', (await commitWorkspace(id, path, 'just asking')) === false)
+
+    writeFileSync(join(path, 'report.md'), '# First\n')
+    check(
+      'a turn that wrote something commits it',
+      await commitWorkspace(id, path, 'Write me a report about the thing'),
+    )
+    writeFileSync(join(path, 'report.md'), '# Second\n')
+    await commitWorkspace(id, path, 'Now say it differently')
+    const log = await new Promise<string>((done) => {
+      const proc = spawn('git', ['log', '--oneline'], { cwd: path, stdio: ['ignore', 'pipe', 'ignore'] })
+      let out = ''
+      proc.stdout.on('data', (chunk: Buffer) => (out += chunk.toString()))
+      proc.on('close', () => done(out))
+    })
+    check(
+      'and the log reads as what was asked, one entry per turn',
+      log.includes('Write me a report about the thing') && log.includes('Now say it differently'),
+      log.trim()
+    )
+
+    const summary = summariseWorkspace(id)
+    check(
+      'what deleting the conversation would take is countable',
+      summary?.files === 1 && (summary?.bytes ?? 0) > 0,
+      summary
+    )
+
+    removeWorkspace(id)
+    check('and deleting it takes the folder with it', !existsSync(path))
+    check(
+      'while a path outside is never touched',
+      (() => {
+        const outside = join(tmpdir(), `opendesktop-not-a-workspace-${Date.now()}`)
+        mkdirSync(outside, { recursive: true })
+        removeWorkspace(outside)
+        const survived = existsSync(outside)
+        rmSync(outside, { recursive: true, force: true })
+        return survived
+      })()
+    )
+
+    /*
+     * And in that folder every file is something to open, not something to
+     * diff. Tested against the root rather than a substring of it, which is
+     * what the first version did — and that version was switched off in every
+     * install with its own root, this test included.
+     */
+    check(
+      'a file in a workspace is openable whatever its extension',
+      isInWorkspace(WORKSPACES_DIR, `${WORKSPACES_DIR}/abc/profile.mobileconfig`),
+      WORKSPACES_DIR
+    )
+    check(
+      'a file in a project is not',
+      !isInWorkspace(WORKSPACES_DIR, '/Users/x/Dev/app/src/runner.ts')
+    )
+    check(
+      'and a directory that merely starts with the same letters is not',
+      !isInWorkspace('/a/workspaces', '/a/workspaces-old/x.md')
+    )
   }
 
   section('things the app does that the model never sees')
