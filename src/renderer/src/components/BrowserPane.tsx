@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { ArrowLeft, ArrowRight, ExternalLink, Home, RotateCw, TriangleAlert } from 'lucide-react'
 import { useStore } from '../state/store'
+import { previewTarget } from '../lib/preview'
 import { Button } from './ui'
 
 interface WebviewElement extends HTMLElement {
@@ -33,6 +34,14 @@ export function BrowserPane(): ReactNode {
   const url = useStore((s) => s.browserUrl)
   const setUrl = useStore((s) => s.setBrowserUrl)
   const session = useStore((s) => s.sessions.find((x) => x.id === s.activeSessionId))
+  /*
+   * A file gets no address bar unless it is asked for. The page the preview
+   * server renders puts the path in its own header, so the bar was the second
+   * copy of it — and the controls beside it are for navigating a site, which
+   * a file is not.
+   */
+  const chrome = useStore((s) => s.browserChrome)
+  const showChrome = chrome ?? previewTarget(url) === null
 
   const [draft, setDraft] = useState(url)
   const [current, setCurrent] = useState(url)
@@ -163,6 +172,10 @@ export function BrowserPane(): ReactNode {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
+      {/* Not mounted rather than hidden: what is left is a row of controls
+          for navigating a site, and the draft address lives in state, so
+          there is nothing to preserve by keeping an invisible copy. */}
+      {showChrome ? (
       <div className="border-ink-800 bg-ink-900 flex items-center gap-1.5 border-b px-3 py-2">
         <Button size="sm" onClick={() => view.current?.goBack()} disabled={!nav.back} title="Back">
           <ArrowLeft className="h-3.5 w-3.5" />
@@ -211,6 +224,7 @@ export function BrowserPane(): ReactNode {
           <ExternalLink className="h-3.5 w-3.5" />
         </Button>
       </div>
+      ) : null}
 
       <div className="relative min-h-0 flex-1 bg-white">
         <webview

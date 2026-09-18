@@ -23,6 +23,8 @@ import { EditedFiles } from './src/components/Transcript'
 import { ContextMeter } from './src/components/ContextMeter'
 import { ToolServerChip } from './src/components/ToolServerChip'
 import { ToolServersTab } from './src/components/ToolServersTab'
+import { BrowserPane } from './src/components/BrowserPane'
+import { previewTarget, previewTitle } from './src/lib/preview'
 import { EffortDial } from './src/components/EffortDial'
 import { ModelsTab } from './src/components/ModelsTab'
 import { RoutingTab } from './src/components/RoutingTab'
@@ -1517,6 +1519,71 @@ async function run(): Promise<void> {
     useStore.setState({ config: before })
   }
 
+
+  section('a file is not a website')
+  {
+    /*
+     * The pane was showing the path twice — once in its address bar and once
+     * in the header of the page the preview server renders — plus back,
+     * forward, reload and home, which a file has no use for. So a file gets no
+     * bar unless it is asked for, and a website still does.
+     */
+    const fileUrl =
+      'http://127.0.0.1:61051/f/local/Users/diego.sanz/.opendesktop/check-output/report.md?t=abc'
+    check(
+      'a preview URL is recognised, and its file named',
+      previewTitle(fileUrl) === 'report.md',
+      previewTitle(fileUrl)
+    )
+    check('and a website is not', previewTitle('https://example.com/f/local/x') === null)
+    check(
+      'the path comes back decoded, not as %20',
+      previewTarget('http://127.0.0.1:1/f/local/a%20b/c.md')?.path === '/a b/c.md',
+      previewTarget('http://127.0.0.1:1/f/local/a%20b/c.md')?.path
+    )
+
+    useStore.setState({ browserUrl: fileUrl, browserChrome: null })
+    const file = mount(<BrowserPane />, 420)
+    await settle()
+    check(
+      'a file gets no address bar',
+      file.querySelectorAll('input').length === 0,
+      file.querySelectorAll('input').length
+    )
+
+    useStore.setState({ browserUrl: 'https://example.com', browserChrome: null })
+    const site = mount(<BrowserPane />, 420)
+    await settle()
+    check('a website still gets one', site.querySelectorAll('input').length === 1)
+
+    useStore.setState({ browserUrl: fileUrl, browserChrome: true })
+    const asked = mount(<BrowserPane />, 420)
+    await settle()
+    check('and a file gets one when it is asked for', asked.querySelectorAll('input').length === 1)
+
+    /*
+     * The choice belongs to the kind of thing being looked at: going from a
+     * file to a website brings the bar back on its own.
+     */
+    useStore.setState({ browserUrl: fileUrl, browserChrome: false })
+    useStore.getState().setBrowserUrl('https://example.com')
+    check(
+      'and it resets when the kind changes',
+      useStore.getState().browserChrome === null,
+      useStore.getState().browserChrome
+    )
+    useStore.getState().setBrowserUrl(fileUrl)
+    useStore.setState({ browserChrome: true })
+    useStore.getState().setBrowserUrl(fileUrl.replace('report.md', 'report.pdf'))
+    check(
+      'but not when one file follows another',
+      useStore.getState().browserChrome === true,
+      useStore.getState().browserChrome
+    )
+
+    useStore.setState({ browserUrl: '', browserChrome: null })
+  }
+
   console.log(`\n${checks - failures.length}/${checks} checks passed`)
   if (failures.length > 0) {
     console.log(`\nfailed:\n${failures.map((f) => `  - ${f}`).join('\n')}`)
@@ -1705,6 +1772,31 @@ async function run(): Promise<void> {
             } as Session
           }
         />
+      </div>
+    )
+    await settle()
+  }
+
+  // The pane showing a file, with and without its address bar.
+  if (new URLSearchParams(location.search).get('shot') === 'viewer') {
+    document.body.innerHTML = ''
+    const fileUrl =
+      'http://127.0.0.1:61051/f/local/Users/diego.sanz/.opendesktop/check-output/report.md?t=abc'
+    useStore.setState({
+      browserUrl: fileUrl,
+      browserChrome: null,
+      dock: { ...useStore.getState().dock, open: true, tab: 'browser', width: 460 }
+    })
+    mount(
+      <div className="flex h-[280px] w-[460px] flex-col">
+        <div className="border-ink-800 bg-ink-850 m-2 flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg border">
+          <div className="border-ink-800 flex h-10 shrink-0 items-center gap-2 border-b px-3">
+            <span className="text-ink-200 min-w-0 truncate text-[12.5px]">
+              {previewTitle(fileUrl)}
+            </span>
+          </div>
+          <BrowserPane />
+        </div>
       </div>
     )
     await settle()

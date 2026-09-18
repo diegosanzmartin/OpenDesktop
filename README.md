@@ -286,6 +286,19 @@ asked for. A handed-over file always gets a card, whatever its extension, and th
 is not drawn — the card already says it. A path that is not there is refused with the name of
 the one that is missing, because a file made by a command is wherever that command put it.
 
+### Looking at a file
+
+A card opens its file in the pane on the right, which is a loopback HTTP server
+handing the bytes to a webview: a PDF goes across as `application/pdf`, which the webview
+renders, and a markdown file comes back as a rendered page rather than its source.
+
+A file is not a website, so it gets no address bar. The pane was showing the path twice — once
+in the bar and once in the header of the page itself — next to back, forward, reload and home,
+which a file has no use for. The pane's title is the file's name instead, and the button beside
+the widen and close ones brings the bar back when you want to type a path. The choice belongs
+to the kind of thing being looked at: going from a file to a website brings the bar back on its
+own, and going the other way takes it away again.
+
 ### Tool servers (MCP)
 
 A server is a program that offers the agent tools this app did not write, over MCP. They are

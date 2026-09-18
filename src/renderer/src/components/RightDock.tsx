@@ -1,8 +1,9 @@
 import clsx from 'clsx'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Maximize2, Minimize2, X } from 'lucide-react'
+import { Maximize2, Minimize2, PanelTopClose, PanelTopOpen, X } from 'lucide-react'
 import { useStore, type DockTab } from '../state/store'
 import { BrowserPane } from './BrowserPane'
+import { previewTarget, previewTitle } from '../lib/preview'
 import { TerminalPane } from './TerminalPane'
 import { ChangesPane } from './ChangesPane'
 import { FilesPane } from './FilesPane'
@@ -26,6 +27,9 @@ export function RightDock(): ReactNode {
   const [opened, setOpened] = useState<Set<DockTab>>(() => new Set())
   const closeDock = useStore((s) => s.closeDock)
   const setDockWidth = useStore((s) => s.setDockWidth)
+  const browserUrl = useStore((s) => s.browserUrl)
+  const browserChrome = useStore((s) => s.browserChrome)
+  const setBrowserChrome = useStore((s) => s.setBrowserChrome)
   const dragging = useRef(false)
 
   const onMove = useCallback(
@@ -55,6 +59,8 @@ export function RightDock(): ReactNode {
   }, [dock.open, dock.tab, opened])
 
   const wide = dock.width > 700
+  // Mirrors the pane's own rule, so the button says what the next click does.
+  const addressBar = browserChrome ?? previewTarget(browserUrl) === null
 
   return (
     // Hidden rather than unmounted: taking the dock out of the tree destroys the
@@ -74,8 +80,26 @@ export function RightDock(): ReactNode {
       />
       <div className="border-ink-800 bg-ink-850 m-2 ml-1 flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg border">
         <div className="border-ink-800 flex h-10 shrink-0 items-center gap-2 border-b px-3">
-          <span className="text-ink-200 text-[12.5px]">{TITLES[dock.tab]}</span>
+          {/* The file's name when one is loaded: the pane already says
+              "Browser" by being one, and a file is what you came for. */}
+          <span className="text-ink-200 min-w-0 truncate text-[12.5px]">
+            {(dock.tab === 'browser' ? previewTitle(browserUrl) : null) ?? TITLES[dock.tab]}
+          </span>
           <div className="ml-auto flex items-center gap-0.5">
+            {dock.tab === 'browser' && browserUrl ? (
+              <button
+                type="button"
+                title={addressBar ? 'Hide the address bar' : 'Show the address bar'}
+                onClick={() => setBrowserChrome(!addressBar)}
+                className="text-ink-600 hover:bg-ink-800 hover:text-ink-200 rounded p-1"
+              >
+                {addressBar ? (
+                  <PanelTopClose className="h-3.5 w-3.5" />
+                ) : (
+                  <PanelTopOpen className="h-3.5 w-3.5" />
+                )}
+              </button>
+            ) : null}
             <button
               type="button"
               title={wide ? 'Narrow' : 'Widen'}

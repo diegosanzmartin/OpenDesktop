@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { previewTarget } from '../lib/preview'
 import type {
   ActivityQuery,
   AppConfig,
@@ -79,6 +80,11 @@ interface State {
   sessionQuery: SessionQuery
   activityQuery: ActivityQuery
   browserUrl: string
+  /**
+   * Whether the browser pane shows its address bar. Null is "decide from what
+   * is loaded": a file does not need one, a website does.
+   */
+  browserChrome: boolean | null
   view: AppView
   boards: Board[]
   /** The card open as a chat beside the board. */
@@ -134,6 +140,7 @@ interface State {
   openTask: (sessionId: string) => Promise<void>
   setActivityQuery: (patch: Partial<ActivityQuery>) => void
   setBrowserUrl: (url: string) => void
+  setBrowserChrome: (show: boolean | null) => void
   toggleBlock: (id: string) => void
   setExpanded: (id: string, value: boolean) => void
   toggleActivity: () => void
@@ -197,6 +204,7 @@ export const useStore = create<State>((set, get) => ({
     since: null
   },
   browserUrl: '',
+  browserChrome: null,
   expanded: {},
   activityCollapsed: false,
   view: 'chat',
@@ -559,7 +567,18 @@ export const useStore = create<State>((set, get) => ({
   consumeTerminalInject: () => set({ terminalInject: null }),
 
   setActivityQuery: (patch) => set({ activityQuery: { ...get().activityQuery, ...patch } }),
-  setBrowserUrl: (browserUrl) => set({ browserUrl }),
+  setBrowserUrl: (browserUrl) => {
+    /*
+     * A choice about the address bar belongs to the kind of thing being
+     * looked at, not to the pane for ever: going from a file to a website
+     * brings the bar back, and going the other way takes it away again.
+     * Within one kind, what was chosen by hand stands.
+     */
+    const kindChanged =
+      Boolean(previewTarget(get().browserUrl)) !== Boolean(previewTarget(browserUrl))
+    set({ browserUrl, ...(kindChanged ? { browserChrome: null } : {}) })
+  },
+  setBrowserChrome: (browserChrome) => set({ browserChrome }),
   toggleBlock: (id) => set({ expanded: { ...get().expanded, [id]: !get().expanded[id] } }),
   setExpanded: (id, value) => set({ expanded: { ...get().expanded, [id]: value } }),
   toggleActivity: () => set({ activityCollapsed: !get().activityCollapsed }),
