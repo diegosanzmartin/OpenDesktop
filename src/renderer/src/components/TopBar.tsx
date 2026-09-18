@@ -12,6 +12,7 @@ import {
   Globe,
   MessageSquare,
   ListTree,
+  Code2,
   MoreVertical,
   Settings as SettingsIcon,
   SquareTerminal,
@@ -202,6 +203,12 @@ export function TopBar(): ReactNode {
         <DockButton tab="terminal" title="Terminal">
           <SquareTerminal className="h-4 w-4" />
         </DockButton>
+        <DockButton tab="editor" title="Editor">
+          <Code2 className="h-4 w-4" />
+        </DockButton>
+        <DockButton tab="files" title="Files">
+          <FolderTree className="h-4 w-4" />
+        </DockButton>
         <DockButton tab="changes" title="Changes">
           <DiffSquare className="h-4 w-4" />
         </DockButton>
@@ -224,14 +231,6 @@ export function TopBar(): ReactNode {
 
           {menuOpen ? (
             <div className="border-ink-700 bg-ink-850 absolute right-0 top-9 z-50 w-56 rounded-lg border p-1 shadow-2xl">
-              <MenuItem
-                icon={<FolderTree className="h-4 w-4" />}
-                label="Files"
-                onClick={() => {
-                  openDock('files')
-                  setMenuOpen(false)
-                }}
-              />
               <MenuItem
                 icon={<SettingsIcon className="h-4 w-4" />}
                 label="Settings"

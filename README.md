@@ -410,6 +410,23 @@ reality agreeing. `--turn` runs the whole path on a real model; run it under `el
 of `node` when the model's key is in the keychain, and note that a key stored by the packaged
 app cannot be read by a dev build.
 
+### The editor
+
+A pane for changing a file, in this app's own clothes rather than VS Code's: numbered lines,
+the same syntax colours the transcript uses for code, the same monospace grid. It is a
+transparent textarea over a highlighted copy of the same text — the oldest trick there is, and
+the only one that cannot drift from the app's palette because it *is* the app's palette. `⌘S`
+saves; the write does not go through the approval prompts, because those exist for what the
+model asked for and not for somebody's own keystrokes. What it does not have is completion,
+folding, multiple cursors or a language server. The day those are wanted is the day to take
+Monaco's five megabytes, and not before.
+
+**Which pane a file opens in** is decided by what the file is: a PDF, an image, a spreadsheet
+or a rendered markdown is something to look at, so it opens the viewer; a `.ts`, a `.tf`, a
+`.sh` or an extension nobody recognises is something to change, so it opens the editor. Both
+actions are always on the card and on the row in the Files pane — a pencil or an eye beside the
+save-a-copy arrow — so the rule never has to be right.
+
 ### Changes, and what happened before now
 
 The pane has two halves. The **working tree** answers what is different from the last commit,

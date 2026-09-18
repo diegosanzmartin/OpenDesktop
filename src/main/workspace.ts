@@ -37,6 +37,21 @@ export function workspacePath(sessionId: string): string {
 }
 
 /**
+ * Makes the directory, now, when the conversation is created.
+ *
+ * The repository still waits for the first turn — a `.git` per chat that was
+ * only ever a question is litter — but the *directory* cannot wait, because
+ * the interface reads it long before any turn: the Files pane listed it on the
+ * way in and got `ENOENT: scandir` thrown at the user. A directory is one
+ * inode and it goes when the conversation does.
+ */
+export function makeWorkspaceDir(sessionId: string): string {
+  const path = workspacePath(sessionId)
+  mkdirSync(path, { recursive: true })
+  return path
+}
+
+/**
  * A path is a workspace because of where it is, so nothing has to be stored
  * alongside the session to remember it.
  */

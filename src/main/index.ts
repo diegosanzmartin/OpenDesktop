@@ -19,6 +19,7 @@ import { killAllBackgroundTasks } from './background'
 import { startWedgeWatch, stopWedgeWatch } from './watchdog'
 import { disposeLocalModel } from './local-model'
 import { disposeMcp } from './mcp'
+import { isOwnWorkspace, makeWorkspaceDir } from './workspace'
 import { deliverQueuedFollowUps } from './agent/runner'
 
 const isDev = !app.isPackaged
@@ -116,6 +117,23 @@ void app.whenReady().then(async () => {
   if (orphans > 0 && process.env.OPENDESKTOP_DEBUG) {
     console.log(`[history] dropped ${orphans} transcript${orphans === 1 ? '' : 's'} with no session`)
   }
+  /*
+   * Any conversation whose folder is its own gets that folder back if it is
+   * missing. Sessions made before the directory was created eagerly have a
+   * path that points at nothing, and the pane that reads it should not have to
+   * care which build made the session.
+   */
+  let healed = 0
+  for (const session of listSessions()) {
+    if (isOwnWorkspace(session.id, session.cwd) && !existsSync(session.cwd)) {
+      makeWorkspaceDir(session.id)
+      healed++
+    }
+  }
+  if (healed > 0 && process.env.OPENDESKTOP_DEBUG) {
+    console.log(`[workspaces] made ${healed} folder${healed === 1 ? '' : 's'} that were missing`)
+  }
+
   loadBoards()
   startBoardSync()
   reconcileOnStart()

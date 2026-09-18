@@ -236,7 +236,11 @@ const api = {
     folders: (): Promise<string[]> => ipcRenderer.invoke('blocks:folders')
   },
   files: {
-    list: (environmentId: string, path: string): Promise<{ path: string; entries: FileEntry[] }> =>
+    list: (
+      environmentId: string,
+      path: string
+      // A folder that is not there comes back as an error to show, not a throw.
+    ): Promise<{ path: string; entries: FileEntry[]; error?: string }> =>
       ipcRenderer.invoke('fs:list', environmentId, path),
     read: (environmentId: string, path: string): Promise<string> =>
       ipcRenderer.invoke('fs:read', environmentId, path),
@@ -265,6 +269,17 @@ const api = {
       ipcRenderer.invoke('preview:url', environmentId, path),
     /** Where conversations' own folders live, for deciding what a path is. */
     workspacesRoot: (): Promise<string> => ipcRenderer.invoke('workspace:root'),
+    /**
+     * For the editor pane, where a failure is a thing to show rather than an
+     * exception in a promise nobody awaited.
+     */
+    open: (environmentId: string, path: string): Promise<{ text: string; error?: string }> =>
+      ipcRenderer.invoke('editor:read', environmentId, path),
+    save: (
+      environmentId: string,
+      path: string,
+      text: string
+    ): Promise<{ error?: string }> => ipcRenderer.invoke('editor:write', environmentId, path, text),
     stat: (
       environmentId: string,
       path: string

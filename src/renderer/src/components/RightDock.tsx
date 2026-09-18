@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Maximize2, Minimize2, PanelTopClose, PanelTopOpen, X } from 'lucide-react'
 import { useStore, type DockTab } from '../state/store'
 import { BrowserPane } from './BrowserPane'
+import { EditorPane } from './EditorPane'
 import { previewTarget, previewTitle } from '../lib/preview'
 import { TerminalPane } from './TerminalPane'
 import { ChangesPane } from './ChangesPane'
@@ -14,6 +15,7 @@ const TITLES: Record<DockTab, string> = {
   changes: 'Changes',
   terminal: 'Terminal',
   browser: 'Browser',
+  editor: 'Editor',
   files: 'Files',
   activity: 'Activity',
   background: 'Background tasks'
@@ -30,6 +32,7 @@ export function RightDock(): ReactNode {
   const browserUrl = useStore((s) => s.browserUrl)
   const browserChrome = useStore((s) => s.browserChrome)
   const setBrowserChrome = useStore((s) => s.setBrowserChrome)
+  const editorFile = useStore((s) => s.editorFile)
   const dragging = useRef(false)
 
   const onMove = useCallback(
@@ -83,7 +86,11 @@ export function RightDock(): ReactNode {
           {/* The file's name when one is loaded: the pane already says
               "Browser" by being one, and a file is what you came for. */}
           <span className="text-ink-200 min-w-0 truncate text-[12.5px]">
-            {(dock.tab === 'browser' ? previewTitle(browserUrl) : null) ?? TITLES[dock.tab]}
+            {(dock.tab === 'browser'
+              ? previewTitle(browserUrl)
+              : dock.tab === 'editor' && editorFile
+                ? (editorFile.path.split('/').pop() ?? null)
+                : null) ?? TITLES[dock.tab]}
           </span>
           <div className="ml-auto flex items-center gap-0.5">
             {dock.tab === 'browser' && browserUrl ? (
@@ -124,6 +131,13 @@ export function RightDock(): ReactNode {
           {opened.has('browser') ? (
             <div className={clsx('min-h-0 flex-1 flex-col', dock.tab === 'browser' ? 'flex' : 'hidden')}>
               <BrowserPane />
+            </div>
+          ) : null}
+          {/* Kept alive like the other two: a textarea that unmounts loses the
+              cursor, the selection and the undo history of whatever was open. */}
+          {opened.has('editor') ? (
+            <div className={clsx('min-h-0 flex-1 flex-col', dock.tab === 'editor' ? 'flex' : 'hidden')}>
+              <EditorPane />
             </div>
           ) : null}
           {opened.has('terminal') ? (

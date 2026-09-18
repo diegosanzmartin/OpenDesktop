@@ -25,6 +25,9 @@ import { ToolServerChip } from './src/components/ToolServerChip'
 import { ToolServersTab } from './src/components/ToolServersTab'
 import { HooksTab } from './src/components/HooksTab'
 import { ChangesPane } from './src/components/ChangesPane'
+import { FilesPane } from './src/components/FilesPane'
+import { EditorPane } from './src/components/EditorPane'
+import { opensInViewer } from './src/components/DocumentCard'
 import { BrowserPane } from './src/components/BrowserPane'
 import { previewTarget, previewTitle } from './src/lib/preview'
 import { EffortDial } from './src/components/EffortDial'
@@ -1838,6 +1841,103 @@ async function run(): Promise<void> {
     useStore.setState({ changes: null })
   }
 
+
+  section('a folder that is not there, and one that is')
+  {
+    /*
+     * Reported: opening the Files pane on a conversation whose folder had not
+     * been made yet put `ENOENT: scandir` in front of the user. The folder is
+     * made with the conversation now, and a folder that is missing anyway —
+     * deleted, or on a host that went away — is a sentence in the pane.
+     */
+    const saved = REPLIES.list
+    REPLIES.list = { path: '/w/gone', entries: [], error: 'no such file or directory' }
+    const missing = mount(<FilesPane />, 420)
+    await settle()
+    check(
+      'the pane says what happened instead of throwing',
+      (missing.textContent ?? '').includes('no such file or directory'),
+      missing.textContent?.slice(0, 120)
+    )
+    REPLIES.list = saved
+  }
+
+  section('read it or change it')
+  {
+    /*
+     * A PDF is something to look at and a .ts is something to change, so the
+     * click does the right one of the two — and the other is always on the
+     * card, so the rule never has to be right.
+     */
+    check('a document opens in the viewer', opensInViewer('/w/report.pdf') && opensInViewer('/w/notes.md'))
+    check(
+      'and code opens in the editor',
+      !opensInViewer('/w/runner.ts') && !opensInViewer('/w/main.tf') && !opensInViewer('/w/deploy.sh')
+    )
+    check('an extension nobody knows is treated as text', !opensInViewer('/w/profile.mobileconfig'))
+
+    const card = mount(<DocumentCard path="/w/runner.ts" environmentId="local" />, 240)
+    await settle()
+    const actions = [...card.querySelectorAll('button')].map((node) => node.getAttribute('title') ?? '')
+    check(
+      'a code card opens the editor on its face and offers the viewer beside it',
+      actions.some((title) => title === 'Open runner.ts in the editor') &&
+        actions.some((title) => title === 'View runner.ts'),
+      actions
+    )
+
+    const doc = mount(<DocumentCard path="/w/report.pdf" environmentId="local" />, 240)
+    await settle()
+    const docActions = [...doc.querySelectorAll('button')].map((node) => node.getAttribute('title') ?? '')
+    check(
+      'and a document the other way round',
+      docActions.some((title) => title === 'Open report.pdf in the viewer') &&
+        docActions.some((title) => title === 'Edit report.pdf'),
+      docActions
+    )
+    check('with saving a copy still there', docActions.includes('Save a copy'), docActions)
+  }
+
+  section('the editor pane')
+  {
+    REPLIES.open = { text: 'const a = 1\n// and a comment\n' }
+    useStore.setState({ editorFile: null })
+    const empty = mount(<EditorPane />, 520)
+    await settle()
+    check(
+      'with nothing open it says how to open something',
+      (empty.textContent ?? '').includes('Nothing open'),
+      empty.textContent?.slice(0, 80)
+    )
+
+    useStore.setState({ editorFile: { environmentId: 'local', path: '/w/app.ts' } })
+    const host = mount(<EditorPane />, 520)
+    await settle()
+    const text = host.textContent ?? ''
+    check('it shows the file it was given', text.includes('/w/app.ts'), text.slice(0, 120))
+    check('and its contents', text.includes('const a = 1'), text)
+    check('numbered, like an editor', text.includes('1') && text.includes('2'), text)
+    check(
+      'with the same colours the transcript uses for code',
+      host.innerHTML.includes('text-violet') || host.innerHTML.includes('text-ok'),
+      host.innerHTML.slice(0, 200)
+    )
+    const area = host.querySelector('textarea')
+    check('and it is editable', Boolean(area) && !area?.readOnly)
+    check(
+      'saving is offered but disabled until something changes',
+      Boolean(
+        [...host.querySelectorAll('button')].find(
+          (node) => (node.getAttribute('title') ?? '').startsWith('Save') && (node as HTMLButtonElement).disabled
+        )
+      ),
+      [...host.querySelectorAll('button')].map((n) => n.getAttribute('title'))
+    )
+
+    delete REPLIES.open
+    useStore.setState({ editorFile: null })
+  }
+
   console.log(`\n${checks - failures.length}/${checks} checks passed`)
   if (failures.length > 0) {
     console.log(`\nfailed:\n${failures.map((f) => `  - ${f}`).join('\n')}`)
@@ -2026,6 +2126,32 @@ async function run(): Promise<void> {
             } as Session
           }
         />
+      </div>
+    )
+    await settle()
+  }
+
+  // The editor, with a file in it.
+  if (new URLSearchParams(location.search).get('shot') === 'editor') {
+    document.body.innerHTML = ''
+    REPLIES.open = {
+      text: [
+        'export function workspacePath(sessionId: string): string {',
+        '  // Beside the models and the runtime.',
+        "  return join(WORKSPACES_DIR, sessionId)",
+        '}',
+        '',
+        'const KEEP = 3',
+        ''
+      ].join('\n')
+    }
+    useStore.setState({ editorFile: { environmentId: 'local', path: '/Users/x/Dev/app/src/workspace.ts' } })
+    mount(
+      <div className="border-ink-800 bg-ink-850 m-2 flex h-[300px] w-[560px] flex-col overflow-hidden rounded-lg border">
+        <div className="border-ink-800 flex h-10 shrink-0 items-center gap-2 border-b px-3">
+          <span className="text-ink-200 text-[12.5px]">workspace.ts</span>
+        </div>
+        <EditorPane />
       </div>
     )
     await settle()

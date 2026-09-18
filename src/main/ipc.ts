@@ -27,6 +27,8 @@ import {
 } from './local-model'
 import { meterSnapshot, resetMeter } from './meter'
 import { logLine, logPath } from './log'
+import { describeError } from '@shared/errors'
+import { readForEditor, writeFromEditor } from './editor'
 import { listSshAliases } from './runtime/ssh'
 import * as store from './store'
 import * as history from './history'
@@ -34,7 +36,12 @@ import { compactNow, isRunning, queueFollowUp, runTurn, stop } from './agent/run
 import { forkFrom, rewind } from './rewind'
 import { deniedSegment, listPending, resolveApproval, type ApprovalAnswer } from './approvals'
 import { previewOrigin, previewUrl } from './preview'
-import { WORKSPACES_DIR, removeWorkspace, summariseWorkspace, workspacePath } from './workspace'
+import {
+  WORKSPACES_DIR,
+  makeWorkspaceDir,
+  removeWorkspace,
+  summariseWorkspace
+} from './workspace'
 import { deleteSecret, secretHint, secretStatus, setSecret } from './secrets'
 import { createTerminal, killTerminal, resizeTerminal, terminalBuffer, writeTerminal } from './terminal'
 import {
@@ -331,7 +338,7 @@ export function registerIpc(): void {
        * that only ever asked a question leaves nothing behind.
        */
       if (!input.cwd && !remote) {
-        return store.updateSession(session.id, { cwd: workspacePath(session.id) }) ?? session
+        return store.updateSession(session.id, { cwd: makeWorkspaceDir(session.id) }) ?? session
       }
       return session
     }
@@ -652,10 +659,17 @@ export function registerIpc(): void {
 
   /* ---------- git ---------- */
   ipcMain.handle('git:changes', (_e, environmentId: string, cwd: string) =>
-    readChanges(environmentId, cwd)
+    readChanges(environmentId, cwd).catch(() => ({
+      isRepo: false,
+      root: '',
+      branch: '',
+      files: [],
+      added: 0,
+      removed: 0
+    }))
   )
   ipcMain.handle('git:summary', (_e, environmentId: string, cwd: string) =>
-    readBranchSummary(environmentId, cwd)
+    readBranchSummary(environmentId, cwd).catch(() => ({ isRepo: false, branch: '', dirty: 0 }))
   )
   /*
    * The history, which the Changes pane reads beside the working tree. In a
@@ -686,25 +700,47 @@ export function registerIpc(): void {
   )
 
   /* ---------- files & preview ---------- */
+  /*
+   * A folder that is not there is an answer, not an error.
+   *
+   * It threw `ENOENT: scandir` at whoever opened the Files pane on a
+   * conversation whose folder had not been made yet — and the same is true of
+   * a folder somebody deleted, or a remote host that has just gone away. The
+   * pane can say "there is nothing here"; it cannot do anything with an
+   * exception from a method it did not know it was calling.
+   */
   ipcMain.handle('fs:list', async (_e, environmentId: string, path: string) => {
-    const runtime = getRuntime(environmentId)
-    await runtime.connect()
-    const target = path || (await runtime.homeDir())
-    return { path: target, entries: await runtime.list(target) }
+    try {
+      const runtime = getRuntime(environmentId)
+      await runtime.connect()
+      const target = path || (await runtime.homeDir())
+      return { path: target, entries: await runtime.list(target) }
+    } catch (err) {
+      return { path, entries: [], error: describeError(err) }
+    }
   })
   /* The folder picker: one call per step while browsing, one call for a whole
      tree when searching. See src/main/browse.ts for why they differ. */
   ipcMain.handle('fs:browse', async (_e, environmentId: string, path: string) =>
-    browse(getRuntime(environmentId), path)
+    browse(getRuntime(environmentId), path).catch(() => ({
+      path,
+      home: '',
+      parent: '',
+      dirs: []
+    }))
   )
   ipcMain.handle(
     'fs:findDirs',
     async (_e, environmentId: string, cwd: string, refresh?: boolean) => {
-      const runtime = getRuntime(environmentId)
-      await runtime.connect()
-      const home = (await runtime.homeDir()) || '/'
-      const root = searchRoot(cwd, home)
-      return dirIndex(environmentId, runtime, root, refresh === true)
+      try {
+        const runtime = getRuntime(environmentId)
+        await runtime.connect()
+        const home = (await runtime.homeDir()) || '/'
+        const root = searchRoot(cwd, home)
+        return await dirIndex(environmentId, runtime, root, refresh === true)
+      } catch (err) {
+        return { root: cwd, dirs: [], truncated: false, builtAt: Date.now(), error: describeError(err) }
+      }
     }
   )
 
@@ -713,6 +749,15 @@ export function registerIpc(): void {
     await runtime.connect()
     return runtime.readFile(path)
   })
+
+  /* The editor pane. Its failures are values; see `editor.ts` for why. */
+  ipcMain.handle('editor:read', (_e, environmentId: string, path: string) =>
+    readForEditor(environmentId, path)
+  )
+  ipcMain.handle('editor:write', (_e, environmentId: string, path: string, text: string) =>
+    writeFromEditor(environmentId, path, text)
+  )
+
   ipcMain.handle('fs:stat', async (_e, environmentId: string, path: string) => {
     try {
       const runtime = getRuntime(environmentId)

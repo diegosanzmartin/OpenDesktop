@@ -75,6 +75,7 @@ import {
 } from '@shared/errors'
 import { readBlame, readCommit, readFileAt, readLog } from './git'
 import { onlyFile } from '@shared/history'
+import { readForEditor, writeFromEditor } from './editor'
 import { logError, logLine, logPath } from './log'
 import { previewUrl, startPreviewServer, stopPreviewServer } from './preview'
 import { connectMcp, statusOf, stopMcp } from './mcp'
@@ -6645,6 +6646,41 @@ async function main(): Promise<void> {
       'and a directory that merely starts with the same letters is not',
       !isInWorkspace('/a/workspaces', '/a/workspaces-old/x.md')
     )
+  }
+
+  section('opening a file to change it')
+  {
+    /*
+     * The editor pane's read and write. Its failures are values rather than
+     * exceptions, because a file that is not there is a sentence to put in the
+     * pane — the Files pane threw `ENOENT: scandir` at somebody for exactly
+     * this reason before the folder was created eagerly.
+     */
+    const room = join(tmpdir(), `opendesktop-editor-${Date.now()}`)
+    mkdirSync(join(room, 'sub'), { recursive: true })
+    writeFileSync(join(room, 'app.ts'), 'export const a = 1\n')
+    writeFileSync(join(room, 'blob.bin'), Buffer.from([0x41, 0x00, 0x42, 0x00]))
+
+    const opened = await readForEditor('local', join(room, 'app.ts'))
+    check('a text file comes back with its text', opened.text.includes('const a = 1') && !opened.error, opened)
+
+    const missing = await readForEditor('local', join(room, 'nope.ts'))
+    check(
+      'one that is not there says so, as a value',
+      Boolean(missing.error?.includes('is not there')) && missing.text === '',
+      missing
+    )
+    const folder = await readForEditor('local', join(room, 'sub'))
+    check('a folder says it is one', Boolean(folder.error?.includes('is a folder')), folder)
+    const binary = await readForEditor('local', join(room, 'blob.bin'))
+    check('and binary says there is nothing to edit', Boolean(binary.error?.includes('binary')), binary)
+
+    const saved = await writeFromEditor('local', join(room, 'app.ts'), 'export const a = 2\n')
+    check('saving writes it', !saved.error && readFileSync(join(room, 'app.ts'), 'utf8').includes('a = 2'), saved)
+    const refused = await writeFromEditor('local', join(room, 'sub'), 'x')
+    check('and saving over a folder fails as a value, not a throw', Boolean(refused.error), refused)
+
+    rmSync(room, { recursive: true, force: true })
   }
 
   section('a history for whatever folder it is')

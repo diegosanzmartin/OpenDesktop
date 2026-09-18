@@ -1,9 +1,10 @@
 import clsx from 'clsx'
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
-import { ArrowUp, File, Folder, RotateCw } from 'lucide-react'
+import { ArrowUp, Eye, File, Folder, Pencil, RotateCw } from 'lucide-react'
 import type { FileEntry } from '@shared/types'
 import { useStore } from '../state/store'
 import { usePreviewOpener } from './BlockCard'
+import { opensInViewer } from './DocumentCard'
 import { Button, Empty } from './ui'
 
 function size(bytes: number): string {
@@ -19,6 +20,7 @@ export function FilesPane(): ReactNode {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const openInBrowser = usePreviewOpener()
+  const openInEditor = useStore((s) => s.openInEditor)
 
   const load = useCallback(
     async (target: string) => {
@@ -29,6 +31,13 @@ export function FilesPane(): ReactNode {
         const result = await window.opendesktop.files.list(session.environmentId, target)
         setPath(result.path)
         setEntries(result.entries)
+        /*
+         * A folder that is not there is an answer now, not a throw: opening
+         * this pane on a conversation whose folder had not been made yet put
+         * `ENOENT: scandir` in front of the user. The message is theirs to
+         * read, not an exception's.
+         */
+        setError(result.error ?? null)
       } catch (err) {
         setError((err as Error).message)
       } finally {
@@ -88,16 +97,45 @@ export function FilesPane(): ReactNode {
               )}
               <button
                 type="button"
+                title={
+                  entry.directory
+                    ? entry.name
+                    : opensInViewer(entry.path)
+                      ? `Open ${entry.name} in the viewer`
+                      : `Open ${entry.name} in the editor`
+                }
                 onClick={() =>
                   entry.directory
                     ? void load(entry.path)
-                    : void openInBrowser(session.environmentId, entry.path)
+                    : opensInViewer(entry.path)
+                      ? void openInBrowser(session.environmentId, entry.path)
+                      : openInEditor({ environmentId: session.environmentId, path: entry.path })
                 }
                 className="text-ink-200 hover:text-brand min-w-0 flex-1 truncate text-left font-mono text-[11.5px]"
               >
                 {entry.name}
                 {entry.directory ? '/' : ''}
               </button>
+              {/* Whichever the click did not do. Same rule as a card in the
+                  conversation, so the pane and the transcript behave alike. */}
+              {entry.directory ? null : (
+                <button
+                  type="button"
+                  title={opensInViewer(entry.path) ? `Edit ${entry.name}` : `View ${entry.name}`}
+                  onClick={() =>
+                    opensInViewer(entry.path)
+                      ? openInEditor({ environmentId: session.environmentId, path: entry.path })
+                      : void openInBrowser(session.environmentId, entry.path)
+                  }
+                  className="text-ink-700 hover:text-ink-200 shrink-0 rounded p-0.5"
+                >
+                  {opensInViewer(entry.path) ? (
+                    <Pencil className="h-3 w-3" />
+                  ) : (
+                    <Eye className="h-3 w-3" />
+                  )}
+                </button>
+              )}
               <span className="text-ink-600 shrink-0 text-[10px]">
                 {entry.directory ? '' : size(entry.size)}
               </span>

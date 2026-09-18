@@ -19,7 +19,14 @@ import type {
 import { MANAGER_AGENT } from '@shared/types'
 
 /** What the right-hand dock is showing. The centre column is always the chat. */
-export type DockTab = 'changes' | 'terminal' | 'browser' | 'files' | 'activity' | 'background'
+export type DockTab =
+  | 'changes'
+  | 'terminal'
+  | 'browser'
+  | 'editor'
+  | 'files'
+  | 'activity'
+  | 'background'
 
 /** The two ways of working: one conversation at a time, or the whole board. */
 export type AppView = 'chat' | 'board'
@@ -81,6 +88,8 @@ interface State {
   activityQuery: ActivityQuery
   /** Where conversations' own folders live, read once at startup. */
   workspacesRoot: string
+  /** The file the editor pane has open, if any. */
+  editorFile: { environmentId: string; path: string } | null
   browserUrl: string
   /**
    * Whether the browser pane shows its address bar. Null is "decide from what
@@ -143,6 +152,7 @@ interface State {
   setActivityQuery: (patch: Partial<ActivityQuery>) => void
   setBrowserUrl: (url: string) => void
   setBrowserChrome: (show: boolean | null) => void
+  openInEditor: (file: { environmentId: string; path: string } | null) => void
   toggleBlock: (id: string) => void
   setExpanded: (id: string, value: boolean) => void
   toggleActivity: () => void
@@ -206,6 +216,7 @@ export const useStore = create<State>((set, get) => ({
     since: null
   },
   workspacesRoot: '',
+  editorFile: null,
   browserUrl: '',
   browserChrome: null,
   expanded: {},
@@ -585,6 +596,17 @@ export const useStore = create<State>((set, get) => ({
     set({ browserUrl, ...(kindChanged ? { browserChrome: null } : {}) })
   },
   setBrowserChrome: (browserChrome) => set({ browserChrome }),
+  /**
+   * Opens a file in the editor, and the pane with it.
+   *
+   * One call rather than "set the file" and "open the pane" separately: every
+   * caller wants both, and the one that forgets the second is a click that
+   * does nothing visible.
+   */
+  openInEditor: (editorFile) => {
+    set({ editorFile })
+    if (editorFile) get().openDock('editor')
+  },
   toggleBlock: (id) => set({ expanded: { ...get().expanded, [id]: !get().expanded[id] } }),
   setExpanded: (id, value) => set({ expanded: { ...get().expanded, [id]: value } }),
   toggleActivity: () => set({ activityCollapsed: !get().activityCollapsed }),
