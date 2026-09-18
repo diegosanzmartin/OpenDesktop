@@ -870,7 +870,7 @@ export function createTools(ctx: ToolContext): ToolSet {
             subtitle: `${resolved.length} file${resolved.length === 1 ? '' : 's'}`,
             input: { paths: resolved, note }
           },
-          async () => {
+          async (block) => {
             /*
              * Every one of them has to be there. Handing over a path that does
              * not exist produces a card that fails when it is clicked, which
@@ -894,6 +894,14 @@ export function createTools(ctx: ToolContext): ToolSet {
             const lines = sized.map(
               (entry) => `${shortPath(ctx.cwd, entry.path)} — ${fileSize(entry.stat?.size ?? 0)}`
             )
+            /*
+             * Written to the block as well as returned. The card is drawn from
+             * the paths, so nothing looked wrong — but this block is the only
+             * record that the hand-over happened, and it was keeping an empty
+             * one. A hidden block with no output is a hand-over that left no
+             * trace anywhere.
+             */
+            store.appendBlockOutput(ctx.sessionId, block.id, lines.join('\n'))
             return { output: lines.join('\n') }
           }
         )

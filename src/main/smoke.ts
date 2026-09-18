@@ -6664,6 +6664,11 @@ async function main(): Promise<void> {
       (block?.input as { paths?: string[] })?.paths
     )
     check('and the note as its title', block?.title === 'the triage export and its chart', block?.title)
+    check(
+      'and keeps its own record of what it handed over',
+      (block?.output ?? '').includes('report.csv') && (block?.output ?? '').includes('chart.png'),
+      block?.output
+    )
 
     /*
      * A path that is not there is the likeliest mistake, because the file was

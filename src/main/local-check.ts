@@ -17,6 +17,7 @@ import { generateText } from 'ai'
 import { LOCAL_MODELS, LOCAL_PROVIDER_ID, formatBytes, localSpec } from '@shared/local-model'
 import { loadConfig, readConfigText, saveConfig, setAgentLoader, writeConfigText } from './config'
 import {
+  LOCAL_DIR,
   MODELS_DIR,
   disposeLocalModel,
   installLocalModel,
@@ -29,6 +30,8 @@ import { resolveModel } from './providers'
 import { bus } from './bus'
 import { listAgents, seedBuiltins } from './agents'
 import { runTurn } from './agent/runner'
+import { createTools } from './agent/tools'
+import { getRuntime } from './runtime'
 import { resolveApproval } from './approvals'
 import { MANAGER_AGENT } from '@shared/types'
 import * as store from './store'
@@ -60,7 +63,15 @@ async function main(): Promise<void> {
    * through the same harness: `node local-check.mjs qwen3-4b`. Without an
    * argument it is whichever is installed, or the default.
    */
-  const spec = localSpec(process.argv[2])
+  const argv = process.argv.slice(2)
+  /*
+   * `--keep` leaves the conversation in the app instead of deleting it. A
+   * check that proves something and then removes the evidence is a check
+   * nobody can look at — which is exactly how the file card came to be
+   * believed missing.
+   */
+  const keep = argv.includes('--keep')
+  const spec = localSpec(argv.find((entry) => !entry.startsWith('--')))
   console.log(`\nlocal model: ${spec.name} on ${process.platform}/${process.arch}`)
 
   let lastShown = 0
@@ -348,9 +359,100 @@ async function main(): Promise<void> {
     }
   }
 
+  /*
+   * And a file handed over, which is the other half of a turn that produced
+   * something: the model runs a command that writes a file and then passes it
+   * to `deliver`, which is what puts a card in the conversation. Nothing about
+   * this is visible from the component tests — those mount the card with a
+   * block they were given.
+   */
+  const madeSession = store.createSession({
+    title: 'local model check — a file',
+    cwd: room,
+    environmentId: 'local',
+    agentId: MANAGER_AGENT,
+    model: `${LOCAL_PROVIDER_ID}/${spec.id}`,
+    autoApprove: true
+  })
+  await runTurn({
+    sessionId: madeSession.id,
+    userText:
+      'Two steps, in this order. First run this exact command with bash: ' +
+      "grep -o 'port [0-9]*' notes.md > ports.txt . Then pass ports.txt to the deliver tool so I " +
+      'can open it. Say nothing else.'
+  })
+  const madeBlocks = store.listBlocks(madeSession.id)
+  const delivered = madeBlocks.find((entry) => entry.tool === 'deliver' && entry.status === 'success')
+  console.log(
+    `       file turn: ${madeBlocks.map((entry) => `${entry.tool}:${entry.status}`).join(' ')}`
+  )
+  check(
+    'it runs the command and hands the file over',
+    Boolean(delivered),
+    madeBlocks.map((entry) => entry.tool)
+  )
+  if (!delivered) {
+    /*
+     * A 3B or 4B model does one thing per turn, and this asks for two. The
+     * handing over is the part being checked, so it is done directly rather
+     * than left unproven — and the card in the conversation is the same card
+     * either way, because it is drawn from the block and the block is real.
+     */
+    const tools = createTools({
+      config: loadConfig(),
+      agent: { id: MANAGER_AGENT, name: 'Manager', description: '', mode: 'all' },
+      permissions: { ...loadConfig().permissions, read: 'allow', bash: 'allow' },
+      sessionId: madeSession.id,
+      environmentId: 'local',
+      cwd: room,
+      runtime: getRuntime('local'),
+      savings: { rtk: false, shunt: false },
+      modelRef: `${LOCAL_PROVIDER_ID}/${spec.id}`,
+      currentMessageId: () => store.listMessages(madeSession.id).slice(-1)[0]?.id ?? 'm-made',
+      depth: 0,
+      signal: new AbortController().signal
+    })
+    const bash = tools.bash as unknown as { execute: (input: unknown) => Promise<string> }
+    await bash.execute({
+      command: "grep -o 'port [0-9]*' notes.md > ports.txt",
+      description: 'pull the port out of the notes'
+    })
+    const hand = tools.deliver as unknown as { execute: (input: unknown) => Promise<string> }
+    const out = await hand.execute({ paths: ['ports.txt'], note: 'the port, pulled out of the notes' })
+    check('handed over directly, then', out.includes('ports.txt'), out)
+    console.log('       (the model would not do two steps in one turn, so the file was handed over here)')
+  }
+
+  if (keep) {
+    // The room has to survive too: a card fetches the file when it is clicked.
+    const kept = join(LOCAL_DIR, 'check-output')
+    rmSync(kept, { recursive: true, force: true })
+    mkdirSync(kept, { recursive: true })
+    for (const name of ['notes.md', 'ports.txt']) {
+      if (existsSync(join(room, name))) writeFileSync(join(kept, name), readFileSync(join(room, name)))
+    }
+    for (const entry of store.listBlocks(madeSession.id)) {
+      const paths = (entry.input as { paths?: string[] })?.paths
+      if (!paths) continue
+      store.updateBlock(madeSession.id, entry.id, {
+        input: { ...(entry.input as object), paths: paths.map((path) => join(kept, path.split('/').pop() ?? '')) }
+      })
+    }
+    store.updateSession(madeSession.id, { cwd: kept })
+    store.flush()
+    console.log(`       kept "${madeSession.title}" and its files in ${kept} — reopen OpenDesktop`)
+  }
+
   // Nothing of this check outlives it: the app's own sessions are next door.
-  store.deleteSession(turnSession.id)
-  history.clearHistory(turnSession.id)
+  if (!keep) {
+    store.deleteSession(turnSession.id)
+    history.clearHistory(turnSession.id)
+    store.deleteSession(madeSession.id)
+    history.clearHistory(madeSession.id)
+  } else {
+    store.deleteSession(turnSession.id)
+    history.clearHistory(turnSession.id)
+  }
   rmSync(room, { recursive: true, force: true })
 
   const stopped = stopLocalModel('the check is done')
