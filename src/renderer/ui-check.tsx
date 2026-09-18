@@ -512,8 +512,9 @@ async function run(): Promise<void> {
     const same = mount(<Composer session={{ ...session, savings: { shunt: true } }} />, 900)
     await settle()
     check(
-      'delegating to the session\u2019s own model says so',
-      (same.textContent ?? '').includes('no cheaper model'),
+      'nowhere cheaper to delegate to says so, as a fact rather than a warning',
+      (same.textContent ?? '').includes('reading → same model') &&
+        !(same.innerHTML ?? '').includes('text-warn'),
       same.textContent
     )
 
@@ -1261,6 +1262,123 @@ async function run(): Promise<void> {
     useStore.setState({ config: before })
   }
 
+
+  section('the footer with everything switched on')
+  {
+    /*
+     * Reported from a real window: both savings switches on, auto-approve on,
+     * and the right-hand end — model, effort, ring — dropped onto a second
+     * line. The row is what it is on a 780px pane; what was wrong is that it
+     * was allowed to wrap at all.
+     */
+    useStore.setState({
+      config: {
+        ...useStore.getState().config!,
+        provider: {
+          helmcode: {
+            id: 'helmcode',
+            npm: '@ai-sdk/openai-compatible',
+            name: 'Helmcode',
+            options: {},
+            models: {
+              'glm5.3-flash': {
+                id: 'glm5.3-flash',
+                name: 'GLM 5.3 Flash',
+                contextWindow: 200_000,
+                maxOutputTokens: 8_000,
+                billing: 'flat',
+                iq: 3,
+                cost: 1
+              }
+            }
+          }
+        }
+      },
+      models: [{ ref: 'helmcode/glm5.3-flash', label: 'GLM 5.3 Flash', provider: 'Helmcode' }]
+    })
+
+    const loaded = {
+      ...session,
+      model: 'helmcode/glm5.3-flash',
+      cwd: '/home/user/w',
+      environmentId: 'local',
+      contextTokens: 90_000,
+      savings: { rtk: true, shunt: true },
+      autoApprove: true
+    } as Session
+
+    for (const width of [560, 640, 780, 900]) {
+      const host = mount(<Composer session={loaded} />, width)
+      await settle()
+      const row = host.querySelector('[data-footer]') as HTMLElement | null
+      const right = host.querySelector('[data-footer-right]') as HTMLElement | null
+      const rowBox = row?.getBoundingClientRect()
+      const rightBox = right?.getBoundingClientRect()
+      check(
+        `at ${width}px the line does not wrap`,
+        Boolean(rowBox && rightBox) && Math.abs(rightBox!.top - rowBox!.top) < 6,
+        {
+          drop: Math.round((rightBox?.top ?? 0) - (rowBox?.top ?? 0)),
+          height: Math.round(rowBox?.height ?? 0),
+          needs: row?.scrollWidth,
+          has: row?.clientWidth
+        }
+      )
+      check(
+        `and it is one row tall at ${width}px`,
+        (rowBox?.height ?? 99) < 30,
+        Math.round(rowBox?.height ?? 0)
+      )
+      check(
+        `with the model, the effort and the ring still on it at ${width}px`,
+        /GLM 5.3 Flash/.test(right?.textContent ?? '') &&
+          /Medium/.test(right?.textContent ?? '') &&
+          /%/.test(right?.textContent ?? ''),
+        right?.textContent
+      )
+    }
+
+    // The path is what gives way, because it is the one thing here that is
+    // long, repetitive and already in the title bar.
+    const narrow = mount(
+      <Composer session={{ ...loaded, cwd: '/home/user/w/sec/acme--global--core/services/quote' }} />,
+      560
+    )
+    await settle()
+    const row = narrow.querySelector('[data-footer]') as HTMLElement | null
+    const right = narrow.querySelector('[data-footer-right]') as HTMLElement | null
+    check(
+      'a long path gives way rather than pushing the line into two',
+      Math.abs(
+        (right?.getBoundingClientRect().top ?? 0) - (row?.getBoundingClientRect().top ?? 0)
+      ) < 6 && (row?.getBoundingClientRect().height ?? 99) < 30,
+      {
+        drop: Math.round(
+          (right?.getBoundingClientRect().top ?? 0) - (row?.getBoundingClientRect().top ?? 0)
+        ),
+        height: Math.round(row?.getBoundingClientRect().height ?? 0)
+      }
+    )
+    /*
+     * What gave way, checked the way the older test does it: the words are
+     * still in the markup, so textContent sees them — it is the computed
+     * display that says whether anybody does.
+     */
+    const words = [...narrow.querySelectorAll('span')].find(
+      (span) => span.textContent === 'Auto-approve'
+    ) as HTMLElement | undefined
+    check(
+      'the words on the chips are what gave way',
+      Boolean(words) && getComputedStyle(words!).display === 'none',
+      words ? getComputedStyle(words).display : 'not in the markup'
+    )
+    check(
+      'and the ring did not',
+      /%/.test(narrow.querySelector('[data-footer-right]')?.textContent ?? ''),
+      narrow.querySelector('[data-footer-right]')?.textContent
+    )
+  }
+
   console.log(`\n${checks - failures.length}/${checks} checks passed`)
   if (failures.length > 0) {
     console.log(`\nfailed:\n${failures.map((f) => `  - ${f}`).join('\n')}`)
@@ -1399,6 +1517,59 @@ async function run(): Promise<void> {
         await settle()
       }
     }
+  }
+
+  // The line with both switches, auto-approve and a workstation on it, at the
+  // width where it used to wrap.
+  if (new URLSearchParams(location.search).get('shot') === 'loaded') {
+    document.body.innerHTML = ''
+    useStore.setState({
+      config: {
+        ...useStore.getState().config!,
+        environment: {
+          local: { id: 'local', name: 'Local', kind: 'local' },
+          wk: { id: 'wk', name: 'wkstation', kind: 'gcp-workstation' }
+        },
+        provider: {
+          helmcode: {
+            id: 'helmcode',
+            npm: '@ai-sdk/openai-compatible',
+            name: 'Helmcode',
+            options: {},
+            models: {
+              'glm5.3-flash': {
+                id: 'glm5.3-flash',
+                name: 'GLM 5.3 Flash',
+                contextWindow: 200_000,
+                maxOutputTokens: 8_000,
+                billing: 'flat',
+                iq: 3,
+                cost: 1
+              }
+            }
+          }
+        }
+      },
+      models: [{ ref: 'helmcode/glm5.3-flash', label: 'GLM 5.3 Flash', provider: 'Helmcode' }]
+    })
+    mount(
+      <div className="w-[780px] p-5">
+        <Composer
+          session={
+            {
+              ...session,
+              model: 'helmcode/glm5.3-flash',
+              environmentId: 'wk',
+              cwd: '/home/user/w',
+              contextTokens: 90_000,
+              savings: { rtk: true, shunt: true },
+              autoApprove: true
+            } as Session
+          }
+        />
+      </div>
+    )
+    await settle()
   }
 
   // The box on its own, to check that the line of text sits in the middle of it.

@@ -6366,6 +6366,93 @@ async function main(): Promise<void> {
     saveConfig(defaultConfig())
   }
 
+  section('a switch with nowhere cheaper to send the work')
+  {
+    /*
+     * shunt on, and the cheapest capable model is the one the session is
+     * already using — which happens the moment a session runs on a flat-rate
+     * model. The interface used to call that "no cheaper model" in amber, as
+     * though the switch were broken.
+     *
+     * It is not: `bulk_read` is still there, the file still goes to a request
+     * that is thrown away, and the conversation still never sees it. What is
+     * lost is the money, not the context, and the context is most of what this
+     * switch is for. These checks are here because the first fix was to stop
+     * refusing long reads in this state, which would have thrown that away.
+     */
+    const alone = normalizeConfig({
+      model: 'p/flat',
+      provider: {
+        p: {
+          id: 'p',
+          npm: '@ai-sdk/openai-compatible',
+          name: 'P',
+          options: { apiKey: 'x' },
+          models: { flat: { id: 'flat', name: 'Flat', billing: 'flat', iq: 3, cost: 1 } }
+        }
+      }
+    } as unknown as Record<string, unknown>)
+    check('with one model the worker is the session itself', workerIsTheSameModel(alone, 'p/flat'))
+
+    const contextFor = (config: AppConfig): ToolContext => ({
+      config,
+      agent: { id: 'build', name: 'Build', description: '', mode: 'all' },
+      permissions: { ...config.permissions, read: 'allow', bash: 'allow' },
+      sessionId: session.id,
+      environmentId: 'local',
+      cwd: process.cwd(),
+      runtime: getRuntime('local'),
+      savings: { rtk: false, shunt: true },
+      modelRef: 'p/flat',
+      currentMessageId: () => 'm-shunt',
+      depth: 0,
+      signal: new AbortController().signal
+    })
+
+    check(
+      'delegating is still on the table, because the file still stays out of the conversation',
+      'bulk_read' in createTools(contextFor(alone)),
+      Object.keys(createTools(contextFor(alone)))
+    )
+
+    const big = join(tmpdir(), `opendesktop-shunt-${Date.now()}.ts`)
+    writeFileSync(big, Array.from({ length: 900 }, (_, i) => `const line${i} = ${i}`).join('\n'))
+    const read = createTools(contextFor(alone)).read as unknown as {
+      execute: (input: unknown) => Promise<string>
+    }
+    const attempt = await read.execute({ path: big }).then(
+      (text) => ({ text, error: false }),
+      (err: Error) => ({ text: err.message, error: true })
+    )
+    check(
+      'and a long read is still refused, pointing at the tool that exists',
+      attempt.error && /bulk_read/.test(attempt.text),
+      attempt.text.slice(0, 140)
+    )
+    rmSync(big, { force: true })
+
+    const pair = normalizeConfig({
+      model: 'p/dear',
+      provider: {
+        p: {
+          id: 'p',
+          npm: '@ai-sdk/openai-compatible',
+          name: 'P',
+          options: { apiKey: 'x' },
+          models: {
+            dear: { id: 'dear', name: 'Dear', iq: 4, cost: 4, price: { input: 3, output: 15 } },
+            cheap: { id: 'cheap', name: 'Cheap', iq: 2, cost: 1, price: { input: 0.1, output: 0.4 } }
+          }
+        }
+      }
+    } as unknown as Record<string, unknown>)
+    check(
+      'with something genuinely cheaper beside it, the worker is that instead',
+      !workerIsTheSameModel(pair, 'p/dear') && workerModelRef(pair, 'p/dear') === 'p/cheap',
+      workerModelRef(pair, 'p/dear')
+    )
+  }
+
   section('a turn that ends without answering')
   {
     /*

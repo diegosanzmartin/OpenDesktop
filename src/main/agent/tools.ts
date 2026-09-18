@@ -518,10 +518,20 @@ export function createTools(ctx: ToolContext): ToolSet {
             }
             const content = await ctx.runtime.readFile(resolved)
             const all = content.split('\n')
-            // shunt mode: a whole large file does not come in here. Checked
-            // after reading it, because the line count is the threshold and
-            // the file has to be read to be counted — it costs I/O, which is
-            // not the resource this mode is protecting.
+            /*
+             * shunt mode: a whole large file does not come in here. Checked
+             * after reading it, because the line count is the threshold and
+             * the file has to be read to be counted — it costs I/O, which is
+             * not the resource this mode is protecting.
+             *
+             * This was briefly gated on there being a cheaper model to send it
+             * to, on the assumption that `bulk_read` would be missing without
+             * one. It is not: with no cheaper model the file goes to this
+             * session's own model in a request that is thrown away, which
+             * costs full price and still keeps the file out of the
+             * conversation — and the conversation is what this switch is
+             * mostly for. The gate would have quietly removed that.
+             */
             const refusal =
               ctx.savings.shunt
                 ? readRefusal({

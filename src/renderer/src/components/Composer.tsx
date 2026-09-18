@@ -142,26 +142,36 @@ function SavingsChip({ session }: { session: Session }): ReactNode {
         )}
       >
         <Gauge className="h-3.5 w-3.5" />
-        {savingsLabel(savings)}
+        <span className="hidden @[620px]:inline">{savingsLabel(savings)}</span>
       </button>
 
       {broken ? (
-        <span className="text-warn shrink-0 text-[11.5px]" title={rtk?.message}>
+        <span className="text-warn hidden shrink-0 text-[11.5px] @[760px]:inline" title={rtk?.message}>
           rtk not installed here
         </span>
       ) : noCheaper ? (
+        /*
+         * Not a warning, which is what this was and what it is not.
+         *
+         * With nothing cheaper declared, reading is delegated to this session's
+         * own model: the file goes to a request that is thrown away, so it
+         * stays out of the conversation — which is most of what the switch is
+         * for — and it is charged at full price. Amber and the words "no
+         * cheaper model" read as something broken, and the honest version of
+         * it is a fact in the same place the worker is normally named.
+         */
         <span
-          className="text-warn shrink-0 text-[11.5px]"
-          title="Reading is delegated to this session's own model, so the files stay out of the conversation but are charged at full price. Give another model a lower cost under Settings → Models → Cost."
+          className="text-ink-600 hidden shrink-0 text-[11.5px] @[760px]:inline"
+          title="Reading goes to this session's own model in a throwaway request: the files stay out of the conversation, but they are charged at full price. Give another model a lower cost under Providers & keys, or name one under Routing & limits."
         >
-          no cheaper model
+          reading → same model
         </span>
       ) : savings.shunt ? (
-        <span className="text-ink-600 hidden shrink-0 text-[11.5px] @[620px]:inline">
+        <span className="text-ink-600 hidden shrink-0 text-[11.5px] @[760px]:inline">
           reading → {worker}
         </span>
       ) : rtk?.state === 'ready' && rtk.version ? (
-        <span className="text-ink-600 hidden shrink-0 text-[11.5px] @[620px]:inline">
+        <span className="text-ink-600 hidden shrink-0 text-[11.5px] @[760px]:inline">
           rtk {rtk.version}
         </span>
       ) : null}
@@ -281,7 +291,7 @@ function ApprovalChip({ session }: { session: Session }): ReactNode {
       )}
     >
       {auto ? <Zap className="h-3.5 w-3.5" /> : <ShieldCheck className="h-3.5 w-3.5" />}
-      {auto ? 'Auto-approve' : 'Asks first'}
+      <span className="hidden @[620px]:inline">{auto ? 'Auto-approve' : 'Asks first'}</span>
     </button>
   )
 }
@@ -750,7 +760,8 @@ export function Composer({ session }: { session: Session }): ReactNode {
           * hover. What you set rarely is on the left, what you watch is on
           * the right.
           */}
-        <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 px-1">
+        <div data-footer className="mt-1.5 flex items-center gap-x-2.5 px-1">
+          <div className="flex min-w-0 flex-1 items-center gap-x-2.5 overflow-hidden">
           <button
             type="button"
             title={`${session.cwd} — click to change it, ⌘R to search for one`}
@@ -797,12 +808,15 @@ export function Composer({ session }: { session: Session }): ReactNode {
           <SavingsChip session={session} />
 
           <ApprovalChip session={session} />
+          </div>
 
           {/* The right-hand end: what is answering, how hard it is trying, and
               how full its window is. In that order because that is the order
               you ask about them in, and because the two that open a panel are
-              nearest the corner the panel comes out of. */}
-          <div className="ml-auto flex min-w-0 items-center gap-1.5">
+              nearest the corner the panel comes out of. Never wraps, never
+              shrinks: with both savings switches and auto-approve on, this is
+              what used to drop onto a second line. */}
+          <div data-footer-right className="flex shrink-0 items-center gap-1.5">
             {!model && models.length > 0 ? (
               <span className="text-warn text-[11px]">unknown model</span>
             ) : null}
