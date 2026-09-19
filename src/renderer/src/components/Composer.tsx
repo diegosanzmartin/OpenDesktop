@@ -9,6 +9,7 @@ import {
   ChevronDown,
   FileText,
   FolderOpen,
+  GitBranch,
   Download,
   Gauge,
   ImageIcon,
@@ -304,18 +305,48 @@ function ChangesBar({ session }: { session: Session }): ReactNode {
   const changes = useStore((s) => s.changes)
   const refreshChanges = useStore((s) => s.refreshChanges)
   const openDock = useStore((s) => s.openDock)
+  const [ahead, setAhead] = useState(0)
 
   useEffect(() => {
     void refreshChanges()
   }, [session.id, session.cwd, refreshChanges])
 
-  if (!changes?.isRepo || changes.files.length === 0) return null
+  /*
+   * How much of this branch is the conversation's, which is the one thing a
+   * checkout of its own is for and the one thing the working tree cannot say:
+   * everything committed here is invisible to a diff against HEAD.
+   */
+  useEffect(() => {
+    if (!session.worktree) {
+      setAhead(0)
+      return
+    }
+    let live = true
+    void window.opendesktop.sessions.worktree.status(session.id).then((status) => {
+      if (live) setAhead(status?.ahead ?? 0)
+    })
+    return () => {
+      live = false
+    }
+  }, [session.id, session.worktree, changes])
+
+  // On a branch of its own the bar stays even with nothing changed: there may
+  // be commits on it, and "which branch am I on" is the question this whole
+  // arrangement raises.
+  if (!changes?.isRepo || (changes.files.length === 0 && !session.worktree)) return null
 
   return (
     <div className="border-ink-800 bg-ink-850 mb-2 flex items-center gap-2 rounded-lg border px-3 py-1.5">
-      <span className="text-ink-300 text-[12px]">{folderName(changes.root)}</span>
-      <span className="text-ink-600 text-[12px]">{changes.branch}</span>
-      <span className="ml-auto flex items-center gap-1.5 font-mono text-[11.5px]">
+      <span className="text-ink-300 text-[12px]">
+        {folderName(session.worktree?.repoRoot ?? changes.root)}
+      </span>
+      <span className="text-ink-600 truncate text-[12px]">{changes.branch}</span>
+      {ahead > 0 ? (
+        <span className="text-violet shrink-0 text-[11.5px]">
+          {ahead} commit{ahead === 1 ? '' : 's'} here
+        </span>
+      ) : null}
+      <span className="ml-auto flex shrink-0 items-center gap-1.5 font-mono text-[11.5px]">
         <span className="text-ok">+{changes.added}</span>
         <span className="text-bad">-{changes.removed}</span>
       </span>
@@ -325,7 +356,7 @@ function ChangesBar({ session }: { session: Session }): ReactNode {
           openDock('changes')
           void refreshChanges()
         }}
-        className="bg-ink-800 text-ink-200 hover:bg-ink-700 rounded px-2 py-[3px] text-[11.5px]"
+        className="bg-ink-800 text-ink-200 hover:bg-ink-700 shrink-0 rounded px-2 py-[3px] text-[11.5px]"
       >
         Review changes
       </button>
@@ -781,15 +812,27 @@ export function Composer({ session }: { session: Session }): ReactNode {
           <button
             type="button"
             title={
-              ownFolder
-                ? "This conversation's own folder — click to point it at a repository instead"
-                : `${session.cwd} — click to change it, ⌘R to search for one`
+              session.worktree
+                ? `A checkout of its own, cut from ${session.worktree.repoRoot} — ${session.cwd}`
+                : ownFolder
+                  ? "This conversation's own folder — click to point it at a repository instead"
+                  : `${session.cwd} — click to change it, ⌘R to search for one`
             }
             onClick={() => openFolderPicker(session.id)}
             className="text-ink-500 hover:text-ink-200 flex min-w-0 shrink items-center gap-1.5 text-[11.5px]"
           >
-            <FolderOpen className="h-3 w-3 shrink-0" />
-            {ownFolder ? null : <span className="truncate">{shortenPath(session.cwd, 26)}</span>}
+            {/* On a branch of its own the path is `…/worktrees/<id>`, which is
+                an id nobody typed. The branch is the name of the work. */}
+            {session.worktree ? (
+              <GitBranch className="h-3 w-3 shrink-0" />
+            ) : (
+              <FolderOpen className="h-3 w-3 shrink-0" />
+            )}
+            {session.worktree ? (
+              <span className="truncate">{session.worktree.branch}</span>
+            ) : ownFolder ? null : (
+              <span className="truncate">{shortenPath(session.cwd, 26)}</span>
+            )}
           </button>
 
           {/* Nothing is said when the manager is running it, which is almost

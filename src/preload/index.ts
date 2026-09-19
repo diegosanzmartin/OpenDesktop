@@ -15,7 +15,10 @@ import type {
   Neighbour,
   RepoChanges,
   Session,
-  Skill
+  Skill,
+  WorktreeOffer,
+  WorktreeRemoval,
+  WorktreeStatus
 } from '@shared/types'
 import type { Savings } from '@shared/savings'
 import type { BlameLine, Commit, CommitDetail } from '@shared/history'
@@ -133,6 +136,17 @@ const api = {
     /** Other conversations that have changed the same files as this one. */
     neighbours: (sessionId: string): Promise<Neighbour[]> =>
       ipcRenderer.invoke('coordination:neighbours', sessionId),
+    /** A checkout of its own, for a conversation on somebody's repository. */
+    worktree: {
+      offer: (sessionId: string): Promise<WorktreeOffer> =>
+        ipcRenderer.invoke('worktree:offer', sessionId),
+      create: (sessionId: string): Promise<{ error?: string }> =>
+        ipcRenderer.invoke('worktree:create', sessionId),
+      remove: (sessionId: string): Promise<WorktreeRemoval> =>
+        ipcRenderer.invoke('worktree:remove', sessionId),
+      status: (sessionId: string): Promise<WorktreeStatus | null> =>
+        ipcRenderer.invoke('worktree:status', sessionId)
+    },
     create: (input: {
       cwd?: string
       environmentId?: string

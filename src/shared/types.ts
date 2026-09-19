@@ -535,6 +535,11 @@ export interface Session {
   /** Why a human is needed, shown on the card while it sits in Blocked. */
   blockedReason?: string
   /**
+   * Set when this conversation works in a checkout of its own, cut from the
+   * repository it was pointed at. `cwd` is that checkout while it is set.
+   */
+  worktree?: WorktreeInfo
+  /**
    * Other tasks judged to be working on the same thing. Set by the
    * coordinator, shown on the card, and named in the agent's prompt.
    */
@@ -708,6 +713,48 @@ export interface RepoChanges {
 }
 
 /* ---------- IPC events ---------- */
+
+/**
+ * A checkout of somebody's repository that belongs to one conversation.
+ *
+ * Only `branch` is really the conversation's: the checkout is disposable and
+ * the branch is the work. `base` is what it was cut at, so "what has this chat
+ * actually done" has something to be measured against.
+ */
+export interface WorktreeInfo {
+  repoRoot: string
+  branch: string
+  base: string
+  createdAt: number
+}
+
+/** Whether a conversation could have a checkout of its own, and from what. */
+export interface WorktreeOffer {
+  eligible: boolean
+  /** The repository it would be cut from. */
+  repoRoot?: string
+  /** What the branch would be called. */
+  branch?: string
+  /** Why not, in a sentence the interface can show. */
+  reason?: string
+}
+
+export interface WorktreeStatus {
+  /** Commits this branch has that its base did not. */
+  ahead: number
+  /** Files changed and not committed. */
+  dirty: number
+}
+
+export interface WorktreeRemoval {
+  /** Where the conversation should work now. */
+  cwd?: string
+  /** True when work was committed to the branch on the way out. */
+  committed?: boolean
+  /** The branch that is still there, whatever happened to the checkout. */
+  branch?: string
+  error?: string
+}
 
 /**
  * Another conversation that has changed a file this one has also changed.

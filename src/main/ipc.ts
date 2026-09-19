@@ -30,6 +30,7 @@ import { logLine, logPath } from './log'
 import { describeError } from '@shared/errors'
 import { readForEditor, writeFromEditor } from './editor'
 import { describeNeighbours } from './coordination'
+import { createWorktree, removeWorktree, worktreeOffer, worktreeStatus } from './worktree'
 import { listSshAliases } from './runtime/ssh'
 import * as store from './store'
 import * as history from './history'
@@ -344,9 +345,28 @@ export function registerIpc(): void {
       return session
     }
   )
-  ipcMain.handle('session:update', (_e, id: string, patch: Record<string, unknown>) =>
-    store.updateSession(id, patch)
-  )
+  ipcMain.handle('session:update', async (_e, id: string, patch: Record<string, unknown>) => {
+    /*
+     * Pointing a conversation at a different folder while it has a checkout of
+     * its own hands the checkout back first. Otherwise it stays on disk with
+     * nothing left pointing at it: `git worktree list` keeps naming it, the
+     * branch keeps whatever was in it, and nobody has any way to find either.
+     * Guarded here rather than in the folder picker because there is more than
+     * one way to move a conversation.
+     */
+    const before = store.getSession(id)
+    if (
+      before?.worktree &&
+      typeof patch.cwd === 'string' &&
+      patch.cwd !== before.cwd &&
+      !('worktree' in patch)
+    ) {
+      const removal = await removeWorktree(before)
+      if (removal.error) bus.emit({ type: 'toast', level: 'warn', message: removal.error })
+      else store.updateSession(id, { worktree: undefined })
+    }
+    return store.updateSession(id, patch)
+  })
   /**
    * Where conversations' own folders live, asked once by the interface: it
    * decides from a path whether a file is something to open, and the root
@@ -357,7 +377,7 @@ export function registerIpc(): void {
   /** What deleting this conversation would take with it, for the prompt. */
   ipcMain.handle('session:workspace', (_e, id: string) => summariseWorkspace(id))
 
-  ipcMain.handle('session:delete', (_e, id: string) => {
+  ipcMain.handle('session:delete', async (_e, id: string) => {
     /*
      * The subagents go with it. A `task` call runs in its own session, and
      * deleting only the parent left those behind as chats whose context no
@@ -377,7 +397,60 @@ export function registerIpc(): void {
     dropSessionAttachments(id)
     // Its own folder goes with it — only ever the one named after it.
     removeWorkspace(id)
+    /*
+     * A checkout of somebody's repository goes too, but the branch stays: the
+     * checkout is disposable and the branch is the work. Anything left
+     * uncommitted in it is committed to that branch on the way out rather than
+     * discarded, and if that cannot be done the checkout is left where it is
+     * and the user is told where.
+     */
+    const doomed = store.getSession(id)
+    if (doomed?.worktree) {
+      const removal = await removeWorktree(doomed)
+      if (removal.error) {
+        bus.emit({ type: 'toast', level: 'warn', message: removal.error })
+      } else if (removal.branch) {
+        bus.emit({
+          type: 'toast',
+          level: 'info',
+          message: `${removal.branch} is still there${removal.committed ? ', with what was left uncommitted' : ''}.`
+        })
+      }
+    }
     store.deleteSession(id)
+  })
+
+  /* ---- a branch of its own ---- */
+
+  ipcMain.handle('worktree:offer', (_e, id: string) => {
+    const session = store.getSession(id)
+    return session ? worktreeOffer(session) : { eligible: false, reason: 'no such conversation' }
+  })
+
+  ipcMain.handle('worktree:create', async (_e, id: string) => {
+    const session = store.getSession(id)
+    if (!session) return { error: 'no such conversation' }
+    const made = await createWorktree(session)
+    if (made.error || !made.worktree || !made.path) return { error: made.error ?? 'git refused' }
+    // The conversation moves into it. Everything that reads `cwd` — the tools,
+    // the Files pane, the Changes pane — follows without knowing about any of
+    // this.
+    store.updateSession(id, { cwd: made.path, worktree: made.worktree })
+    return made
+  })
+
+  ipcMain.handle('worktree:remove', async (_e, id: string) => {
+    const session = store.getSession(id)
+    if (!session?.worktree) return {}
+    const removal = await removeWorktree(session)
+    if (removal.error) return removal
+    store.updateSession(id, { cwd: removal.cwd ?? session.worktree.repoRoot, worktree: undefined })
+    return removal
+  })
+
+  ipcMain.handle('worktree:status', (_e, id: string) => {
+    const session = store.getSession(id)
+    return session ? worktreeStatus(session) : null
   })
   ipcMain.handle('session:clear', (_e, id: string) => {
     history.clearHistory(id)

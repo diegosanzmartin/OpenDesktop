@@ -14,7 +14,8 @@ import {
   type AppConfig,
   type Attachment,
   type Message,
-  type ProviderModelConfig
+  type ProviderModelConfig,
+  type WorktreeInfo
 } from '@shared/types'
 import { savingsOf, type Savings } from '@shared/savings'
 import { allowanceFor, allowanceUsed, needsSlimHarness, pickModel } from '@shared/routing'
@@ -281,6 +282,8 @@ function systemPrompt(agent: AgentConfig, input: {
   platform: string
   date: string
   tools: string[]
+  /** Set when this conversation works on a branch cut for it. */
+  worktree?: WorktreeInfo
   /** A model declared as modest gets the short version of all of this. */
   slim?: boolean
 }): string {
@@ -288,11 +291,22 @@ function systemPrompt(agent: AgentConfig, input: {
     agent.prompt ??
     'You are a capable software engineering agent. Answer in the language the user wrote in.'
 
+  /*
+   * One line, because that is all it changes: the tools already work on the
+   * directory they are given. What the agent cannot work out for itself is
+   * that the repository has another checkout somewhere with somebody else in
+   * it, so branch-wide operations are not its to do.
+   */
+  const branch = input.worktree
+    ? `\n- Branch: ${input.worktree.branch}, a checkout of ${input.worktree.repoRoot} made for this conversation. ` +
+      'Commit here as normal; never merge, rebase, push or switch branches — the person decides what happens to this branch.'
+    : ''
+
   if (input.slim) {
     return `${base}
 
 # Environment
-- Working directory: ${input.cwd}
+- Working directory: ${input.cwd}${branch}
 - Execution target: ${input.environmentLabel} (${input.environmentKind})
 - Today: ${input.date}${slimRules()}${restrictions(input.tools)}`
   }
@@ -300,7 +314,7 @@ function systemPrompt(agent: AgentConfig, input: {
   return `${base}
 
 # Environment
-- Working directory: ${input.cwd}
+- Working directory: ${input.cwd}${branch}
 - Execution target: ${input.environmentLabel} (${input.environmentKind})
 - Platform: ${input.platform}
 - Today: ${input.date}
@@ -1231,6 +1245,7 @@ export async function runTurn(input: TurnInput): Promise<string> {
       systemPrompt(harness, {
         cwd: session.cwd,
         environmentLabel: runtime.label,
+        worktree: session.worktree,
         environmentKind: runtime.kind,
         platform,
         date: new Date().toISOString().slice(0, 10),

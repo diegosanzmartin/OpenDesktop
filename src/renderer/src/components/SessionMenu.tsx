@@ -15,6 +15,7 @@ import {
   CircleSlash,
   Columns3,
   FolderOpen,
+  GitBranch,
   GitFork,
   MoreVertical,
   Pencil,
@@ -26,6 +27,7 @@ import {
 import type { Session } from '@shared/types'
 import { columnOfKind } from '@shared/boards'
 import { useStore } from '../state/store'
+import { couldHaveWorktree, giveWorktree, returnFromWorktree } from '../lib/worktree'
 import { folderName } from '../lib/format'
 import { DiffSquare } from './icons'
 
@@ -125,6 +127,7 @@ export function SessionMenu({ session }: { session: Session }): ReactNode {
   }
 
   const board = boards.find((candidate) => candidate.id === session.boardId)
+  const workspacesRoot = useStore((s) => s.workspacesRoot)
 
   const items: Item[] = [
     {
@@ -245,6 +248,33 @@ export function SessionMenu({ session }: { session: Session }): ReactNode {
               }
             }))
     },
+    /*
+     * A checkout of its own, which is the strong version of everything else
+     * this app does about two agents in one repository: not a warning that
+     * they are in the same file, but two different files on two branches.
+     * Offered rather than default — see `worktree.ts` for what it costs.
+     */
+    ...(session.worktree
+      ? [
+          {
+            key: 'worktree-off',
+            label: `Return to ${folderName(session.worktree.repoRoot)}`,
+            separatorBefore: true,
+            icon: <GitBranch className="h-3.5 w-3.5" />,
+            onSelect: () => void returnFromWorktree(session)
+          }
+        ]
+      : couldHaveWorktree(session, workspacesRoot)
+        ? [
+            {
+              key: 'worktree-on',
+              label: 'Work on a branch of its own',
+              separatorBefore: true,
+              icon: <GitBranch className="h-3.5 w-3.5" />,
+              onSelect: () => void giveWorktree(session)
+            }
+          ]
+        : []),
     {
       key: 'board',
       label: 'Board',

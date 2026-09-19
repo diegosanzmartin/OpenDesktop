@@ -1,8 +1,9 @@
 import clsx from 'clsx'
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
-import { Link2, Loader2 } from 'lucide-react'
+import { GitBranch, Link2, Loader2 } from 'lucide-react'
 import type { Neighbour, Session } from '@shared/types'
 import { useStore } from '../state/store'
+import { couldHaveWorktree, giveWorktree } from '../lib/worktree'
 
 /**
  * Who else is in these files.
@@ -25,6 +26,7 @@ export function NeighbourBar({ session }: { session: Session }): ReactNode {
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const selectSession = useStore((s) => s.selectSession)
+  const workspacesRoot = useStore((s) => s.workspacesRoot)
 
   const load = useCallback(() => {
     let live = true
@@ -120,6 +122,26 @@ export function NeighbourBar({ session }: { session: Session }): ReactNode {
               )}
             </div>
           ))}
+
+          {/*
+            * The offer, where the problem is.
+            *
+            * A checkout of its own is in the session menu too, but nobody goes
+            * looking for it before they have the collision — and this line is
+            * the collision. One click, and the two conversations stop being in
+            * the same files at all.
+            */}
+          {couldHaveWorktree(session, workspacesRoot) ? (
+            <button
+              type="button"
+              onClick={() => void giveWorktree(session)}
+              title="A second checkout of this repository, on a branch named after this conversation, cut from the last commit. Dependencies are not installed there."
+              className="border-ink-700 text-ink-300 hover:border-ink-600 hover:text-ink-100 flex items-center gap-1.5 rounded-md border px-2 py-[3px] text-[11.5px]"
+            >
+              <GitBranch className="h-3 w-3" />
+              Give this chat a branch of its own
+            </button>
+          ) : null}
         </div>
       ) : null}
     </div>

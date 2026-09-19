@@ -468,6 +468,30 @@ gets the last word: once the other task has finished **and** its change is commi
 nothing left to tread on, so the line goes away by itself instead of naming the same three
 conversations for the rest of the week.
 
+### A branch of its own
+
+The warnings above make a collision visible; they do not make it impossible. Two agents editing
+one checkout still edit one checkout. `git worktree` is the answer git already has: a second
+checkout of the same repository, on its own branch, sharing one object database — no clone, no
+second remote, no copy of the history.
+
+**Session menu → Work on a branch of its own**, or the button on the line that says who else is
+in this file, which is where you will actually want it. The conversation moves into the checkout;
+the tools, the Files pane and the Changes pane follow without knowing anything changed. The
+footer shows the branch instead of the path, and the bar above the composer says how many
+commits this conversation has put on it.
+
+On request, never by default: a worktree has no `node_modules`, no `.venv` and no `.env`, and
+it is cut from the last commit, so uncommitted work in the main checkout is not in it. That is
+the right trade for a day of parallel refactoring and the wrong one for a question about a file.
+
+**Returning** hands the checkout back and keeps the branch — the checkout is disposable, the
+branch is the work. Deleting the conversation does the same. Anything left uncommitted in it is
+committed to that branch on the way out rather than discarded; if that cannot be done (no git
+identity configured, usually) the checkout is left exactly where it is and you are told where.
+Nothing is ever merged for you: what to do with the branch is the question this app is least
+qualified to answer.
+
 ## Remote execution over SSH
 
 **Settings → Remote hosts** adds and edits them. Give the environment an id, press *Add remote

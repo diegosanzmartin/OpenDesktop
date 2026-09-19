@@ -48,6 +48,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync
@@ -198,6 +199,14 @@ import {
 import { createBoard, deleteBoard, getBoard, listBoards, loadBoards } from './boards'
 import { startBoardSync } from './board-sync'
 import { queuedTasks, startScheduler, stopScheduler, tick } from './scheduler'
+import {
+  LOCAL_WORKTREES_DIR,
+  branchNameFor,
+  createWorktree,
+  removeWorktree,
+  worktreeOffer,
+  worktreeStatus
+} from './worktree'
 import {
   claimOverlap,
   clearClaims,
@@ -3224,6 +3233,136 @@ async function main(): Promise<void> {
     resetClaims()
     flushClaims()
     rmSync(room, { recursive: true, force: true })
+  }
+
+  section('a branch of its own')
+  {
+    /*
+     * The strong version of not treading on each other: a second checkout of
+     * the same repository, on its own branch, so there is nothing to collide
+     * over. What is worth testing is the way out, not the way in — the branch
+     * has to outlive the conversation, and nothing an agent wrote may be
+     * dropped on the floor by a cleanup path.
+     */
+    check(
+      'a branch is named after the conversation, not after its id alone',
+      branchNameFor('KLaUkcdoNmI4', 'Rewrite the quote service').startsWith(
+        'opendesktop/rewrite-the-quote-service-'
+      ),
+      branchNameFor('KLaUkcdoNmI4', 'Rewrite the quote service')
+    )
+    check(
+      'two chats with the same title still get different branches',
+      branchNameFor('aaaaaa11', 'Same title') !== branchNameFor('bbbbbb22', 'Same title')
+    )
+    check(
+      'and a title git would refuse is made into one it accepts',
+      /^opendesktop\/[a-z0-9][a-z0-9-]*$/.test(branchNameFor('cc33', '¿Qué hace ../ esto...?')),
+      branchNameFor('cc33', '¿Qué hace ../ esto...?')
+    )
+    check(
+      'a conversation with no title at all still gets a name',
+      branchNameFor('dd44', '   ') === 'opendesktop/chat-dd44',
+      branchNameFor('dd44', '   ')
+    )
+
+    const repo = join(tmpdir(), `opendesktop-worktree-${Date.now()}`)
+    mkdirSync(join(repo, 'src'), { recursive: true })
+    writeFileSync(join(repo, 'src', 'app.ts'), 'export const a = 1\n')
+    const inRepo = (args: string[], cwd = repo): Promise<void> =>
+      new Promise((done) => {
+        const proc = spawn('git', args, { cwd, stdio: 'ignore' })
+        proc.on('close', () => done())
+        proc.on('error', () => done())
+      })
+    await inRepo(['init', '--initial-branch=main'])
+    await inRepo(['config', 'user.email', 'test@localhost'])
+    await inRepo(['config', 'user.name', 'Test'])
+    await inRepo(['add', '-A'])
+    await inRepo(['commit', '-m', 'the repository as it was'])
+
+    const bare = join(tmpdir(), `opendesktop-noRepo-${Date.now()}`)
+    mkdirSync(bare, { recursive: true })
+    const nowhere = store.createSession({
+      title: 'a question about nothing',
+      cwd: bare,
+      environmentId: 'local',
+      agentId: 'auto',
+      model: 'test/mock'
+    })
+    const refused = await worktreeOffer(nowhere)
+    check('a folder that is no repository is not offered one', !refused.eligible, refused)
+
+    const session = store.createSession({
+      title: 'Rename the export',
+      cwd: repo,
+      environmentId: 'local',
+      agentId: 'auto',
+      model: 'test/mock'
+    })
+    const offer = await worktreeOffer(session)
+    check('a repository with a commit in it is', offer.eligible && offer.repoRoot !== undefined, offer)
+
+    const made = await createWorktree(session)
+    check('and cutting one works', made.worktree !== undefined && made.path !== undefined, made.error)
+    const path = made.path!
+    check('the checkout is a directory of its own with the repository in it', existsSync(join(path, 'src', 'app.ts')))
+    check('cut from the last commit, on its own branch', made.worktree!.branch === offer.branch)
+    check('and the original checkout is untouched', existsSync(join(repo, 'src', 'app.ts')))
+
+    const live = { ...session, cwd: path, worktree: made.worktree }
+    store.updateSession(session.id, { cwd: path, worktree: made.worktree })
+
+    const clean = await worktreeStatus(live)
+    check('a fresh one is level with what it was cut from', clean?.ahead === 0 && clean?.dirty === 0, clean)
+
+    writeFileSync(join(path, 'src', 'app.ts'), 'export const a = 2\n')
+    const dirty = await worktreeStatus(live)
+    check('and it counts what has been changed in it', dirty?.dirty === 1, dirty)
+
+    /*
+     * The rule the whole feature stands on. Uncommitted work in the checkout
+     * is committed to the branch on the way out, never discarded: `--force`
+     * would throw away what an agent did on somebody's instruction, in a
+     * cleanup path, silently.
+     */
+    const gone = await removeWorktree(live)
+    check('handing it back works', !gone.error, gone.error)
+    check('and says what was left uncommitted is now committed', gone.committed === true, gone)
+    check('the checkout is gone', !existsSync(join(path, 'src', 'app.ts')))
+    // git answers with the real path, which on macOS is /private/var and not
+    // the /var the test made: the same directory, spelled the way git spells it.
+    check('the conversation is back in the repository', gone.cwd === realpathSync(repo), gone.cwd)
+
+    const branches = await new Promise<string>((done) => {
+      const proc = spawn('git', ['branch', '--list', made.worktree!.branch], { cwd: repo })
+      let out = ''
+      proc.stdout.on('data', (chunk: Buffer) => (out += chunk.toString()))
+      proc.on('close', () => done(out))
+      proc.on('error', () => done(''))
+    })
+    check('but the branch is still there, because the branch is the work', branches.trim().length > 0, branches)
+
+    const kept = await new Promise<string>((done) => {
+      const proc = spawn('git', ['log', '-1', '--format=%s', made.worktree!.branch], { cwd: repo })
+      let out = ''
+      proc.stdout.on('data', (chunk: Buffer) => (out += chunk.toString()))
+      proc.on('close', () => done(out.trim()))
+      proc.on('error', () => done(''))
+    })
+    check(
+      'with the leftover work on it, named after the conversation',
+      kept.includes('Rename the export'),
+      kept
+    )
+
+    for (const id of [session.id, nowhere.id]) {
+      store.deleteSession(id)
+      history.clearHistory(id)
+    }
+    rmSync(repo, { recursive: true, force: true })
+    rmSync(bare, { recursive: true, force: true })
+    rmSync(join(LOCAL_WORKTREES_DIR, session.id), { recursive: true, force: true })
   }
 
   section('filtered output: what may run in place of what was asked for')

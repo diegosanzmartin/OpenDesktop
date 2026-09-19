@@ -2018,6 +2018,103 @@ async function run(): Promise<void> {
     )
   }
 
+  section('a branch of its own')
+  {
+    const onBranch: Session = {
+      ...session,
+      id: 's-wt',
+      cwd: '/home/user/.opendesktop/worktrees/s-wt',
+      worktree: {
+        repoRoot: '/home/user/w/quotes',
+        branch: 'opendesktop/rename-the-export-a1b2c3',
+        base: 'deadbeef',
+        createdAt: 0
+      }
+    }
+    useStore.setState({ sessions: [session, onBranch] })
+    const host = mount(<Composer session={onBranch} />, 900)
+    await settle()
+    const footer = (host.querySelector('[data-footer]') as HTMLElement | null)?.textContent ?? ''
+    check(
+      'the footer says the branch, not the path of the checkout',
+      /rename-the-export/.test(footer) && !/worktrees/.test(footer),
+      footer
+    )
+
+    REPLIES.changes = {
+      isRepo: true,
+      root: '/home/user/.opendesktop/worktrees/s-wt',
+      branch: 'opendesktop/rename-the-export-a1b2c3',
+      files: [],
+      added: 0,
+      removed: 0
+    }
+    REPLIES['sessions.worktree.status'] = { ahead: 3, dirty: 0 }
+    const withCommits = mount(<Composer session={onBranch} />, 900)
+    await settle()
+    await settle()
+    const bar = withCommits.textContent ?? ''
+    check(
+      'the bar stays on a branch of its own even with nothing uncommitted',
+      /opendesktop\/rename-the-export/.test(bar),
+      bar.slice(0, 160)
+    )
+    check(
+      'and says how much of the branch this conversation wrote',
+      /3 commits here/.test(bar),
+      bar.slice(0, 160)
+    )
+    check(
+      'named after the repository it was cut from, not the checkout',
+      /quotes/.test(bar),
+      bar.slice(0, 160)
+    )
+    REPLIES.changes = { isRepo: false, root: '', branch: '', files: [], added: 0, removed: 0 }
+    delete REPLIES['sessions.worktree.status']
+
+    // The offer belongs where the collision is, which is the only place
+    // anybody is thinking about it.
+    REPLIES['sessions.neighbours'] = [
+      { sessionId: 's-x', title: 'Another chat', status: 'running', live: true, shared: ['/a/b.ts'] }
+    ]
+    useStore.setState({ workspacesRoot: '/home/user/.opendesktop/workspaces' })
+    const clash = mount(<NeighbourBar session={{ ...session, cwd: '/home/user/w/quotes' }} />, 760)
+    await settle()
+    clash.querySelector('button')?.click()
+    await settle()
+    check(
+      'a conversation in a repository is offered one where the clash is',
+      /branch of its own/.test(clash.textContent ?? ''),
+      clash.textContent
+    )
+
+    const already = mount(<NeighbourBar session={onBranch} />, 760)
+    await settle()
+    already.querySelector('button')?.click()
+    await settle()
+    check(
+      'and one that already has a branch is not offered another',
+      !/branch of its own/.test(already.textContent ?? ''),
+      already.textContent
+    )
+
+    const own = mount(
+      <NeighbourBar session={{ ...session, cwd: '/home/user/.opendesktop/workspaces/s1' }} />,
+      760
+    )
+    await settle()
+    own.querySelector('button')?.click()
+    await settle()
+    check(
+      'nor is a conversation in its own folder, where there is nobody to avoid',
+      !/branch of its own/.test(own.textContent ?? ''),
+      own.textContent
+    )
+
+    REPLIES['sessions.neighbours'] = []
+    useStore.setState({ sessions: [session] })
+  }
+
   console.log(`\n${checks - failures.length}/${checks} checks passed`)
   if (failures.length > 0) {
     console.log(`\nfailed:\n${failures.map((f) => `  - ${f}`).join('\n')}`)
