@@ -23,7 +23,20 @@ const ICONSET = join(OUT_DIR, 'icon.iconset')
 // and capturePage would then return a non-square image.
 const SIZE = 600
 
-// The motif is the app's own idea: stacked command blocks, the top one open.
+/*
+ * The motif: two conversations that touch.
+ *
+ * Which is the thing this app is for — several agents working at once on the
+ * same repository, overlapping without treading on each other. One ring is
+ * the conversation in front of you, the other the one next to it.
+ *
+ * The mark is deliberately heavier, and smaller, than it looks like it needs
+ * to be. An icon is decided at 16 pixels, not at 1024. The first draft used a
+ * 11/100 stroke, which is 1.1px in the menu bar and turns into grey mush; the
+ * second filled 88% of the plate and left the rings touching its edges, which
+ * is what an icon looks like when nobody checked it in the Dock. 14.5/100 at
+ * 80% keeps both holes open at 16px and still leaves the plate a margin.
+ */
 const HTML = `<!doctype html>
 <meta charset="utf-8">
 <style>
@@ -33,42 +46,17 @@ const HTML = `<!doctype html>
   .plate {
     position: absolute; inset: 8.6vw;
     border-radius: 19.5vw;
-    background: linear-gradient(155deg, #2e2b27 0%, #1b1a18 55%, #111010 100%);
-    box-shadow: inset 0 0.6vw 0 rgba(255,255,255,0.055), inset 0 -0.8vw 2.4vw rgba(0,0,0,0.55);
-    overflow: hidden;
+    background: linear-gradient(170deg, #232120 0%, #1a1918 60%, #141312 100%);
+    box-shadow: inset 0 0.5vw 0 rgba(255,255,255,0.05);
+    display: flex; align-items: center; justify-content: center;
   }
-  .glow {
-    position: absolute; width: 74vw; height: 74vw; left: -17vw; top: -27vw;
-    background: radial-gradient(circle, rgba(217,119,87,0.26) 0%, rgba(217,119,87,0) 68%);
-  }
-  .stack { position: absolute; left: 14.5vw; top: 29.4vw; width: 53.5vw; }
-  .bar {
-    height: 9.4vw; border-radius: 2.8vw; margin-bottom: 3.9vw;
-    background: #322e2b; display: flex; align-items: center; padding-left: 3.9vw;
-    box-sizing: border-box;
-  }
-  .bar.open { background: #d97757; }
-  .bar.dim { background: #2a2724; }
-  .chev { width: 3.3vw; height: 3.3vw; border-right: 0.98vw solid; border-bottom: 0.98vw solid; }
-  .bar.open .chev { border-color: #2b1a13; transform: rotate(45deg) translateY(-0.5vw); }
-  .bar.dim .chev { border-color: #6e6b66; transform: rotate(-45deg) translate(0.6vw, -0.6vw); }
-  .body {
-    height: 14.6vw; border-radius: 2.8vw; background: #232120; margin-top: -1.6vw;
-    margin-bottom: 3.9vw; padding: 3.3vw 3.9vw; box-sizing: border-box;
-  }
-  .line { height: 1.75vw; border-radius: 0.9vw; background: #45403b; margin-bottom: 2.3vw; }
-  .line.short { width: 58%; background: #3a3632; margin-bottom: 0; }
+  .mark { width: 80%; height: 80%; }
 </style>
 <div class="plate">
-  <div class="glow"></div>
-  <div class="stack">
-    <div class="bar open"><div class="chev"></div></div>
-    <div class="body">
-      <div class="line"></div>
-      <div class="line short"></div>
-    </div>
-    <div class="bar dim"><div class="chev"></div></div>
-  </div>
+  <svg class="mark" viewBox="0 0 100 100">
+    <circle cx="65.5" cy="50" r="24" fill="none" stroke="#d97757" stroke-width="14.5" opacity="0.55"/>
+    <circle cx="34.5" cy="50" r="24" fill="none" stroke="#d97757" stroke-width="14.5"/>
+  </svg>
 </div>`
 
 // macOS wants these exact members in an iconset.
