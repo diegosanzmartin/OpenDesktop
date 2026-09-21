@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Check, Copy, FileText, GitBranch, RotateCcw } from 'lucide-react'
 import type { Attachment, Block, Message, Session } from '@shared/types'
 import { isManager } from '@shared/types'
@@ -301,23 +301,56 @@ export function ChatView({ session }: { session: Session }): ReactNode {
     [allApprovals, session.id]
   )
   const scroller = useRef<HTMLDivElement>(null)
-  const pinned = useRef(true)
 
-  useEffect(() => {
+  /*
+   * Following the tail, decided from where the view was *before* this render's
+   * content landed.
+   *
+   * This used to be a latch kept up to date by the scroll handler, true
+   * whenever you were within 80px of the bottom. Two ways that went wrong, and
+   * both of them are what "it jumps back in little hops" means:
+   *
+   * A nudge of less than 80px left the latch true, so the next token snapped
+   * you back down — and a trackpad delivers a few pixels at a time, so reading
+   * upwards slowly was the one gesture guaranteed to be undone.
+   *
+   * And expanding a command fires no scroll event at all. The content grew by
+   * a screenful, the latch still said "at the bottom" from before, and the
+   * next token threw you to the end of the transcript.
+   *
+   * Read during render instead. That is the one moment the old layout still
+   * exists — after the commit the new content is already in and the distance
+   * has changed — so the question it answers is the right one: were you at the
+   * bottom when this arrived? Nothing to tune, and a change nobody scrolled
+   * for counts the same as one they did.
+   */
+  const atBottom = useRef(true)
+  if (scroller.current) {
     const el = scroller.current
-    if (el && pinned.current) el.scrollTop = el.scrollHeight
-  }, [messages, approvals])
+    atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 4
+  }
+
+  // Your own message always takes you to the end, wherever you were reading:
+  // you just wrote it, and the answer comes after it.
+  const tail = messages[messages.length - 1]
+  const mine = tail?.role === 'user' ? tail.id : null
+  const sent = useRef<string | null>(null)
+  const shown = useRef(session.id)
+
+  useLayoutEffect(() => {
+    const el = scroller.current
+    if (!el) return
+    // A session just opened is read from its end, whatever the last one was.
+    const opened = shown.current !== session.id
+    shown.current = session.id
+    const own = mine !== null && mine !== sent.current
+    if (own) sent.current = mine
+    if (atBottom.current || own || opened) el.scrollTop = el.scrollHeight
+  }, [messages, approvals, mine, session.id])
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div
-        ref={scroller}
-        onScroll={(event) => {
-          const el = event.currentTarget
-          pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-        }}
-        className="min-h-0 flex-1 overflow-y-auto px-6 py-5"
-      >
+      <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
         <div className="mx-auto max-w-[760px] space-y-6">
           {messages.length === 0 ? (
             <div className="text-ink-500 py-20 text-center">

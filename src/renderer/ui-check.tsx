@@ -2152,6 +2152,118 @@ async function run(): Promise<void> {
     )
   }
 
+  section('reading back through a long answer')
+  {
+    /*
+     * The bug this is here for: expand a command, scroll up a little to read,
+     * and the view walks itself back to the bottom in small hops. Every step
+     * below is one the user actually performs, in order, against a real
+     * scroller with real layout.
+     */
+    const long: Message[] = []
+    for (let i = 0; i < 24; i++) {
+      long.push({
+        id: `m${i}`,
+        sessionId: session.id,
+        role: i % 2 === 0 ? 'user' : 'assistant',
+        parts: [{ type: 'text', text: `Paragraph ${i}. ${'word '.repeat(60)}` }],
+        createdAt: i * 1000,
+        completedAt: i * 1000 + 500
+      } as Message)
+    }
+    useStore.setState({ messages: { [session.id]: long } })
+
+    const host = document.createElement('div')
+    host.style.cssText = 'width:900px;height:420px;display:flex'
+    document.body.appendChild(host)
+    createRoot(host).render(<ChatView session={session} />)
+    await settle()
+
+    const el = host.querySelector('.overflow-y-auto') as HTMLElement
+    const distance = (): number => el.scrollHeight - el.scrollTop - el.clientHeight
+    check('it opens at the end, which is where the answer is', distance() <= 4, distance())
+
+    // One gentle push of the wheel upwards. A trackpad gives a few pixels at
+    // a time, which is exactly what the old 80px latch swallowed.
+    el.scrollTop -= 30
+    el.dispatchEvent(new Event('scroll'))
+    const readingAt = el.scrollTop
+
+    const grow = (id: string, text: string): void => {
+      const list = useStore.getState().messages[session.id]
+      useStore.setState({
+        messages: {
+          [session.id]: list.map((m) =>
+            m.id === id ? { ...m, parts: [{ type: 'text', text: (m.parts[0].text ?? '') + text }] } : m
+          )
+        }
+      })
+    }
+
+    grow('m23', ' and more output arrives')
+    await settle()
+    check('a token arriving does not drag you back down', el.scrollTop === readingAt, {
+      was: readingAt,
+      now: el.scrollTop
+    })
+
+    for (let i = 0; i < 4; i++) {
+      grow('m23', ' still going')
+      await settle()
+    }
+    check('nor do four of them, one hop at a time', el.scrollTop === readingAt, {
+      was: readingAt,
+      now: el.scrollTop
+    })
+
+    /*
+     * Expanding a command grows the transcript without any scroll event: the
+     * old latch never heard about it and still believed you were at the end.
+     */
+    el.scrollTop = el.scrollHeight
+    await settle()
+    check('back at the end, it follows again', distance() <= 4, distance())
+
+    const filler = document.createElement('div')
+    filler.style.height = '600px'
+    ;(el.firstElementChild as HTMLElement).appendChild(filler)
+    const afterExpanding = el.scrollTop
+    grow('m23', ' one more line')
+    await settle()
+    check(
+      'and something opening below you is not a reason to jump to the end',
+      el.scrollTop === afterExpanding,
+      { was: afterExpanding, now: el.scrollTop, distance: distance() }
+    )
+
+    filler.remove()
+    el.scrollTop = el.scrollHeight
+    await settle()
+    const before = el.scrollTop
+    useStore.setState({
+      messages: {
+        [session.id]: [
+          ...useStore.getState().messages[session.id],
+          {
+            id: 'm-own',
+            sessionId: session.id,
+            role: 'user',
+            parts: [{ type: 'text', text: 'And what about this?' }],
+            createdAt: 99_000
+          } as Message
+        ]
+      }
+    })
+    await settle()
+    check('but your own message always takes you to the end', el.scrollTop > before && distance() <= 4, {
+      before,
+      now: el.scrollTop,
+      distance: distance()
+    })
+
+    useStore.setState({ messages: {} })
+  }
+
   console.log(`\n${checks - failures.length}/${checks} checks passed`)
   if (failures.length > 0) {
     console.log(`\nfailed:\n${failures.map((f) => `  - ${f}`).join('\n')}`)
