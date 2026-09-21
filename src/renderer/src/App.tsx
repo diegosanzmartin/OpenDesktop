@@ -5,6 +5,7 @@ import { activeSession, useStore } from './state/store'
 import { Sidebar } from './components/Sidebar'
 import { TopBar } from './components/TopBar'
 import { RightDock } from './components/RightDock'
+import { PANE_FRAME } from './components/ui'
 import { ChatView } from './components/ChatView'
 import { SettingsPane } from './components/SettingsPane'
 import { BoardView } from './components/BoardView'
@@ -130,7 +131,7 @@ export default function App(): ReactNode {
 
       <div className="flex min-h-0 flex-1">
         <Sidebar />
-        <div className="border-ink-800 bg-ink-950 mb-2 ml-1 mr-1 flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg border">
+        <div className={clsx(PANE_FRAME, 'bg-ink-950 flex min-w-0 flex-1 flex-col')}>
           {view === 'board' ? (
             <BoardView />
           ) : session ? (

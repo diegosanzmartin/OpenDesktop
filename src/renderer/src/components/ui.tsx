@@ -1,6 +1,17 @@
 import clsx from 'clsx'
 import type { ReactNode, SelectHTMLAttributes } from 'react'
 
+/**
+ * The frame the window's two big panes share: the chat and the dock beside it.
+ *
+ * One constant because they sit side by side and their edges are read
+ * together. They were written separately — the chat `mb-2 ml-1 mr-1`, the dock
+ * `m-2 ml-1` — so the dock's rounded corner started eight pixels below the
+ * chat's and finished four further in from the window. Nothing was broken;
+ * it just looked like nobody had put them next to each other.
+ */
+export const PANE_FRAME = 'border-ink-800 mb-2 ml-1 mr-1 overflow-hidden rounded-lg border'
+
 export function Panel({ className, children }: { className?: string; children: ReactNode }): ReactNode {
   return <div className={clsx('bg-ink-850 border-ink-800 rounded-xl border', className)}>{children}</div>
 }

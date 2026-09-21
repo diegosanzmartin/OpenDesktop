@@ -36,6 +36,7 @@ import { RoutingTab } from './src/components/RoutingTab'
 import { FolderPicker } from './src/components/FolderPicker'
 import { LocalModelSection } from './src/components/LocalModelSection'
 import { ChatView } from './src/components/ChatView'
+import { PANE_FRAME } from './src/components/ui'
 import { NeighbourBar } from './src/components/NeighbourBar'
 
 const failures: string[] = []
@@ -2113,6 +2114,42 @@ async function run(): Promise<void> {
 
     REPLIES['sessions.neighbours'] = []
     useStore.setState({ sessions: [session] })
+  }
+
+  section('the two panes of the window')
+  {
+    /*
+     * The chat and the dock sit side by side, so their edges are read
+     * together — and they were written apart, which is how the dock's rounded
+     * corner ended up eight pixels below the chat's. Measured rather than
+     * compared as strings: the point is where they land, not what they say.
+     */
+    const row = document.createElement('div')
+    row.style.cssText = 'display:flex;width:900px;height:300px'
+    row.innerHTML = `<div class="${PANE_FRAME}" style="flex:1"></div><div class="${PANE_FRAME}" style="width:300px"></div>`
+    document.body.appendChild(row)
+    await settle()
+    const [left, right] = [...row.children].map((el) => el.getBoundingClientRect())
+    check('the chat and the dock start at the same height', left.top === right.top, {
+      chat: left.top,
+      dock: right.top
+    })
+    check('and end at the same one', left.bottom === right.bottom, {
+      chat: left.bottom,
+      dock: right.bottom
+    })
+    check(
+      'with the same gutter to the window on the outside of each',
+      Math.round(left.left - row.getBoundingClientRect().left) ===
+        Math.round(row.getBoundingClientRect().right - right.right),
+      { before: left.left - row.getBoundingClientRect().left, after: row.getBoundingClientRect().right - right.right }
+    )
+    const source = PANE_FRAME
+    check(
+      'and neither is free to drift, because there is one of them',
+      /\bmb-2\b/.test(source) && !/\bm-2\b/.test(source.replace(/mb-2|mr-2|ml-2|mt-2/g, '')),
+      source
+    )
   }
 
   console.log(`\n${checks - failures.length}/${checks} checks passed`)

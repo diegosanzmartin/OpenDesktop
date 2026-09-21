@@ -1,4 +1,5 @@
 import clsx from 'clsx'
+import { PANE_FRAME } from './ui'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Maximize2, Minimize2, PanelTopClose, PanelTopOpen, X } from 'lucide-react'
 import { useStore, type DockTab } from '../state/store'
@@ -81,7 +82,7 @@ export function RightDock(): ReactNode {
         }}
         className="hover:bg-brand/40 absolute left-0 top-0 z-10 h-full w-1 cursor-col-resize"
       />
-      <div className="border-ink-800 bg-ink-850 m-2 ml-1 flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg border">
+      <div className={clsx(PANE_FRAME, 'bg-ink-850 flex min-w-0 flex-1 flex-col')}>
         <div className="border-ink-800 flex h-10 shrink-0 items-center gap-2 border-b px-3">
           {/* The file's name when one is loaded: the pane already says
               "Browser" by being one, and a file is what you came for. */}
