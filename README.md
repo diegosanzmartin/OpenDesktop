@@ -663,6 +663,14 @@ A running tool outranks the ceiling however long it has been going, and so does 
 to be approved — killing a turn because it was waiting for the person about to answer it is the
 worst thing this timer could do. At 90 seconds of silence you get a toast saying so, once.
 
+Turning the default off was not enough on its own, and this is the part worth remembering when
+changing any default: a default only reaches somebody who has no config file yet. Every machine
+that ran the older build has `maxTurnMs: 1800000` written down, a value in the file beats a
+default in the code, and those turns went on being cut off — with the setting no longer anywhere
+in the interface, which made it an invisible limit nobody could have debugged. So exactly that
+number is retired when the config is read, and the log says it happened. A different number was
+typed by somebody who meant it: it is still honoured, and the log says that too.
+
 **What a repetition costs** — every step of a turn resends the conversation, so a turn's bill
 is roughly the prefix times the number of steps: a 33k transcript and 24 steps is 800k input
 tokens, and that is the real number, not a display quirk. Two things make it cheaper. The

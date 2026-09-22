@@ -199,6 +199,7 @@ import {
 import { createBoard, deleteBoard, getBoard, listBoards, loadBoards } from './boards'
 import { startBoardSync } from './board-sync'
 import { queuedTasks, startScheduler, stopScheduler, tick } from './scheduler'
+import { wallClockNote } from './config'
 import { quietVerdict } from '@shared/quiet'
 import {
   LOCAL_WORKTREES_DIR,
@@ -3418,6 +3419,70 @@ async function main(): Promise<void> {
       (loadConfig().maxQuietMs ?? 0) > 0,
       loadConfig().maxQuietMs
     )
+
+    /*
+     * Changing a default does nothing for a machine that already has a config
+     * file, and this one did nothing for the machine that reported the bug: the
+     * thirty minutes were written down, a value in the file beats a default in
+     * the code, and the turns went on being cut off. Worse than before, because
+     * the setting had just been taken out of the interface — an invisible limit
+     * that still fires is the one nobody can debug.
+     */
+    check(
+      'the thirty minutes this app used to write down are retired on load',
+      normalizeConfig({ maxTurnMs: 1_800_000 }).maxTurnMs === 0
+    )
+    check(
+      'a config that never had the key is off too',
+      normalizeConfig({}).maxTurnMs === 0
+    )
+    check(
+      'but a number somebody chose is theirs, and is still honoured',
+      normalizeConfig({ maxTurnMs: 300_000 }).maxTurnMs === 300_000
+    )
+    check(
+      'and the silence ceiling arrives on a config written before it existed',
+      (normalizeConfig({ maxTurnMs: 1_800_000 }).maxQuietMs ?? 0) === 600_000,
+      normalizeConfig({ maxTurnMs: 1_800_000 }).maxQuietMs
+    )
+    check(
+      'a nonsense value is off rather than a turn that ends immediately',
+      normalizeConfig({ maxTurnMs: -5 }).maxTurnMs === 0 &&
+        normalizeConfig({ maxTurnMs: 'soon' as unknown as number }).maxTurnMs === 0
+    )
+    // The note describes the most recent load, so retire one here and read it.
+    normalizeConfig({ maxTurnMs: 1_800_000 })
+    check(
+      'and retiring it is said out loud, since no screen shows the setting any more',
+      (wallClockNote() ?? '').includes('retired'),
+      wallClockNote()
+    )
+    normalizeConfig({ maxTurnMs: 300_000 })
+    check(
+      'as is keeping one, which is the invisible-setting case',
+      (wallClockNote() ?? '').includes('honouring'),
+      wallClockNote()
+    )
+
+    /*
+     * The config on this machine, whatever it happens to say. The bug was
+     * found on a real file and the synthetic cases above would all have passed
+     * without ever reading one.
+     */
+    const live = join(homedir(), '.config', 'opendesktop', 'config.json')
+    if (existsSync(live)) {
+      try {
+        const onDisk = JSON.parse(readFileSync(live, 'utf8')) as Record<string, unknown>
+        const settled = normalizeConfig(onDisk)
+        check(
+          'this machine ends turns on silence, not on a clock',
+          (settled.maxTurnMs ?? 0) === 0 && (settled.maxQuietMs ?? 0) > 0,
+          { maxTurnMs: settled.maxTurnMs, maxQuietMs: settled.maxQuietMs, wrote: onDisk.maxTurnMs }
+        )
+      } catch {
+        /* unreadable or not JSON: the synthetic cases above still stand */
+      }
+    }
   }
 
   section('filtered output: what may run in place of what was asked for')

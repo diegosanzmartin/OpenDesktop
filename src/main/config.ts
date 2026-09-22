@@ -217,11 +217,57 @@ function upgradeDenylist(permissions: Permissions): Permissions {
  * Normalizes a user-authored config (opencode-compatible shape) into an AppConfig.
  * Keys become ids, so `provider.helmcode.models["glm5.3-flash"]` needs no explicit id.
  */
+/**
+ * The thirty minutes this app used to write into every new config.
+ *
+ * The wall clock is off by default now, for reasons that are in the README and
+ * in `@shared/quiet`. But a default only reaches somebody who has no config
+ * file yet: every machine that ran the old build has the number written down,
+ * and a value in the file beats a default in the code. So the limit went on
+ * firing after it had been removed — and worse than before, because the
+ * setting it came from is no longer anywhere in the interface. An invisible
+ * limit that still cuts turns off is the one outcome nobody could debug.
+ *
+ * Retired only when it is exactly this number, which means the app wrote it.
+ * Anything else was typed by somebody who meant it, and is kept and logged.
+ */
+const RETIRED_WALL_CLOCK_MS = 1_800_000
+
+/*
+ * Said out loud at startup rather than logged from here: `log.ts` reads
+ * `DATA_DIR` out of this file, so logging from this one would close a cycle.
+ * Kept as a note for `index.ts` to print, which is the same trick the agent
+ * loader uses a few lines down.
+ */
+let wallClockNote_: string | null = null
+
+/** What happened to `maxTurnMs` on the last load, if anything worth saying. */
+export function wallClockNote(): string | null {
+  return wallClockNote_
+}
+
+function wallClock(raw: Record<string, unknown>): number {
+  wallClockNote_ = null
+  const written = raw.maxTurnMs
+  if (typeof written !== 'number' || written <= 0) return 0
+  if (written === RETIRED_WALL_CLOCK_MS) {
+    wallClockNote_ =
+      `retired the 30-minute wall clock this app used to write into ${CONFIG_PATH}; ` +
+      `turns now end on silence (maxQuietMs), not on the clock`
+    return 0
+  }
+  wallClockNote_ =
+    `honouring maxTurnMs=${written}ms from ${CONFIG_PATH} — a hard wall on the clock, ` +
+    `set by hand and no longer shown in the interface`
+  return written
+}
+
 export function normalizeConfig(raw: Record<string, unknown>): AppConfig {
   const base = defaultConfig()
   const merged: AppConfig = {
     ...base,
     ...(raw as Partial<AppConfig>),
+    maxTurnMs: wallClock(raw),
     permissions: upgradeDenylist({
       ...base.permissions,
       ...((raw.permissions as Partial<Permissions>) ?? {})

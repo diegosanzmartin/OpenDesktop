@@ -1,6 +1,7 @@
 import { app, BrowserWindow, shell } from 'electron'
 import { join } from 'node:path'
-import { loadConfig, setAgentLoader } from './config'
+import { loadConfig, setAgentLoader, wallClockNote } from './config'
+import { logLine } from './log'
 import { listAgents, migrateFromConfig, seedBuiltins } from './agents'
 import { loadSecrets } from './secrets'
 import { loadShellEnvironment } from './shell-env'
@@ -112,6 +113,9 @@ void app.whenReady().then(async () => {
   setAgentLoader(listAgents)
 
   loadConfig()
+  // An invisible limit that still cuts turns off is the one nobody can debug.
+  const wallClock = wallClockNote()
+  if (wallClock) logLine('info', `config: ${wallClock}`)
   loadStore()
   // After the store, which is what says whose claims are still worth keeping.
   loadClaims()
