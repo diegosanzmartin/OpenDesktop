@@ -199,6 +199,7 @@ import {
 import { createBoard, deleteBoard, getBoard, listBoards, loadBoards } from './boards'
 import { startBoardSync } from './board-sync'
 import { queuedTasks, startScheduler, stopScheduler, tick } from './scheduler'
+import { quietVerdict } from '@shared/quiet'
 import {
   LOCAL_WORKTREES_DIR,
   branchNameFor,
@@ -3363,6 +3364,60 @@ async function main(): Promise<void> {
     rmSync(repo, { recursive: true, force: true })
     rmSync(bare, { recursive: true, force: true })
     rmSync(join(LOCAL_WORKTREES_DIR, session.id), { recursive: true, force: true })
+  }
+
+  section('a turn that is slow, and a turn that is broken')
+  {
+    /*
+     * This used to be a wall clock: thirty minutes and the turn was cut off,
+     * mid-command, whatever it was doing. The clock measures the wrong thing.
+     * Almost all of a long turn's time is spent inside tools — the smoke suite
+     * this check belongs to takes minutes and says nothing while it runs — and
+     * none of that is a runaway. What a runaway consumes is steps and money,
+     * and both already have ceilings.
+     */
+    const ceiling = 600_000
+    const quiet = (over: Partial<Parameters<typeof quietVerdict>[0]>): string =>
+      quietVerdict({ quietForMs: 0, toolsRunning: 0, ceilingMs: ceiling, warned: false, ...over })
+
+    check(
+      'an hour of running commands is work, not a runaway',
+      quiet({ quietForMs: 3_600_000, toolsRunning: 1 }) === 'working'
+    )
+    check(
+      'and so is an approval nobody has answered yet, which is the worst one to kill',
+      quiet({ quietForMs: 7_200_000, toolsRunning: 1 }) === 'working'
+    )
+    check(
+      'a short silence says so once',
+      quiet({ quietForMs: 120_000 }) === 'warn'
+    )
+    check(
+      'and then stops repeating itself',
+      quiet({ quietForMs: 300_000, warned: true }) === 'wait'
+    )
+    check(
+      'silence past the ceiling with nothing to wait for ends the turn',
+      quiet({ quietForMs: ceiling, warned: true }) === 'stop'
+    )
+    check(
+      'with no ceiling set it waits for ever, which is what 0 is for',
+      quiet({ quietForMs: 86_400_000, warned: true, ceilingMs: 0 }) === 'wait'
+    )
+    check(
+      'a tool still running outranks the ceiling, however long it has been',
+      quiet({ quietForMs: ceiling * 10, toolsRunning: 2 }) === 'working'
+    )
+    check(
+      'and the clock is off by default, because the clock measured nothing',
+      (loadConfig().maxTurnMs ?? 0) === 0,
+      loadConfig().maxTurnMs
+    )
+    check(
+      'while the silence ceiling has one',
+      (loadConfig().maxQuietMs ?? 0) > 0,
+      loadConfig().maxQuietMs
+    )
   }
 
   section('filtered output: what may run in place of what was asked for')

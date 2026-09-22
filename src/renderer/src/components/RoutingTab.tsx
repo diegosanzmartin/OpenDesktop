@@ -96,7 +96,7 @@ export function RoutingTab(): ReactNode {
 
         <Row
           label="A turn may spend"
-          description="Tokens across all of a turn's steps, and minutes on the clock, before it is stopped and handed back. Generous on purpose: these end a runaway, they do not ration ordinary work."
+          description="Tokens charged across all of a turn's steps, and minutes with nothing arriving — no output, no command running, nothing waiting on you. A turn that has been going for an hour is work; a turn that has gone quiet is broken. There is no limit on how long a turn may take."
         >
           <div className="flex flex-wrap items-center justify-end gap-x-2 gap-y-1.5">
             <RowInput
@@ -112,13 +112,13 @@ export function RoutingTab(): ReactNode {
             <RowInput
               mono
               width="w-[64px]"
-              value={String(Math.round((draft.maxTurnMs ?? 1_800_000) / 60_000))}
+              value={String(Math.round((draft.maxQuietMs ?? 600_000) / 60_000))}
               onChange={(value) => {
                 const parsed = Number(value.replace(/\D/g, ''))
-                setDraft({ ...draft, maxTurnMs: Math.max(1, parsed || 1) * 60_000 })
+                setDraft({ ...draft, maxQuietMs: Math.max(1, parsed || 1) * 60_000 })
               }}
             />
-            <Hint>minutes</Hint>
+            <Hint>minutes quiet</Hint>
           </div>
         </Row>
       </Section>

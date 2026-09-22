@@ -639,8 +639,8 @@ on the `ls`.
 
 **What a turn may spend** — `maxSteps` bounds how many times the model may act,
 which is not the same as how much it may spend. A turn also has a token ceiling
-and a clock (`maxTurnTokens`, 750k; `maxTurnMs`, 30 minutes), both editable under
-*Routing & limits*, and the ceiling counts **what the turn was charged for** —
+(`maxTurnTokens`, 750k), editable under *Routing & limits*, and it counts
+**what the turn was charged for** —
 input minus what came back from the provider's cache, plus output. Counting the
 raw total stopped a real investigation at "787,625 tokens" that had been charged
 for 59,107 of them, because 92% of its input was cache. Past 60% the agent is
@@ -648,6 +648,20 @@ told what is left and asked to land what it is doing, which is how a turn should
 end; the ceiling is the backstop, and a turn that hits it is **handed back**, not
 failed — the reason goes in the transcript, the card lands in Blocked, and
 replying carries the work on.
+
+**How long a turn may take** — as long as it takes. There was a thirty-minute wall clock and it
+measured the wrong thing: nearly all of a long turn's time is spent inside tools — a test suite,
+a package install, a two-gigabyte model download — and none of that is a runaway. What a runaway
+consumes is steps and money, and both already have ceilings. The clock, meanwhile, fired
+*mid-command*, which is the one moment it should not.
+
+So `maxTurnMs` is off by default and what remains is `maxQuietMs` (10 minutes): a turn is ended
+when **nothing arrives** — no output, no reasoning, no command running, nothing waiting on you.
+That is the only condition that means broken rather than slow, and it is the one that never ends
+by itself: a socket that died without closing, a provider that took the request and went quiet.
+A running tool outranks the ceiling however long it has been going, and so does a tool waiting
+to be approved — killing a turn because it was waiting for the person about to answer it is the
+worst thing this timer could do. At 90 seconds of silence you get a toast saying so, once.
 
 **What a repetition costs** — every step of a turn resends the conversation, so a turn's bill
 is roughly the prefix times the number of steps: a 33k transcript and 24 steps is 800k input

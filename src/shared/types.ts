@@ -335,7 +335,24 @@ export interface AppConfig {
    * it on.
    */
   maxTurnTokens?: number
+  /**
+   * A hard wall on the clock. Off by default, and deliberately: the clock
+   * measures how long a turn took, not whether any of it was wasted. Most of
+   * a turn's wall time is spent inside tools — a test suite, a download, a
+   * command waiting on the network — and none of that is a runaway. What ends
+   * a runaway is `maxTurnTokens` and the step ceiling, which measure the two
+   * things a runaway actually consumes.
+   */
   maxTurnMs?: number
+  /**
+   * How long a turn may show no sign of life before it is stopped.
+   *
+   * Nothing arriving is the one condition that means something is wrong rather
+   * than slow: no text, no reasoning, no tool call, and no tool running. A
+   * turn waiting on a command, or on a human to approve one, is alive and is
+   * never counted here.
+   */
+  maxQuietMs?: number
   /**
    * How many subagents one agent may have working at the same time.
    *

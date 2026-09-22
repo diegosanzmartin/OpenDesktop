@@ -18,6 +18,7 @@ import {
   type WorktreeInfo
 } from '@shared/types'
 import { savingsOf, type Savings } from '@shared/savings'
+import { QUIET_WARN_MS, quietVerdict } from '@shared/quiet'
 import { allowanceFor, allowanceUsed, needsSlimHarness, pickModel } from '@shared/routing'
 import { canReason, effortLevel, reasoningOptions } from '@shared/effort'
 import { mentionToken, mentionedAgents } from '@shared/mentions'
@@ -999,9 +1000,13 @@ export async function runTurn(input: TurnInput): Promise<string> {
   let toolsSince = 0
   let toolsWall = 0
 
+  /** The last moment this turn showed any sign of life. See the quiet guard. */
+  let lastSign = Date.now()
+
   const toolStarted = (): void => {
     if (toolsRunning === 0) toolsSince = Date.now()
     toolsRunning++
+    lastSign = Date.now()
   }
   const toolEnded = (): void => {
     toolsRunning = Math.max(0, toolsRunning - 1)
@@ -1009,6 +1014,7 @@ export async function runTurn(input: TurnInput): Promise<string> {
       toolsWall += Date.now() - toolsSince
       toolsSince = 0
     }
+    lastSign = Date.now()
   }
 
   /** What this turn has actually been charged for, cache reads excluded. */
@@ -1360,20 +1366,71 @@ export async function runTurn(input: TurnInput): Promise<string> {
       }, wallCeiling)
     }
 
-    const QUIET_MS = 90_000
-    silence = setTimeout(() => {
-      logLine(
-        'warn',
-        `turn ${session.id} has had nothing from ${modelRef} in ${QUIET_MS / 1000}s; still waiting`
-      )
-      bus.emit({
-        type: 'toast',
-        level: 'warn',
-        message:
-          `${modelRef} has sent nothing for ${QUIET_MS / 1000} seconds. The turn is still open — ` +
-          `stop it if you would rather not wait.`
+    /*
+     * The guard that replaces the clock: nothing arriving.
+     *
+     * A turn that has been going for an hour is not a problem — most of a long
+     * turn is spent inside tools, and a test suite or a 2GB download is the
+     * work, not a runaway. A turn that has shown no sign of life is a
+     * different thing entirely: a socket that died without closing, a provider
+     * that accepted the request and went quiet, a stream that will never send
+     * another byte. That one never ends by itself, and it is the only one worth
+     * a timer.
+     *
+     * Re-armed by every sign of life, and a tool that is still running counts
+     * as one — including a tool waiting for somebody to approve it, which is
+     * the case where killing the turn would be worst.
+     *
+     * Two stages: a warning early, because the usual cause is a provider
+     * having a bad minute and knowing is enough; a stop much later.
+     */
+    const quietCeiling = config.maxQuietMs ?? 0
+    let warnedQuiet = false
+
+    const onQuiet = (): void => {
+      if (budgetStop) return
+      const quietFor = Date.now() - lastSign
+      const verdict = quietVerdict({
+        quietForMs: quietFor,
+        toolsRunning,
+        ceilingMs: quietCeiling,
+        warned: warnedQuiet
       })
-    }, QUIET_MS)
+
+      if (verdict === 'stop') {
+        budgetStop =
+          `This turn stopped after ${Math.round(quietFor / 60_000)} minutes with nothing from ` +
+          `${modelRef}: no output, no command running, nothing waiting on you (maxQuietMs). ` +
+          `Whatever it had already done stands — reply to carry on.`
+        logLine('warn', `turn ${session.id} hit maxQuietMs after ${quietFor}ms of silence`)
+        controller.abort()
+        return
+      }
+
+      if (verdict === 'warn') {
+        warnedQuiet = true
+        logLine(
+          'warn',
+          `turn ${session.id} has had nothing from ${modelRef} in ${Math.round(quietFor / 1000)}s; still waiting`
+        )
+        bus.emit({
+          type: 'toast',
+          level: 'warn',
+          message:
+            `${modelRef} has sent nothing for ${Math.round(quietFor / 1000)} seconds. The turn is ` +
+            `still open — stop it if you would rather not wait.`
+        })
+      }
+      silence = setTimeout(onQuiet, QUIET_WARN_MS)
+    }
+
+    const alive = (): void => {
+      if (silence) clearTimeout(silence)
+      if (budgetStop) return
+      silence = setTimeout(onQuiet, QUIET_WARN_MS)
+    }
+
+    alive()
 
     let textPartIndex = -1
     let reasoningPartIndex = -1
@@ -1397,10 +1454,11 @@ export async function runTurn(input: TurnInput): Promise<string> {
     let firstStepTotal = 0
 
     for await (const part of result.fullStream) {
-      if (silence) {
-        clearTimeout(silence)
-        silence = null
-      }
+      // Anything at all counts, including a step boundary: the question is
+      // whether the stream is still a stream, not what it carried.
+      lastSign = Date.now()
+      warnedQuiet = false
+      alive()
       if (controller.signal.aborted) break
       switch (part.type) {
         case 'text-delta': {
