@@ -28,7 +28,7 @@ export function FilesPane(): ReactNode {
       setLoading(true)
       setError(null)
       try {
-        const result = await window.opendesktop.files.list(session.environmentId, target)
+        const result = await window.opendesktop.files.list(session.environmentId, target, session.id)
         setPath(result.path)
         setEntries(result.entries)
         /*
@@ -109,7 +109,7 @@ export function FilesPane(): ReactNode {
                     ? void load(entry.path)
                     : opensInViewer(entry.path)
                       ? void openInBrowser(session.environmentId, entry.path)
-                      : openInEditor({ environmentId: session.environmentId, path: entry.path })
+                      : openInEditor({ environmentId: session.environmentId, path: entry.path, sessionId: session.id })
                 }
                 className="text-ink-200 hover:text-brand min-w-0 flex-1 truncate text-left font-mono text-[11.5px]"
               >
@@ -124,7 +124,7 @@ export function FilesPane(): ReactNode {
                   title={opensInViewer(entry.path) ? `Edit ${entry.name}` : `View ${entry.name}`}
                   onClick={() =>
                     opensInViewer(entry.path)
-                      ? openInEditor({ environmentId: session.environmentId, path: entry.path })
+                      ? openInEditor({ environmentId: session.environmentId, path: entry.path, sessionId: session.id })
                       : void openInBrowser(session.environmentId, entry.path)
                   }
                   className="text-ink-700 hover:text-ink-200 shrink-0 rounded p-0.5"

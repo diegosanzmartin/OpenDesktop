@@ -41,18 +41,21 @@ export function DocumentCard({
 }): ReactNode {
   const open = usePreviewOpener()
   const openInEditor = useStore((s) => s.openInEditor)
+  // A card is always shown in the active session's transcript, so the active
+  // session is the container to read a sandbox file out of.
+  const sessionId = useStore((s) => s.activeSessionId ?? undefined)
   const [size, setSize] = useState<number | null>(null)
   const [saved, setSaved] = useState<string | null>(null)
 
   useEffect(() => {
     let alive = true
-    void window.opendesktop.files.stat(environmentId, path).then((info) => {
+    void window.opendesktop.files.stat(environmentId, path, sessionId).then((info) => {
       if (alive) setSize(info?.size ?? null)
     })
     return () => {
       alive = false
     }
-  }, [environmentId, path])
+  }, [environmentId, path, sessionId])
 
   const name = path.split('/').pop() ?? path
   const kind = extensionOf(path).toUpperCase() || 'FILE'
@@ -69,7 +72,7 @@ export function DocumentCard({
         onClick={() =>
           opensInViewer(path)
             ? void open(environmentId, path)
-            : openInEditor({ environmentId, path })
+            : openInEditor({ environmentId, path, sessionId })
         }
         className="flex h-full w-full flex-col items-start gap-6 px-3 py-3 text-left"
       >
@@ -93,7 +96,7 @@ export function DocumentCard({
         title={opensInViewer(path) ? `Edit ${name}` : `View ${name}`}
         onClick={(event) => {
           event.stopPropagation()
-          if (opensInViewer(path)) openInEditor({ environmentId, path })
+          if (opensInViewer(path)) openInEditor({ environmentId, path, sessionId })
           else void open(environmentId, path)
         }}
         className={clsx(
@@ -113,7 +116,7 @@ export function DocumentCard({
         title="Save a copy"
         onClick={async (event) => {
           event.stopPropagation()
-          const result = await window.opendesktop.files.download(environmentId, path)
+          const result = await window.opendesktop.files.download(environmentId, path, sessionId)
           if (result.saved) {
             setSaved(result.path ?? 'saved')
             setTimeout(() => setSaved(null), 1600)

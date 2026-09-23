@@ -24,6 +24,7 @@ import type { Savings } from '@shared/savings'
 import type { BlameLine, Commit, CommitDetail } from '@shared/history'
 import type { DiscoveredModel } from '@shared/catalog'
 import type { LocalModelStatus } from '@shared/local-model'
+import type { SandboxScope, SandboxStatus } from '@shared/sandbox'
 
 const api = {
   config: {
@@ -88,6 +89,20 @@ const api = {
     stop: (): Promise<LocalModelStatus> => ipcRenderer.invoke('local:stop'),
     remove: (modelId?: string): Promise<LocalModelStatus> =>
       ipcRenderer.invoke('local:remove', modelId)
+  },
+  /** The pentesting sandbox: Docker preflight, image build, and the scope gate. */
+  sandbox: {
+    status: (): Promise<SandboxStatus> => ipcRenderer.invoke('sandbox:status'),
+    build: (): Promise<SandboxStatus> => ipcRenderer.invoke('sandbox:build'),
+    /** Declare the authorised target(s) and open egress to exactly them. */
+    openScope: (
+      sessionId: string,
+      targets: string[],
+      note: string
+    ): Promise<{ error?: string; scope?: SandboxScope }> =>
+      ipcRenderer.invoke('sandbox:scope', sessionId, targets, note),
+    clearScope: (sessionId: string): Promise<boolean> =>
+      ipcRenderer.invoke('sandbox:clearScope', sessionId)
   },
   /** Tool servers: what is declared, what it offers, and what it weighs. */
   mcp: {
@@ -256,12 +271,15 @@ const api = {
   files: {
     list: (
       environmentId: string,
-      path: string
+      path: string,
+      // A sandbox has one container per session, so file reads on a container
+      // environment carry the session id to pick the right one.
+      sessionId?: string
       // A folder that is not there comes back as an error to show, not a throw.
     ): Promise<{ path: string; entries: FileEntry[]; error?: string }> =>
-      ipcRenderer.invoke('fs:list', environmentId, path),
-    read: (environmentId: string, path: string): Promise<string> =>
-      ipcRenderer.invoke('fs:read', environmentId, path),
+      ipcRenderer.invoke('fs:list', environmentId, path, sessionId),
+    read: (environmentId: string, path: string, sessionId?: string): Promise<string> =>
+      ipcRenderer.invoke('fs:read', environmentId, path, sessionId),
     browse: (
       environmentId: string,
       path: string
@@ -291,23 +309,31 @@ const api = {
      * For the editor pane, where a failure is a thing to show rather than an
      * exception in a promise nobody awaited.
      */
-    open: (environmentId: string, path: string): Promise<{ text: string; error?: string }> =>
-      ipcRenderer.invoke('editor:read', environmentId, path),
+    open: (
+      environmentId: string,
+      path: string,
+      sessionId?: string
+    ): Promise<{ text: string; error?: string }> =>
+      ipcRenderer.invoke('editor:read', environmentId, path, sessionId),
     save: (
       environmentId: string,
       path: string,
-      text: string
-    ): Promise<{ error?: string }> => ipcRenderer.invoke('editor:write', environmentId, path, text),
+      text: string,
+      sessionId?: string
+    ): Promise<{ error?: string }> =>
+      ipcRenderer.invoke('editor:write', environmentId, path, text, sessionId),
     stat: (
       environmentId: string,
-      path: string
+      path: string,
+      sessionId?: string
     ): Promise<{ size: number; modifiedAt: number } | null> =>
-      ipcRenderer.invoke('fs:stat', environmentId, path),
+      ipcRenderer.invoke('fs:stat', environmentId, path, sessionId),
     download: (
       environmentId: string,
-      path: string
+      path: string,
+      sessionId?: string
     ): Promise<{ saved: boolean; path?: string; error?: string }> =>
-      ipcRenderer.invoke('fs:download', environmentId, path)
+      ipcRenderer.invoke('fs:download', environmentId, path, sessionId)
   },
   terminal: {
     create: (input: {

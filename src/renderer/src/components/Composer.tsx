@@ -21,6 +21,7 @@ import type { Attachment, Session, Skill } from '@shared/types'
 import { isManager } from '@shared/types'
 import { SWITCHES, savingsLabel, savingsOf, type Savings } from '@shared/savings'
 import { NeighbourBar } from './NeighbourBar'
+import { ScopeGate } from './ScopeGate'
 import { ContextMeter } from './ContextMeter'
 import { ToolServerChip } from './ToolServerChip'
 import { isInWorkspace } from '@shared/workspace'
@@ -488,13 +489,19 @@ export function Composer({ session }: { session: Session }): ReactNode {
   const query = menu === null ? '' : text.slice(menu.at + 1).split(/\s/)[0] ?? ''
 
   // Named agents, minus the manager: it is the one asking, so it cannot be
-  // handed the work.
+  // handed the work. The pentesting agents are offered only on a sandbox
+  // session, and only they are offered there — an exploit agent is not something
+  // to hand a local checkout, and a build agent has no place in a container.
+  const inSandbox = config?.environment[session.environmentId]?.kind === 'container'
   const agents = useMemo(
     () =>
       Object.values(config?.agent ?? {}).filter(
-        (agent) => !isManager(agent.id) && (agent.mode === 'subagent' || agent.mode === 'all')
+        (agent) =>
+          !isManager(agent.id) &&
+          (agent.mode === 'subagent' || agent.mode === 'all') &&
+          Boolean(agent.sandboxOnly) === inSandbox
       ),
-    [config]
+    [config, inSandbox]
   )
 
   const matches = useMemo<Suggestion[]>(() => {
@@ -636,6 +643,7 @@ export function Composer({ session }: { session: Session }): ReactNode {
     // property of the pane, not of the window.
     <div className="@container px-6 pb-4 pt-1">
       <div className="mx-auto max-w-[760px]">
+        {inSandbox ? <ScopeGate session={session} /> : null}
         <NeighbourBar session={session} />
         <ChangesBar session={session} />
 

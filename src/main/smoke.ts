@@ -201,6 +201,8 @@ import { startBoardSync } from './board-sync'
 import { queuedTasks, startScheduler, stopScheduler, tick } from './scheduler'
 import { wallClockNote } from './config'
 import { quietVerdict } from '@shared/quiet'
+import { containerName, isValidTarget, normaliseTargets } from '@shared/sandbox'
+import { buildNftRules } from './sandbox'
 import {
   LOCAL_WORKTREES_DIR,
   branchNameFor,
@@ -3365,6 +3367,103 @@ async function main(): Promise<void> {
     rmSync(repo, { recursive: true, force: true })
     rmSync(bare, { recursive: true, force: true })
     rmSync(join(LOCAL_WORKTREES_DIR, session.id), { recursive: true, force: true })
+  }
+
+  section('a sandbox to do pentesting in')
+  {
+    /*
+     * The pentesting sandbox is a new environment kind whose whole value is what
+     * it refuses. These check the decisions that a container does not have to be
+     * running to prove: what counts as a target, what the firewall rules say,
+     * that the environment is seeded, and that a pentesting agent will not run
+     * anywhere but a container. The live Docker path is exercised by hand.
+     */
+
+    // What may pass the scope gate, and what may not.
+    check('a hostname is a valid target', isValidTarget('scanme.example.com'))
+    check('an IPv4 address is', isValidTarget('10.0.0.5'))
+    check('a CIDR is', isValidTarget('10.0.0.0/24'))
+    check('a URL is not — a target is a host, not a page', !isValidTarget('http://example.com/x'))
+    check('nor is something with a shell metacharacter', !isValidTarget('example.com; rm -rf /'))
+    check('nor a space', !isValidTarget('two hosts'))
+    check('nor an out-of-range octet', !isValidTarget('999.1.1.1'))
+    check('nor an out-of-range CIDR', !isValidTarget('10.0.0.0/40'))
+    check(
+      'normalisation keeps the valid ones and drops the rest, de-duplicated',
+      JSON.stringify(normaliseTargets(['a.com', 'a.com', 'bad host', '10.0.0.0/24'])) ===
+        JSON.stringify(['a.com', '10.0.0.0/24'])
+    )
+
+    // Container and network are named after the session, so a stray one names
+    // the chat that left it, and the name is docker-safe.
+    check('a container is named after its session', containerName('KLaUkcdoNmI4') === 'opendesktop-sbx-KLaUkcdoNmI4')
+    check('and a nanoid that is docker-unsafe is sanitised', /^opendesktop-sbx-[A-Za-z0-9_.-]+$/.test(containerName('a/b c')))
+
+    // The firewall: default-drop, DNS out, and exactly the declared targets.
+    const rules = buildNftRules(['10.0.0.5', '192.168.0.0/24'])
+    check('the ruleset drops by default', /policy drop/.test(rules))
+    check('lets established traffic back in', /ct state established,related accept/.test(rules))
+    check('allows the declared host', /ip daddr \{ 10\.0\.0\.5 \} accept/.test(rules))
+    check('allows the declared network', /ip daddr 192\.168\.0\.0\/24 accept/.test(rules))
+    check('and lets DNS out so names resolve', /udp dport 53 accept/.test(rules))
+    check(
+      'a target never reaches a rule without passing validation first',
+      !buildNftRules(normaliseTargets(['1.2.3.4', 'evil; reboot'])).includes('reboot')
+    )
+
+    // The environment is seeded, and the kind is inferred and preserved.
+    check('a sandbox environment is seeded by default', defaultConfig().environment.sandbox?.kind === 'container')
+    check(
+      'the sandbox is restored on a config that predates it',
+      normalizeConfig({ environment: { local: { id: 'local', name: 'Local', kind: 'local' } } }).environment
+        .sandbox?.kind === 'container'
+    )
+    check(
+      'and a container kind is inferred from the block when absent',
+      normalizeConfig({ environment: { box: { id: 'box', name: 'Box', container: {} } } }).environment.box
+        ?.kind === 'container'
+    )
+
+    // The roster: five pentesting agents, all marked sandbox-only.
+    const config = loadConfig(true)
+    const pentest = ['recon', 'web', 'exploit', 'exploit-review', 'pentest-report']
+    check(
+      'the pentesting agents are all present and sandbox-only',
+      pentest.every((id) => config.agent[id]?.sandboxOnly === true),
+      pentest.filter((id) => !config.agent[id]?.sandboxOnly)
+    )
+    check(
+      'and no ordinary agent is sandbox-only',
+      Object.values(config.agent)
+        .filter((a) => !pentest.includes(a.id))
+        .every((a) => !a.sandboxOnly)
+    )
+
+    // The guard: a pentesting agent refuses to run outside a container.
+    const box = createBoard({ name: 'sbxtest', cwd: process.cwd(), environmentId: 'local' })
+    void box
+    const local = store.createSession({
+      title: 'try exploit on local',
+      cwd: process.cwd(),
+      environmentId: 'local',
+      agentId: 'exploit',
+      model: 'test/mock'
+    })
+    const before = store.listMessages(local.id).length
+    const out = await runTurn({ sessionId: local.id, userText: 'scan the box' })
+    const msgs = store.listMessages(local.id)
+    check('a pentesting agent on a local session does not run', out === '' && !isRunning(local.id))
+    check(
+      'and says why, in the transcript',
+      msgs.length > before &&
+        msgs.some((m) =>
+          m.parts.some((p) => p.type === 'error' && /runs only in a sandbox/i.test(p.text ?? ''))
+        ),
+      msgs.at(-1)?.parts
+    )
+    store.deleteSession(local.id)
+    history.clearHistory(local.id)
+    deleteBoard(box.id)
   }
 
   section('a turn that is slow, and a turn that is broken')

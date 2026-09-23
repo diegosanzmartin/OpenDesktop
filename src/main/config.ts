@@ -116,7 +116,11 @@ const DEFAULT_PROVIDERS: Record<string, ProviderConfig> = {
 }
 
 const DEFAULT_ENVIRONMENTS: Record<string, EnvironmentConfig> = {
-  local: { id: 'local', name: 'Local', kind: 'local', cwd: homedir() }
+  local: { id: 'local', name: 'Local', kind: 'local', cwd: homedir() },
+  // Seeded so the pentesting sandbox is there to pick without setup. It needs
+  // Docker; when Docker is absent the environment still shows, and its status
+  // says so, the same way the local model reports itself unsupported.
+  sandbox: { id: 'sandbox', name: 'Sandbox', kind: 'container', cwd: '/work' }
 }
 
 export function defaultConfig(): AppConfig {
@@ -314,13 +318,17 @@ export function normalizeConfig(raw: Record<string, unknown>): AppConfig {
     merged.environment[id] = {
       id,
       name: e.name ?? id,
-      kind: e.kind ?? (e.workstation ? 'gcp-workstation' : e.ssh ? 'ssh' : 'local'),
+      kind:
+        e.kind ??
+        (e.workstation ? 'gcp-workstation' : e.ssh ? 'ssh' : e.container ? 'container' : 'local'),
       cwd: e.cwd,
       ssh: e.ssh,
-      workstation: e.workstation
+      workstation: e.workstation,
+      container: e.container
     }
   }
   if (!merged.environment.local) merged.environment.local = DEFAULT_ENVIRONMENTS.local
+  if (!merged.environment.sandbox) merged.environment.sandbox = DEFAULT_ENVIRONMENTS.sandbox
 
   // Agents are files on disk now, not part of this document. The loader fills
   // them in; normalizeConfig is also used by tests with no agent directory, so

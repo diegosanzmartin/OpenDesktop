@@ -234,6 +234,7 @@ function EnvironmentEditor({
   const isLocal = env.kind === 'local'
   const isWorkstation = env.kind === 'gcp-workstation'
   const isSsh = env.kind === 'ssh'
+  const isContainer = env.kind === 'container'
 
   const setAuth = (mode: AuthMode): void => {
     const ssh = { host: '', ...env.ssh }
@@ -391,6 +392,15 @@ function EnvironmentEditor({
 
       {isWorkstation ? <WorkstationFields env={env} onChange={onChange} /> : null}
 
+      {isContainer ? (
+        <Row
+          label="Sandbox"
+          description="Each conversation here runs in a throwaway Docker container: isolated from your machine, and with no network until you authorise a target from the composer. Build the image under Providers & models → Pentesting sandbox."
+        >
+          <span className="text-ink-500 text-[11.5px]">Docker · ephemeral · offline by default</span>
+        </Row>
+      ) : null}
+
       <Row
         label="Connection"
         description={
@@ -498,7 +508,15 @@ export function EnvironmentsTab(): ReactNode {
           id,
           name: id,
           kind: creating,
-          cwd: creating === 'local' ? undefined : creating === 'gcp-workstation' ? '/home/user' : '/root',
+          cwd:
+            creating === 'local'
+              ? undefined
+              : creating === 'gcp-workstation'
+                ? '/home/user'
+                : creating === 'container'
+                  ? '/work'
+                  : '/root',
+          ...(creating === 'container' ? { container: {} } : {}),
           ...(creating === 'ssh' ? { ssh: { host: '' } } : {}),
           ...(creating === 'gcp-workstation'
             ? { workstation: { project: '', region: '', cluster: '', config: '', workstation: '' } }
@@ -585,6 +603,7 @@ export function EnvironmentsTab(): ReactNode {
               options={[
                 { value: 'ssh', label: 'SSH host' },
                 { value: 'gcp-workstation', label: 'Cloud Workstation' },
+                { value: 'container', label: 'Sandbox (Docker)' },
                 { value: 'local', label: 'Local folder' }
               ]}
             />
@@ -593,7 +612,13 @@ export function EnvironmentsTab(): ReactNode {
       ) : current ? (
         <Section
           title={current.name || current.id}
-          description={current.kind === 'gcp-workstation' ? 'Cloud Workstation' : current.kind}
+          description={
+            current.kind === 'gcp-workstation'
+              ? 'Cloud Workstation'
+              : current.kind === 'container'
+                ? 'Sandbox (Docker)'
+                : current.kind
+          }
         >
           <EnvironmentEditor
             env={current}

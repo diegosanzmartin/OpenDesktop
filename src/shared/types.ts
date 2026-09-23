@@ -3,6 +3,7 @@
 import type { LegacyMode, Savings } from './savings'
 import type { Billing } from './routing'
 import type { LocalModelStatus } from './local-model'
+import type { SandboxScope, SandboxStatus } from './sandbox'
 
 export type BlockStatus = 'pending' | 'awaiting-approval' | 'running' | 'success' | 'error' | 'canceled'
 
@@ -20,7 +21,7 @@ export type SessionStatus =
   | 'error'
   | 'done'
 
-export type EnvironmentKind = 'local' | 'ssh' | 'gcp-workstation'
+export type EnvironmentKind = 'local' | 'ssh' | 'gcp-workstation' | 'container'
 
 export interface EnvironmentConfig {
   id: string
@@ -53,6 +54,16 @@ export interface EnvironmentConfig {
     /** Read host/user/key from ~/.ssh/config for this alias instead. */
     alias?: string
     keepaliveInterval?: number
+  }
+  /**
+   * The pentesting sandbox. A `container` environment runs each session in a
+   * throwaway Docker container with no network until a target is authorised —
+   * see src/main/sandbox.ts. The block is present so the kind can carry its own
+   * defaults later; for now the image and hardening are fixed in code.
+   */
+  container?: {
+    /** Override the built image tag. Rare; the default is the one we build. */
+    image?: string
   }
 }
 
@@ -254,6 +265,13 @@ export interface AgentConfig {
   tools?: Record<string, boolean>
   permissions?: Partial<Permissions>
   color?: string
+  /**
+   * True for the pentesting agents: they run only in a `container` environment,
+   * are refused anywhere else, and are offered by the picker only on a sandbox
+   * session. The tools they reach for do not exist outside the image anyway;
+   * this makes that a rule rather than an accident.
+   */
+  sandboxOnly?: boolean
 }
 
 export interface Skill {
@@ -557,6 +575,12 @@ export interface Session {
    */
   worktree?: WorktreeInfo
   /**
+   * For a session on a `container` environment: what it is allowed to reach, and
+   * the record that a human authorised it. Absent until a target is declared,
+   * and while it is absent the container has no network at all.
+   */
+  sandbox?: SandboxScope
+  /**
    * Other tasks judged to be working on the same thing. Set by the
    * coordinator, shown on the card, and named in the agent's prompt.
    */
@@ -827,6 +851,12 @@ export type AppEvent =
    * cannot be polled into existence, and the install is minutes long.
    */
   | { type: 'local.status'; status: LocalModelStatus }
+  /**
+   * The state of the pentesting sandbox: whether Docker is there, and how far a
+   * build of the image has got. Like the local model, the build is minutes long
+   * and a progress bar cannot be polled into existence.
+   */
+  | { type: 'sandbox.status'; status: SandboxStatus }
   /**
    * A task claimed a file it had not claimed before, so who its neighbours are
    * may have changed. Carries no list: working out the neighbours reads the

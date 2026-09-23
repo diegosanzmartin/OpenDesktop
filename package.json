@@ -32,6 +32,12 @@
       "out/renderer/**/*",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "build/pentest",
+        "to": "pentest"
+      }
+    ],
     "mac": {
       "category": "public.app-category.developer-tools",
       "target": [

@@ -709,6 +709,49 @@ output is redacted before the output is stored or sent to the model. Everything 
 alone, because a session doing real work needs the same `git`, `gcloud` and `kube` environment
 you have.
 
+## Pentesting in a sandbox
+
+There is a whole section for authorised security work, and it is built as an ordinary
+environment kind rather than a bolted-on mode: **Sandbox** joins Local, SSH and Cloud
+Workstation in the environment picker, so a pentesting session is just "a conversation whose
+environment is a throwaway Docker container", and every other part of the app — the tools, the
+Files pane, Changes, the editor, hooks — works over it unchanged.
+
+**The security model is the feature**, three layers, all of them real rather than advisory:
+
+- **Isolation.** Each session runs in its own container, named after the session, with
+  `--cap-drop ALL`, `--security-opt no-new-privileges`, pid/memory/cpu limits and **no bind
+  mounts of your machine**. Files live inside the container and are read out with `docker exec`;
+  nothing on the Mac is mounted in. The container is created when the session first runs and
+  destroyed when the session is deleted.
+
+- **The hard network gate.** A container starts with `--network none` — no egress at all, which
+  Docker enforces, not something the prompt asks for. It stays offline until you name a target
+  in the bar above the composer and confirm, in writing, that you are authorised to test it.
+  Only then does the app attach a per-session network and install an nftables allowlist that
+  permits exactly that target (plus DNS) and drops everything else. The authorisation — what,
+  and your note — is kept with the session and goes into the report.
+
+- **The agent is an unprivileged tenant.** The app is the container's admin; the agent is not.
+  Root installs the firewall; every command the agent runs comes in as `pentester`, with no
+  `NET_ADMIN`, so it cannot alter the rules of its own network namespace. The app rewrites them,
+  as root, when you change the scope.
+
+On top of that: the pentesting agents — **Recon**, **Web**, **Exploit**, **Exploit review** and
+**Pentest report** — run *only* in a sandbox, are refused anywhere else, and are the only agents
+offered there. And a container session ignores auto-approve: every exploit step waits for a
+human, which is what "explicit supervision" means in practice.
+
+**Getting started**: build the image once under *Providers & models → Pentesting sandbox* (a
+small Debian base with nmap, ffuf, nuclei, sqlmap, httpx and the rest — built locally, base
+pinned by digest), then open a session on the Sandbox environment. The agent works offline
+until you authorise a target.
+
+One limitation worth stating: because the agent runs unprivileged, nmap's raw-packet scans fall
+back to TCP connect scans. Everything else — ffuf, nuclei, sqlmap, httpx — is unaffected. And
+the whole thing needs Docker running; without it the environment still appears, and its status
+says so.
+
 ## Agents
 
 Agents live one per file in `~/.config/opendesktop/agents`, as markdown with a YAML header —

@@ -16,6 +16,7 @@ import {
 import { useStore } from '../state/store'
 import { Hint, IconButton, Row, RowInput, RowSelect, RowSlider, Section } from './settings-ui'
 import { LocalModelSection } from './LocalModelSection'
+import { SandboxSection } from './SandboxSection'
 import { limitLabel, money, spendLabel, useConfigDraft, useSpend } from '../lib/settings'
 
 const PRESETS = PROVIDER_PRESETS
@@ -818,6 +819,7 @@ export function ModelsTab(): ReactNode {
       )}
 
       <LocalModelSection />
+      <SandboxSection />
     </>
   )
 }

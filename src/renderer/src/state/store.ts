@@ -89,7 +89,7 @@ interface State {
   /** Where conversations' own folders live, read once at startup. */
   workspacesRoot: string
   /** The file the editor pane has open, if any. */
-  editorFile: { environmentId: string; path: string } | null
+  editorFile: { environmentId: string; path: string; sessionId?: string } | null
   browserUrl: string
   /**
    * Whether the browser pane shows its address bar. Null is "decide from what
@@ -152,7 +152,7 @@ interface State {
   setActivityQuery: (patch: Partial<ActivityQuery>) => void
   setBrowserUrl: (url: string) => void
   setBrowserChrome: (show: boolean | null) => void
-  openInEditor: (file: { environmentId: string; path: string } | null) => void
+  openInEditor: (file: { environmentId: string; path: string; sessionId?: string } | null) => void
   toggleBlock: (id: string) => void
   setExpanded: (id: string, value: boolean) => void
   toggleActivity: () => void

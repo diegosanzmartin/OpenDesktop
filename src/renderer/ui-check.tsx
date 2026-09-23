@@ -37,6 +37,8 @@ import { FolderPicker } from './src/components/FolderPicker'
 import { LocalModelSection } from './src/components/LocalModelSection'
 import { ChatView } from './src/components/ChatView'
 import { PANE_FRAME } from './src/components/ui'
+import { SandboxSection } from './src/components/SandboxSection'
+import { ScopeGate } from './src/components/ScopeGate'
 import { NeighbourBar } from './src/components/NeighbourBar'
 
 const failures: string[] = []
@@ -132,6 +134,16 @@ const REPLIES: Record<string, unknown> = {
     runtime: { installed: false, build: 'b11026' },
     model: { installed: false, bytes: 0 },
     diskBytes: 0
+  },
+  'sandbox.status': {
+    stage: 'ready',
+    supported: true,
+    imageBuilt: true,
+    image: 'opendesktop/pentest:1',
+    tools: [
+      { name: 'nmap', blurb: 'Ports' },
+      { name: 'ffuf', blurb: 'Fuzzing' }
+    ]
   }
 }
 
@@ -2262,6 +2274,57 @@ async function run(): Promise<void> {
     })
 
     useStore.setState({ messages: {} })
+  }
+
+  section('the pentesting sandbox')
+  {
+    const built = mount(<SandboxSection />, 900)
+    await settle()
+    const shown = built.textContent ?? ''
+    check('the sandbox section says the image is ready', /ready/.test(shown), shown.slice(0, 120))
+    check('and lists the tools it ships', /nmap/.test(shown), shown.slice(0, 200))
+    check('and warns there is no network until a target is named', /no network/i.test(shown), shown.slice(0, 200))
+
+    // Docker missing: the row says so rather than offering a build.
+    REPLIES['sandbox.status'] = {
+      stage: 'absent',
+      supported: false,
+      imageBuilt: false,
+      image: 'opendesktop/pentest:1',
+      tools: [],
+      message: 'Docker is not installed.'
+    }
+    const noDocker = mount(<SandboxSection />, 900)
+    await settle()
+    check('with Docker absent it says not available', /not available/.test(noDocker.textContent ?? ''), noDocker.textContent?.slice(0, 120))
+    REPLIES['sandbox.status'] = {
+      stage: 'ready',
+      supported: true,
+      imageBuilt: true,
+      image: 'opendesktop/pentest:1',
+      tools: [{ name: 'nmap', blurb: 'Ports' }]
+    }
+
+    // The hard gate: offline until authorised, then it names the target.
+    const offline = mount(<ScopeGate session={{ ...session, environmentId: 'sandbox' }} />, 760)
+    await settle()
+    check('an unauthorised sandbox session shows it is offline', /Offline sandbox/.test(offline.textContent ?? ''), offline.textContent?.slice(0, 120))
+    check('and offers to authorise a target', /Authorise/.test(offline.textContent ?? ''))
+
+    const authorised = mount(
+      <ScopeGate
+        session={{
+          ...session,
+          environmentId: 'sandbox',
+          sandbox: { targets: ['scanme.example.com'], authorizedAt: 1, authorizedNote: 'mine' }
+        }}
+      />,
+      760
+    )
+    await settle()
+    const auth = authorised.textContent ?? ''
+    check('an authorised session names exactly what it may reach', /scanme\.example\.com/.test(auth), auth.slice(0, 160))
+    check('and everything else is dropped', /everything else is dropped/.test(auth), auth.slice(0, 200))
   }
 
   console.log(`\n${checks - failures.length}/${checks} checks passed`)

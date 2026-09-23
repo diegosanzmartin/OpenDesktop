@@ -62,6 +62,7 @@ export function EditorPane(): ReactNode {
 
   const path = open?.path ?? ''
   const environmentId = open?.environmentId ?? session?.environmentId ?? 'local'
+  const sessionId = open?.sessionId ?? session?.id
 
   useEffect(() => {
     if (!path) {
@@ -73,7 +74,7 @@ export function EditorPane(): ReactNode {
     setLoading(true)
     setFailure(null)
     void window.opendesktop.files
-      .open(environmentId, path)
+      .open(environmentId, path, sessionId)
       .then((result) => {
         if (!alive) return
         if (result.error) setFailure(result.error)
@@ -84,7 +85,7 @@ export function EditorPane(): ReactNode {
     return () => {
       alive = false
     }
-  }, [path, environmentId])
+  }, [path, environmentId, sessionId])
 
   const dirty = text !== original
   const spans = useMemo(() => highlight(text, languageOf(path)), [text, path])
@@ -92,7 +93,7 @@ export function EditorPane(): ReactNode {
 
   const save = async (): Promise<void> => {
     if (!path || !dirty) return
-    const result = await window.opendesktop.files.save(environmentId, path, text)
+    const result = await window.opendesktop.files.save(environmentId, path, text, sessionId)
     if (result.error) return setFailure(result.error)
     setOriginal(text)
     setFailure(null)

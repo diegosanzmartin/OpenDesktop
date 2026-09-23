@@ -21,9 +21,13 @@ export interface Opened {
   error?: string
 }
 
-export async function readForEditor(environmentId: string, path: string): Promise<Opened> {
+export async function readForEditor(
+  environmentId: string,
+  path: string,
+  sessionId?: string
+): Promise<Opened> {
   try {
-    const runtime = getRuntime(environmentId)
+    const runtime = getRuntime(environmentId, sessionId)
     await runtime.connect()
 
     if (await runtime.isDirectory(path)) return { text: '', error: `${path} is a folder.` }
@@ -51,10 +55,11 @@ export async function readForEditor(environmentId: string, path: string): Promis
 export async function writeFromEditor(
   environmentId: string,
   path: string,
-  text: string
+  text: string,
+  sessionId?: string
 ): Promise<{ error?: string }> {
   try {
-    const runtime = getRuntime(environmentId)
+    const runtime = getRuntime(environmentId, sessionId)
     await runtime.connect()
     await runtime.writeFile(path, text)
     logLine('info', `editor: saved ${path}`)

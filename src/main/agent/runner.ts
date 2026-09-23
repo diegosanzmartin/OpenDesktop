@@ -17,6 +17,7 @@ import {
   type ProviderModelConfig,
   type WorktreeInfo
 } from '@shared/types'
+import type { SandboxScope } from '@shared/sandbox'
 import { savingsOf, type Savings } from '@shared/savings'
 import { QUIET_WARN_MS, quietVerdict } from '@shared/quiet'
 import { allowanceFor, allowanceUsed, needsSlimHarness, pickModel } from '@shared/routing'
@@ -285,12 +286,30 @@ function systemPrompt(agent: AgentConfig, input: {
   tools: string[]
   /** Set when this conversation works on a branch cut for it. */
   worktree?: WorktreeInfo
+  /** Set on a sandbox session: what it is authorised to reach, if anything yet. */
+  sandbox?: SandboxScope
   /** A model declared as modest gets the short version of all of this. */
   slim?: boolean
 }): string {
   const base =
     agent.prompt ??
     'You are a capable software engineering agent. Answer in the language the user wrote in.'
+
+  /*
+   * The scope, on a sandbox session. This is not advice — it is the state of the
+   * firewall the container is behind, said in words so the agent does not waste a
+   * turn discovering it. No target means no network at all.
+   */
+  const sandbox =
+    input.environmentKind === 'container'
+      ? input.sandbox && input.sandbox.targets.length > 0
+        ? `\n- Sandbox: authorised to reach only ${input.sandbox.targets.join(', ')}. The container's ` +
+          `firewall drops everything else, so a scan of anything not on that list will simply fail. ` +
+          `Stay inside it; if you need another target, ask the user to authorise it.`
+        : `\n- Sandbox: no target authorised yet, so the container has NO network. Nothing outward ` +
+          `will work until the user declares a target and confirms they may test it. Do local, ` +
+          `offline preparation only, and tell the user what target you need.`
+      : ''
 
   /*
    * One line, because that is all it changes: the tools already work on the
@@ -307,7 +326,7 @@ function systemPrompt(agent: AgentConfig, input: {
     return `${base}
 
 # Environment
-- Working directory: ${input.cwd}${branch}
+- Working directory: ${input.cwd}${branch}${sandbox}
 - Execution target: ${input.environmentLabel} (${input.environmentKind})
 - Today: ${input.date}${slimRules()}${restrictions(input.tools)}`
   }
@@ -315,7 +334,7 @@ function systemPrompt(agent: AgentConfig, input: {
   return `${base}
 
 # Environment
-- Working directory: ${input.cwd}${branch}
+- Working directory: ${input.cwd}${branch}${sandbox}
 - Execution target: ${input.environmentLabel} (${input.environmentKind})
 - Platform: ${input.platform}
 - Today: ${input.date}
@@ -414,9 +433,9 @@ every turn afterwards, so in this session that is not how files get read.
   return text
 }
 
-async function describeTarget(environmentId: string): Promise<{ platform: string }> {
+async function describeTarget(environmentId: string, sessionId: string): Promise<{ platform: string }> {
   try {
-    const runtime = getRuntime(environmentId)
+    const runtime = getRuntime(environmentId, sessionId)
     if (runtime.kind === 'local') return { platform: `${process.platform} ${process.arch}` }
     const res = await runtime.exec('uname -sm', { cwd: '/', timeoutMs: 10_000 })
     return { platform: res.stdout.trim() || 'unknown' }
@@ -810,7 +829,7 @@ async function announceSavingsProblems(input: {
   const inForce: Savings = { ...input.savings }
 
   if (input.savings.rtk) {
-    const runtime = getRuntime(input.environmentId)
+    const runtime = getRuntime(input.environmentId, input.sessionId)
     const status = await rtkStatus(input.environmentId, runtime, input.cwd)
     if (status.state !== 'ready') {
       inForce.rtk = false
@@ -878,6 +897,33 @@ export async function runTurn(input: TurnInput): Promise<string> {
     isManager(session.agentId) || !config.agent[session.agentId]
       ? orchestrator(config)
       : config.agent[session.agentId]
+
+  // A pentesting agent runs only in a sandbox. Refused here, plainly, before
+  // anything starts: its tools do not exist outside the image, and a security
+  // agent loose on the local machine or an SSH host is the opposite of the
+  // point. The transcript keeps the ask; the answer is why it will not run.
+  const envKind = config.environment[session.environmentId]?.kind
+  if (agent.sandboxOnly && envKind !== 'container') {
+    store.addMessage({ sessionId: session.id, role: 'user', parts: [{ type: 'text', text: input.userText }] })
+    store.addMessage({
+      sessionId: session.id,
+      role: 'assistant',
+      parts: [
+        {
+          type: 'error',
+          text:
+            `${agent.name} runs only in a sandbox. This conversation is on "${session.environmentId}", ` +
+            `which is a ${envKind ?? 'non-container'} environment. Start a session on a Sandbox ` +
+            `environment to use the pentesting agents — they act only inside a throwaway container, ` +
+            `against a target you have authorised.`
+        }
+      ],
+      agentId: agent.id
+    })
+    store.updateSession(session.id, { status: 'idle' })
+    return ''
+  }
+
   const controller = new AbortController()
   controllers.set(session.id, controller)
 
@@ -1034,7 +1080,7 @@ export async function runTurn(input: TurnInput): Promise<string> {
   }
 
   try {
-    const runtime = getRuntime(session.environmentId)
+    const runtime = getRuntime(session.environmentId, session.id)
     await runtime.connect()
     /*
      * The two things a turn needs before it can start are independent of each
@@ -1043,7 +1089,7 @@ export async function runTurn(input: TurnInput): Promise<string> {
      * and nothing is gained by making the second wait for it.
      */
     const [{ platform }, resolved] = await Promise.all([
-      describeTarget(session.environmentId),
+      describeTarget(session.environmentId, session.id),
       resolveModel(config, agent.model ?? session.model)
     ])
 
@@ -1089,7 +1135,11 @@ export async function runTurn(input: TurnInput): Promise<string> {
       1,
       Math.round((slim ? Math.min(config.maxSteps, 12) : config.maxSteps) * effort.steps)
     )
-    const autoApprove = session.autoApprove ?? config.autoApprove ?? false
+    // In a sandbox, approvals stay on whatever the session says. Auto-approving
+    // an exploit is the opposite of the "explicit supervision" the whole feature
+    // is built around, so the container kind overrides the switch.
+    const autoApprove =
+      runtime.kind === 'container' ? false : (session.autoApprove ?? config.autoApprove ?? false)
     const savings = await announceSavingsProblems({
       config,
       sessionId: session.id,
@@ -1252,6 +1302,7 @@ export async function runTurn(input: TurnInput): Promise<string> {
         cwd: session.cwd,
         environmentLabel: runtime.label,
         worktree: session.worktree,
+        sandbox: session.sandbox,
         environmentKind: runtime.kind,
         platform,
         date: new Date().toISOString().slice(0, 10),

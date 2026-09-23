@@ -1,5 +1,6 @@
-import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { homedir } from 'node:os'
+import { join } from 'node:path'
 import type { AppConfig } from '@shared/types'
 import type { Savings } from '@shared/savings'
 import { bus } from './bus'
@@ -31,6 +32,14 @@ import { describeError } from '@shared/errors'
 import { readForEditor, writeFromEditor } from './editor'
 import { describeNeighbours } from './coordination'
 import { createWorktree, removeWorktree, worktreeOffer, worktreeStatus } from './worktree'
+import {
+  buildImage,
+  closeScope,
+  openScope,
+  refreshSandbox,
+  removeContainer,
+  sandboxStatus
+} from './sandbox'
 import { listSshAliases } from './runtime/ssh'
 import * as store from './store'
 import * as history from './history'
@@ -258,6 +267,25 @@ export function registerIpc(): void {
     return status
   })
 
+  /* ---- the pentesting sandbox ---- */
+
+  ipcMain.handle('sandbox:status', () => refreshSandbox())
+  ipcMain.handle('sandbox:build', () => {
+    // Where the Dockerfile landed: beside the app's resources when packaged, in
+    // the repo in dev. The image is built locally; only its base is pulled.
+    const context = app.isPackaged
+      ? join(process.resourcesPath, 'pentest')
+      : join(app.getAppPath(), 'build', 'pentest')
+    return buildImage(context)
+  })
+  ipcMain.handle('sandbox:scope', (_e, sessionId: string, targets: string[], note: string) =>
+    openScope(sessionId, targets, note)
+  )
+  ipcMain.handle('sandbox:clearScope', async (_e, sessionId: string) => {
+    await closeScope(sessionId)
+    return true
+  })
+
   /*
    * Tool servers: declared in the config, connected on demand, and measured.
    *
@@ -405,6 +433,11 @@ export function registerIpc(): void {
      * and the user is told where.
      */
     const doomed = store.getSession(id)
+    // A sandbox session's container and network are ephemeral: they go with the
+    // conversation, and nothing they held was meant to outlive it.
+    if (doomed?.environmentId && resolvedConfig().environment[doomed.environmentId]?.kind === 'container') {
+      await removeContainer(id).catch(() => undefined)
+    }
     if (doomed?.worktree) {
       const removal = await removeWorktree(doomed)
       if (removal.error) {
@@ -783,9 +816,9 @@ export function registerIpc(): void {
    * pane can say "there is nothing here"; it cannot do anything with an
    * exception from a method it did not know it was calling.
    */
-  ipcMain.handle('fs:list', async (_e, environmentId: string, path: string) => {
+  ipcMain.handle('fs:list', async (_e, environmentId: string, path: string, sessionId?: string) => {
     try {
-      const runtime = getRuntime(environmentId)
+      const runtime = getRuntime(environmentId, sessionId)
       await runtime.connect()
       const target = path || (await runtime.homeDir())
       return { path: target, entries: await runtime.list(target) }
@@ -818,8 +851,8 @@ export function registerIpc(): void {
     }
   )
 
-  ipcMain.handle('fs:read', async (_e, environmentId: string, path: string) => {
-    const runtime = getRuntime(environmentId)
+  ipcMain.handle('fs:read', async (_e, environmentId: string, path: string, sessionId?: string) => {
+    const runtime = getRuntime(environmentId, sessionId)
     await runtime.connect()
     return runtime.readFile(path)
   })
@@ -833,16 +866,16 @@ export function registerIpc(): void {
   )
 
   /* The editor pane. Its failures are values; see `editor.ts` for why. */
-  ipcMain.handle('editor:read', (_e, environmentId: string, path: string) =>
-    readForEditor(environmentId, path)
+  ipcMain.handle('editor:read', (_e, environmentId: string, path: string, sessionId?: string) =>
+    readForEditor(environmentId, path, sessionId)
   )
-  ipcMain.handle('editor:write', (_e, environmentId: string, path: string, text: string) =>
-    writeFromEditor(environmentId, path, text)
+  ipcMain.handle('editor:write', (_e, environmentId: string, path: string, text: string, sessionId?: string) =>
+    writeFromEditor(environmentId, path, text, sessionId)
   )
 
-  ipcMain.handle('fs:stat', async (_e, environmentId: string, path: string) => {
+  ipcMain.handle('fs:stat', async (_e, environmentId: string, path: string, sessionId?: string) => {
     try {
-      const runtime = getRuntime(environmentId)
+      const runtime = getRuntime(environmentId, sessionId)
       await runtime.connect()
       return await runtime.stat(path)
     } catch {
@@ -857,12 +890,12 @@ export function registerIpc(): void {
    * fetched over the same connection that made it rather than needing the user
    * to go and find it there.
    */
-  ipcMain.handle('fs:download', async (_e, environmentId: string, path: string) => {
+  ipcMain.handle('fs:download', async (_e, environmentId: string, path: string, sessionId?: string) => {
     const name = path.split('/').filter(Boolean).pop() ?? 'download'
     const result = await dialog.showSaveDialog({ defaultPath: name, title: `Save ${name}` })
     if (result.canceled || !result.filePath) return { saved: false as const }
     try {
-      const runtime = getRuntime(environmentId)
+      const runtime = getRuntime(environmentId, sessionId)
       await runtime.connect()
       const bytes = await runtime.readFileBuffer(path)
       const { writeFile } = await import('node:fs/promises')
