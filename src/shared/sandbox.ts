@@ -80,6 +80,40 @@ export interface SandboxScope {
   authorizedNote?: string
 }
 
+/* ---------------- the flight recorder ---------------- */
+
+interface ForensicProcess {
+  pid: string
+  user: string
+  comm: string
+  args: string
+}
+
+/** One sample the host recorder took of a running sandbox container. */
+export interface ForensicSample {
+  t: number
+  processes: ForensicProcess[]
+  connections: string[]
+  /** Packets the firewall has dropped since boot. Rising = something tried to get out. */
+  drops: number
+  firewallArmed: boolean
+  scope: string[]
+}
+
+export interface ForensicFinding {
+  severity: 'info' | 'warn' | 'alert'
+  what: string
+}
+
+/** The deterministic read of a session's recording, before any model looks. */
+export interface ForensicReport {
+  sessionId: string
+  samples: number
+  window?: { from: number; to: number }
+  findings: ForensicFinding[]
+  latest?: ForensicSample
+}
+
 /** A container is named after its session, so a stray one names the chat that left it. */
 export function containerName(sessionId: string): string {
   return `opendesktop-sbx-${sanitiseId(sessionId)}`

@@ -15,6 +15,7 @@ import {
 } from '../background'
 import * as store from '../store'
 import { recordWrite, writeWarning } from '../coordination'
+import { analyseForensics, readSamples as readForensicSamples } from '../forensics'
 import { rewriteThroughRtk, rtkListingCommand, rtkStatus } from '../rtk'
 import {
   BULK_READER_INSTRUCTIONS,
@@ -1345,6 +1346,53 @@ export function createTools(ctx: ToolContext): ToolSet {
       }
     }
   })
+
+  /*
+   * The flight recorder, read-only, offered only inside a sandbox.
+   *
+   * The recorder runs on the host and samples the container the whole time it is
+   * up (see forensics.ts). This is how the forensic agent reads that recording —
+   * a tool rather than a file, because the recording lives on the host, outside
+   * the container the agent runs in, exactly so the tenant cannot edit what is
+   * recording it. It returns the deterministic findings and the raw samples, and
+   * the agent reasons on top of them and writes the report.
+   */
+  if (ctx.runtime.kind === 'container') {
+    tools.forensic_timeline = tool({
+      description:
+        'Read the sandbox flight recorder for this session: every process, connection, ' +
+        'firewall-drop count and firewall state sampled since the container started, plus the ' +
+        'cheap deterministic findings. Use this to analyse what happened and report whether ' +
+        'there was a breach. Read-only; it runs on the host, so nothing in the container can ' +
+        'alter it.',
+      inputSchema: z.object({
+        samples: z
+          .number()
+          .int()
+          .min(1)
+          .max(500)
+          .optional()
+          .describe('How many of the most recent samples to include (default 40).')
+      }),
+      execute: async ({ samples }) => {
+        const report = analyseForensics(ctx.sessionId)
+        const all = readForensicSamples(ctx.sessionId)
+        const recent = all.slice(-(samples ?? 40))
+        return {
+          output: JSON.stringify(
+            {
+              samples: report.samples,
+              window: report.window,
+              findings: report.findings,
+              recent
+            },
+            null,
+            2
+          )
+        }
+      }
+    })
+  }
 
   return tools
 }

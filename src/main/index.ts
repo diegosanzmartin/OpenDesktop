@@ -22,6 +22,7 @@ import { startWedgeWatch, stopWedgeWatch } from './watchdog'
 import { disposeLocalModel } from './local-model'
 import { disposeMcp } from './mcp'
 import { disposeSandbox } from './sandbox'
+import { disposeForensics } from './forensics'
 import { isOwnWorkspace, makeWorkspaceDir } from './workspace'
 import { deliverQueuedFollowUps } from './agent/runner'
 
@@ -179,6 +180,7 @@ app.on('before-quit', () => {
   // ...and so is every tool server a session switched on.
   disposeMcp()
   // ...and every pentesting sandbox container is ours too; they are ephemeral.
+  disposeForensics()
   void disposeSandbox()
   void disposeRuntimes()
 })

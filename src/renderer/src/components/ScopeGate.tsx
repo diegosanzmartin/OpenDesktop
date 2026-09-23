@@ -1,9 +1,63 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import clsx from 'clsx'
-import { ShieldAlert, ShieldCheck, X } from 'lucide-react'
+import { Activity, ShieldAlert, ShieldCheck, X } from 'lucide-react'
 import type { Session } from '@shared/types'
-import { isValidTarget, normaliseTargets } from '@shared/sandbox'
+import { isValidTarget, normaliseTargets, type ForensicReport } from '@shared/sandbox'
 import { useStore } from '../state/store'
+
+/**
+ * The flight recorder, said in one line: that it is watching, and the worst
+ * thing it has seen so far. The recording is always on while the container is
+ * up; this makes that visible without spending a turn on the forensic agent,
+ * and the agent is still what writes the actual report.
+ */
+export function ForensicLine({ session }: { session: Session }): ReactNode {
+  const [report, setReport] = useState<ForensicReport | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    const pull = (): void => {
+      void window.opendesktop.sandbox
+        .forensics(session.id)
+        .then((r) => alive && setReport(r))
+        .catch(() => undefined)
+    }
+    pull()
+    const timer = setInterval(pull, 15_000)
+    return () => {
+      alive = false
+      clearInterval(timer)
+    }
+  }, [session.id])
+
+  if (!report || report.samples === 0) return null
+
+  const worst = report.findings.reduce<'info' | 'warn' | 'alert'>(
+    (acc, f) => (f.severity === 'alert' ? 'alert' : f.severity === 'warn' && acc !== 'alert' ? 'warn' : acc),
+    'info'
+  )
+  const headline =
+    worst === 'alert'
+      ? (report.findings.find((f) => f.severity === 'alert')?.what ?? 'A breach signal was recorded.')
+      : worst === 'warn'
+        ? (report.findings.find((f) => f.severity === 'warn')?.what ?? 'Something worth a look was recorded.')
+        : 'Watching — nothing anomalous so far.'
+
+  const tone =
+    worst === 'alert'
+      ? 'border-bad/30 bg-bad/5 text-bad'
+      : worst === 'warn'
+        ? 'border-warn/30 bg-warn/5 text-warn'
+        : 'border-ink-800 bg-ink-850 text-ink-500'
+
+  return (
+    <div className={clsx('mb-2 flex items-center gap-2 rounded-lg border px-3 py-1.5', tone)}>
+      <Activity className={clsx('h-3.5 w-3.5 shrink-0', worst === 'info' && 'text-ink-500')} />
+      <span className="text-ink-300 min-w-0 flex-1 truncate text-[12px]">{headline}</span>
+      <span className="text-ink-600 shrink-0 text-[11px]">forensics · {report.samples} samples</span>
+    </div>
+  )
+}
 
 /**
  * The hard gate, above the composer, on a sandbox session.

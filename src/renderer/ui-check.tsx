@@ -38,7 +38,7 @@ import { LocalModelSection } from './src/components/LocalModelSection'
 import { ChatView } from './src/components/ChatView'
 import { PANE_FRAME } from './src/components/ui'
 import { SandboxSection } from './src/components/SandboxSection'
-import { ScopeGate } from './src/components/ScopeGate'
+import { ScopeGate, ForensicLine } from './src/components/ScopeGate'
 import { NeighbourBar } from './src/components/NeighbourBar'
 
 const failures: string[] = []
@@ -2325,6 +2325,36 @@ async function run(): Promise<void> {
     const auth = authorised.textContent ?? ''
     check('an authorised session names exactly what it may reach', /scanme\.example\.com/.test(auth), auth.slice(0, 160))
     check('and everything else is dropped', /everything else is dropped/.test(auth), auth.slice(0, 200))
+
+    // The flight recorder line: it says it is watching, and surfaces the worst
+    // thing recorded so far.
+    REPLIES['sandbox.forensics'] = {
+      sessionId: 's1',
+      samples: 12,
+      window: { from: 1, to: 2 },
+      findings: [{ severity: 'info', what: 'Nothing anomalous in the recording.' }]
+    }
+    const watching = mount(<ForensicLine session={{ ...session, environmentId: 'sandbox' }} />, 760)
+    await settle()
+    const w = watching.textContent ?? ''
+    check('the forensics line says it is watching and counts samples', /Watching/.test(w) && /12 samples/.test(w), w)
+
+    REPLIES['sandbox.forensics'] = {
+      sessionId: 's1',
+      samples: 5,
+      findings: [
+        { severity: 'alert', what: 'Traffic was dropped while no scope was authorised.' },
+        { severity: 'info', what: 'noise' }
+      ]
+    }
+    const breach = mount(<ForensicLine session={{ ...session, environmentId: 'sandbox' }} />, 760)
+    await settle()
+    check(
+      'and it surfaces the worst finding when there is one',
+      /no scope was authorised/.test(breach.textContent ?? ''),
+      breach.textContent?.slice(0, 160)
+    )
+    REPLIES['sandbox.forensics'] = { sessionId: 's1', samples: 0, findings: [] }
   }
 
   console.log(`\n${checks - failures.length}/${checks} checks passed`)

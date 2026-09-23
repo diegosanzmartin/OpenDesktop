@@ -21,7 +21,7 @@ import type { Attachment, Session, Skill } from '@shared/types'
 import { isManager } from '@shared/types'
 import { SWITCHES, savingsLabel, savingsOf, type Savings } from '@shared/savings'
 import { NeighbourBar } from './NeighbourBar'
-import { ScopeGate } from './ScopeGate'
+import { ScopeGate, ForensicLine } from './ScopeGate'
 import { ContextMeter } from './ContextMeter'
 import { ToolServerChip } from './ToolServerChip'
 import { isInWorkspace } from '@shared/workspace'
@@ -644,6 +644,7 @@ export function Composer({ session }: { session: Session }): ReactNode {
     <div className="@container px-6 pb-4 pt-1">
       <div className="mx-auto max-w-[760px]">
         {inSandbox ? <ScopeGate session={session} /> : null}
+        {inSandbox ? <ForensicLine session={session} /> : null}
         <NeighbourBar session={session} />
         <ChangesBar session={session} />
 

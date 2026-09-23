@@ -737,10 +737,22 @@ Files pane, Changes, the editor, hooks — works over it unchanged.
   `NET_ADMIN`, so it cannot alter the rules of its own network namespace. The app rewrites them,
   as root, when you change the scope.
 
-On top of that: the pentesting agents — **Recon**, **Web**, **Exploit**, **Exploit review** and
-**Pentest report** — run *only* in a sandbox, are refused anywhere else, and are the only agents
-offered there. And a container session ignores auto-approve: every exploit step waits for a
-human, which is what "explicit supervision" means in practice.
+On top of that: the pentesting agents — **Recon**, **Web**, **Exploit**, **Exploit review**,
+**Pentest report** and **Forensic** — run *only* in a sandbox, are refused anywhere else, and
+are the only agents offered there. And a container session ignores auto-approve: every exploit
+step waits for a human, which is what "explicit supervision" means in practice.
+
+**The flight recorder** runs the whole time a sandbox container is up, with no model in the
+loop: a timer in the app samples the container every ten seconds — every process with its user
+and command, the live connections, how many packets the firewall has dropped, and whether the
+firewall is still armed — and appends each sample to a per-session log. It is on the host, so
+the container being recorded cannot edit its own recording, and it is cheap, so it is always on.
+The **Forensic** agent reads that log through a read-only tool and reports a verdict — breach,
+suspicious or clean — with the evidence and timestamps: a process that is not one of the
+session's tools, anything running as root, egress the firewall dropped, or the sharp case of a
+drop while no scope was even authorised, which is something trying to reach the network before
+anyone allowed a target. A line above the composer shows, at a glance, that it is watching and
+the worst thing it has seen. The recording goes with the conversation when it is deleted.
 
 **Getting started**: build the image once under *Providers & models → Pentesting sandbox* (a
 small Debian base with nmap, ffuf, nuclei, sqlmap, httpx and the rest — built locally, base

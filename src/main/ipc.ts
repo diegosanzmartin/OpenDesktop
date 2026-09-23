@@ -40,6 +40,7 @@ import {
   removeContainer,
   sandboxStatus
 } from './sandbox'
+import { analyseForensics, removeForensics } from './forensics'
 import { listSshAliases } from './runtime/ssh'
 import * as store from './store'
 import * as history from './history'
@@ -285,6 +286,8 @@ export function registerIpc(): void {
     await closeScope(sessionId)
     return true
   })
+  // The flight recorder's deterministic read: what it saw, and the cheap signals.
+  ipcMain.handle('forensics:report', (_e, sessionId: string) => analyseForensics(sessionId))
 
   /*
    * Tool servers: declared in the config, connected on demand, and measured.
@@ -437,6 +440,7 @@ export function registerIpc(): void {
     // conversation, and nothing they held was meant to outlive it.
     if (doomed?.environmentId && resolvedConfig().environment[doomed.environmentId]?.kind === 'container') {
       await removeContainer(id).catch(() => undefined)
+      removeForensics(id)
     }
     if (doomed?.worktree) {
       const removal = await removeWorktree(doomed)

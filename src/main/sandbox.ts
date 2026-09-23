@@ -48,6 +48,7 @@ import {
 import { bus } from './bus'
 import { logLine } from './log'
 import { getSession, updateSession } from './store'
+import { startRecording, stopRecording } from './forensics'
 
 /* ---------------- docker, wrapped ---------------- */
 
@@ -275,6 +276,9 @@ async function createContainer(sessionId: string): Promise<void> {
 
   created.add(sessionId)
   logLine('info', `sandbox ${sessionId}: container up, offline (default-drop firewall armed)`)
+  // The flight recorder runs for as long as the container does. Started here, so
+  // it is watching from the first moment there is anything to watch.
+  startRecording(sessionId)
 }
 
 /** Polls for the entrypoint's default-drop policy. The proof the gate is closed. */
@@ -377,6 +381,10 @@ export function buildNftRules(targets: string[]): string {
   }
   if (hosts.length > 0) lines.push(`    ip daddr { ${hosts.join(', ')} } accept`)
   for (const cidr of nets) lines.push(`    ip daddr ${cidr} accept`)
+  // Everything that reaches here was not accepted above and is about to hit the
+  // drop policy. Count it first, so the flight recorder can see how much the
+  // firewall turned away — the sharpest breach signal there is.
+  lines.push('    counter comment "sbx-drop"')
   lines.push('  }', '}')
   return lines.join('\n') + '\n'
 }
@@ -388,6 +396,7 @@ export async function removeContainer(sessionId: string): Promise<void> {
   if (!created.has(sessionId)) {
     // Might still exist from a previous run; try anyway, quietly.
   }
+  stopRecording(sessionId)
   const name = containerName(sessionId)
   const net = networkName(sessionId)
   await docker(['rm', '-f', name], undefined, 30_000)

@@ -24,7 +24,7 @@ import type { Savings } from '@shared/savings'
 import type { BlameLine, Commit, CommitDetail } from '@shared/history'
 import type { DiscoveredModel } from '@shared/catalog'
 import type { LocalModelStatus } from '@shared/local-model'
-import type { SandboxScope, SandboxStatus } from '@shared/sandbox'
+import type { ForensicReport, SandboxScope, SandboxStatus } from '@shared/sandbox'
 
 const api = {
   config: {
@@ -102,7 +102,10 @@ const api = {
     ): Promise<{ error?: string; scope?: SandboxScope }> =>
       ipcRenderer.invoke('sandbox:scope', sessionId, targets, note),
     clearScope: (sessionId: string): Promise<boolean> =>
-      ipcRenderer.invoke('sandbox:clearScope', sessionId)
+      ipcRenderer.invoke('sandbox:clearScope', sessionId),
+    /** The flight recorder's deterministic read, for the sandbox forensics line. */
+    forensics: (sessionId: string): Promise<ForensicReport> =>
+      ipcRenderer.invoke('forensics:report', sessionId)
   },
   /** Tool servers: what is declared, what it offers, and what it weighs. */
   mcp: {
