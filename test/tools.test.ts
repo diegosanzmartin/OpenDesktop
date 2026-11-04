@@ -3,7 +3,9 @@ import { join } from 'node:path'
 import { beforeAll, describe, expect, test } from 'vitest'
 import { NOTHING } from '@shared/savings'
 import { createTools, type ToolContext } from '../src/main/agent/tools'
-import { grantForSession, listPending, resolveApproval } from '../src/main/approvals'
+import { cancelSessionApprovals, grantForSession, listPending, resolveApproval } from '../src/main/approvals'
+import { bus } from '../src/main/bus'
+import * as store from '../src/main/store'
 import { loadConfig } from '../src/main/config'
 import { getRuntime, type Runtime } from '../src/main/runtime'
 import { boot, newSession, tempDir } from './helpers'
@@ -111,5 +113,37 @@ describe('bash writing outside the working directory', () => {
     expect(await bash('touch inside.txt', ctx)).toBe('ran')
     const outside = join(tempDir('od-outside-'), 'x.txt')
     expect(await bash(`touch ${outside}`, ctx)).toBe('asked')
+  })
+})
+
+describe('stopping while a card waits', () => {
+  // Reported as two "done" notifications on Stop: the refused card set the session running again.
+  test('leaves the session idle, without passing through running again', async () => {
+    const session = newSession({ autoApprove: false })
+    const controller = new AbortController()
+    const ctx = {
+      ...context(getRuntime('local')),
+      sessionId: session.id,
+      cwd: session.cwd,
+      autoApprove: false,
+      signal: controller.signal
+    } as ToolContext
+    const statuses: string[] = []
+    const off = bus.subscribe((event) => {
+      if (event.type === 'session.updated' && event.session.id === session.id) statuses.push(event.session.status)
+    })
+    const running = (createTools(ctx).bash.execute as (input: unknown, options: unknown) => Promise<unknown>)(
+      { command: 'touch stopped.txt', description: 'test' },
+      { toolCallId: 'b', messages: [] }
+    ).catch(() => undefined)
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    statuses.length = 0
+    cancelSessionApprovals(session.id)
+    controller.abort()
+    store.setSessionStatus(session.id, 'idle')
+    await running
+    off()
+    expect(statuses).not.toContain('running')
+    expect(store.getSession(session.id)?.status).toBe('idle')
   })
 })

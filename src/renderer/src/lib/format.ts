@@ -24,9 +24,10 @@ export function clockTime(ts: number): string {
 export function duration(block: Block): string {
   const ms = durationMs(block)
   if (ms < 1000) return `${ms}ms`
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
-  const minutes = Math.floor(ms / 60_000)
-  return `${minutes}m ${Math.floor((ms % 60_000) / 1000)}s`
+  // Below the point where one decimal would round up to "60.0s".
+  if (ms < 59_950) return `${(ms / 1000).toFixed(1)}s`
+  const seconds = Math.round(ms / 1000)
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
 }
 
 export function durationMs(block: Block): number {
@@ -91,6 +92,7 @@ export function stripAnsi(text: string): string {
 
 export function tokens(n: number): string {
   if (n < 1000) return String(n)
-  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`
+  // Below the point where one decimal would round up to "1000.0k".
+  if (n < 999_950) return `${(n / 1000).toFixed(1)}k`
   return `${(n / 1_000_000).toFixed(2)}M`
 }

@@ -15,18 +15,30 @@ import { createRoot } from "react-dom/client";
 import type {
   AppEvent,
   ApprovalRequest,
+  AutoModePolicy,
   Block,
   Message,
   Session,
 } from "@shared/types";
-import { useStore } from "./src/state/store";
+import { TOAST_MS, useStore } from "./src/state/store";
 import { BlockCard } from "./src/components/BlockCard";
 import { ApprovalCard } from "./src/components/ApprovalCard";
 import { Mentions } from "./src/components/Markdown";
 import { DocumentCard } from "./src/components/DocumentCard";
 import { Composer } from "./src/components/Composer";
-import { EditedFiles } from "./src/components/Transcript";
+import { EditedFiles, ToolGroup } from "./src/components/Transcript";
 import { ContextMeter } from "./src/components/ContextMeter";
+import { RowInput } from "./src/components/settings-ui";
+import { AutoModeRules } from "./src/components/AutoModeRules";
+import { PinnedInstructions } from "./src/components/PinnedInstructions";
+import { VerifyChecks } from "./src/components/VerifyChecks";
+import { TodoList } from "./src/components/TodoList";
+import { PlanReady } from "./src/components/PlanReady";
+import { SessionMenu } from "./src/components/SessionMenu";
+import { ApprovalSuggestion } from "./src/components/ApprovalSuggestion";
+import { SUGGESTED_AUTO_MODE } from "@shared/auto-mode";
+import { money, spendLabel } from "./src/lib/settings";
+import { duration, tokens } from "./src/lib/format";
 import { ToolServerChip } from "./src/components/ToolServerChip";
 import { ToolServersTab } from "./src/components/ToolServersTab";
 import { HooksTab } from "./src/components/HooksTab";
@@ -583,6 +595,516 @@ async function run(): Promise<void> {
     );
   }
 
+  section("the auto-approve rules");
+  {
+    const saves: (AutoModePolicy | undefined)[] = [];
+    const empty = mount(<AutoModeRules policy={undefined} onSave={(next) => saves.push(next)} />);
+    await settle();
+    const suggest = [...empty.querySelectorAll("button")].find((b) => /suggested/i.test(b.textContent ?? ""));
+    check("with no rules, offers the suggested ones", suggest !== undefined, empty.textContent?.slice(0, 120));
+    suggest?.click();
+    await settle();
+    check(
+      "and one click saves them",
+      saves.at(-1)?.deny.length === SUGGESTED_AUTO_MODE.deny.length,
+      saves.at(-1),
+    );
+
+    const written = mount(
+      <AutoModeRules
+        policy={{ environment: [], allow: [], deny: ["Git Push: no pushing"] }}
+        onSave={(next) => saves.push(next)}
+      />,
+    );
+    await settle();
+    const deny = written.querySelector<HTMLTextAreaElement>('textarea[aria-label="Deny"]')!;
+    check("shows the rules already written, one per line", deny?.value === "Git Push: no pushing", deny?.value);
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+    deny.focus();
+    setter.call(deny, "Git Push: no pushing\n\n  Credentials: hands off  \n");
+    deny.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    // The check window has no focus, so blur() fires nothing; React's onBlur listens for focusout.
+    deny.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    await settle();
+    check(
+      "and saves what is typed when the box is left, a rule per non-empty line",
+      JSON.stringify(saves.at(-1)?.deny) === JSON.stringify(["Git Push: no pushing", "Credentials: hands off"]),
+      saves.at(-1)?.deny,
+    );
+  }
+
+  section("numbers at the edge of their unit");
+  {
+    const took = (ms: number): string => duration(block({ createdAt: 0, startedAt: 0, endedAt: ms }));
+    check("a duration that rounds to a minute is shown in minutes", took(59_900) === "59.9s" && took(59_960) === "1m 0s", [took(59_900), took(59_960)]);
+    const both = spendLabel({ cost: 4, tokens: 850_000 } as never, { usd: 400, tokens: 1_000_000, period: "month" } as never);
+    check("with a money and a token limit, both figures are shown, so the percentage beside them adds up", /\$/.test(both) && /850,000/.test(both), both);
+    check("a token count that rounds to a million is shown in millions", tokens(999_940) === "999.9k" && tokens(999_950) === "1.00M", [tokens(999_940), tokens(999_950)]);
+  }
+
+  section("the auto-approve judge, seen from the transcript");
+  {
+    // When the judge stops deciding, the card says why a session that runs without asking is asking.
+    const card = mount(
+      <ApprovalCard
+        request={{
+          id: "a-note",
+          sessionId: "s1",
+          blockId: "b",
+          tool: "bash",
+          title: "touch x",
+          detail: "touch x",
+          command: "touch x",
+          note: "Auto-approve stopped judging after 3 refusals in a row; this one is yours to decide.",
+          environmentId: "local",
+          cwd: "/tmp/project",
+          createdAt: 0,
+        } as ApprovalRequest}
+        active={false}
+      />,
+    );
+    await settle();
+    check(
+      "a card the judge handed back says why",
+      (card.textContent ?? "").includes("3 refusals in a row"),
+      card.textContent?.slice(0, 200),
+    );
+
+    // A refused call can be overruled from where it is shown.
+    const refused = mount(
+      <BlockCard
+        block={block({
+          id: "refused",
+          status: "error",
+          error: "Blocked by the auto-approve policy — Git Push: not asked for",
+          policyBlocked: { action: "bash: git push origin main" },
+        })}
+      />,
+    );
+    await settle();
+    refused.querySelector("button")?.click();
+    await settle();
+    check(
+      "a call the rules refused offers to allow it once and retry",
+      [...refused.querySelectorAll("button")].some((b) => /Allow and retry/.test(b.textContent ?? "")),
+      [...refused.querySelectorAll("button")].map((b) => b.textContent),
+    );
+  }
+
+  section("pinned instructions");
+  {
+    const saved: (string | undefined)[] = [];
+    const host = mount(<PinnedInstructions value="Answer in Spanish." onSave={(next) => saved.push(next)} />);
+    await settle();
+    const box = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Pinned instructions"]');
+    check("shows what is pinned", box?.value === "Answer in Spanish.", box?.value);
+    if (box) {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(box, "  Be brief.  ");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+      await settle();
+      box.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+      await settle();
+    }
+    check("and saves what is typed when the box is left", saved.at(-1) === "Be brief.", saved);
+  }
+
+  section("typing while a turn works");
+  {
+    // It reaches the running turn at its next step now; the line under the box says so.
+    const waiting = mount(
+      <Composer session={{ ...session, status: "running", queuedFollowUps: ["use bar instead"] }} />,
+      900,
+    );
+    await settle();
+    check(
+      "a message typed mid-turn is said to reach the agent at its next step",
+      /next step/.test(waiting.textContent ?? "") && !/when this turn stops/.test(waiting.textContent ?? ""),
+      (waiting.textContent ?? "").slice(-200),
+    );
+  }
+
+  section("a side question (/btw)");
+  {
+    const sent: string[] = [];
+    const realSend = useStore.getState().send;
+    useStore.setState({ send: async (text: string) => void sent.push(text) });
+    REPLIES["sessions.aside"] = { text: "It said 4317." };
+    const box = mount(<Composer session={{ ...session, status: "running" }} />, 900);
+    await settle();
+    const area = box.querySelector("textarea")!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+    setter.call(area, "/");
+    area.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    check("the / menu offers /btw even with no skills", (box.textContent ?? "").includes("/btw"), box.textContent);
+    setter.call(area, "/btw what port did you say?");
+    area.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    check(
+      "while it works, the line under the box says the turn carries on",
+      /on the side/.test(box.textContent ?? "") && !/next step/.test(box.textContent ?? ""),
+      (box.textContent ?? "").slice(-200),
+    );
+    area.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await settle();
+    await settle();
+    const shown = box.textContent ?? "";
+    check("it is not sent to the agent", sent.length === 0, sent);
+    check(
+      "the question and its answer are shown, and the box is cleared",
+      shown.includes("what port did you say?") && shown.includes("It said 4317.") && area.value === "",
+      shown.slice(0, 300),
+    );
+    const dismiss = box.querySelector<HTMLButtonElement>('[aria-label="Dismiss the side answer"]');
+    dismiss?.click();
+    await settle();
+    check(
+      "and it can be dismissed",
+      dismiss !== null && !(box.textContent ?? "").includes("It said 4317."),
+      (box.textContent ?? "").slice(0, 300),
+    );
+    delete REPLIES["sessions.aside"];
+    useStore.setState({ send: realSend });
+  }
+
+  section("checks after editing");
+  {
+    const checked = mount(
+      <ToolGroup
+        blocks={[
+          block({ id: "v1", tool: "edit", title: "edit", input: { path: "src/a.ts" } }),
+          block({ id: "v2", tool: "verify", title: "pnpm typecheck", input: { command: "pnpm typecheck" } }),
+        ]}
+      />,
+    );
+    await settle();
+    check(
+      "a check after an edit is named as one in the summary",
+      (checked.textContent ?? "").includes("Updated a.ts, ran a check"),
+      checked.textContent,
+    );
+
+    // Found live: "Updated 3 files" for two files, and "Updated 2 files" for two edits the gate refused.
+    const edit = (id: string, path: string, status: Block["status"] = "success") =>
+      block({ id, tool: "edit", title: "edit", input: { path }, status });
+    const twoFiles = mount(<ToolGroup blocks={[edit("e1", "util.js"), edit("e2", "test.js"), edit("e3", "util.js")]} />);
+    const oneFile = mount(<ToolGroup blocks={[edit("e4", "util.js"), edit("e5", "util.js")]} />);
+    const refused = mount(<ToolGroup blocks={[edit("e6", "util.js", "error"), edit("e7", "test.js", "error")]} />);
+    await settle();
+    check("files are counted once however many edits they had", (twoFiles.textContent ?? "").includes("Updated 2 files"), twoFiles.textContent);
+    check("and one file edited twice is named", (oneFile.textContent ?? "").includes("Updated util.js"), oneFile.textContent);
+    check(
+      "edits that did not happen are not called updates",
+      !/Updated/.test(refused.textContent ?? "") && /Couldn't update 2 files/.test(refused.textContent ?? ""),
+      refused.textContent,
+    );
+    const counted = mount(
+      <ToolGroup
+        blocks={[
+          { ...edit("e8", "util.js"), added: 3, removed: 1 },
+          { ...edit("e9", "test.js", "error"), added: 6, removed: 2 },
+        ]}
+      />,
+    );
+    await settle();
+    check(
+      "and their lines are not counted as changed",
+      /\+3/.test(counted.textContent ?? "") && /-1/.test(counted.textContent ?? "") && !/\+9|-3/.test(counted.textContent ?? ""),
+      counted.textContent,
+    );
+
+    const saves: Record<string, string>[] = [];
+    const rows = mount(<VerifyChecks value={{ "/work/shop": "pnpm typecheck" }} onSave={(next) => saves.push(next)} />);
+    await settle();
+    check(
+      "the settings list each folder with its check",
+      (rows.textContent ?? "").includes("/work/shop") &&
+        [...rows.querySelectorAll("input")].some((i) => (i as HTMLInputElement).value === "pnpm typecheck"),
+      rows.textContent,
+    );
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    const [folder, command] = [...rows.querySelectorAll<HTMLInputElement>("input[data-new]")];
+    if (folder && command) {
+      setter.call(folder, "/work/blog");
+      folder.dispatchEvent(new Event("input", { bubbles: true }));
+      setter.call(command, "make check");
+      command.dispatchEvent(new Event("input", { bubbles: true }));
+      await settle();
+      [...rows.querySelectorAll("button")].find((b) => /Add/.test(b.textContent ?? ""))?.click();
+      await settle();
+    }
+    check(
+      "and a new folder and check can be added",
+      JSON.stringify(saves.at(-1)) === JSON.stringify({ "/work/shop": "pnpm typecheck", "/work/blog": "make check" }),
+      saves.at(-1),
+    );
+  }
+
+  section("the agent's checklist");
+  {
+    const todos = [
+      { text: "Read the config", status: "done" as const },
+      { text: "Change the port", status: "in_progress" as const },
+      { text: "Run the tests", status: "pending" as const },
+    ];
+    const working = mount(<TodoList session={{ ...session, status: "running", todos }} />, 700);
+    await settle();
+    const shown = working.textContent ?? "";
+    check(
+      "shows how far through it is, and every step",
+      shown.includes("1/3") && shown.includes("Change the port") && shown.includes("Run the tests"),
+      shown,
+    );
+    check(
+      "with the step in progress marked as such",
+      working.querySelector('[data-status="in_progress"]')?.textContent?.includes("Change the port") === true,
+      working.innerHTML.slice(0, 300),
+    );
+    const finished = mount(
+      <TodoList session={{ ...session, status: "idle", todos: todos.map((t) => ({ ...t, status: "done" as const })) }} />,
+      700,
+    );
+    await settle();
+    check("and goes away once every step is done and the turn is over", (finished.textContent ?? "") === "", finished.textContent);
+  }
+
+  section("plan mode");
+  {
+    const planning = mount(<Composer session={{ ...session, planMode: true }} />, 900);
+    await settle();
+    check(
+      "the footer says the session is planning",
+      planning.querySelector('[aria-label="Plan mode is on"]') !== null,
+      [...planning.querySelectorAll("button[aria-label]")].map((b) => b.getAttribute("aria-label")),
+    );
+    const doing = mount(<Composer session={session} />, 900);
+    await settle();
+    check(
+      "and offers it when it is off",
+      doing.querySelector('[aria-label="Plan first"]') !== null,
+      [...doing.querySelectorAll("button[aria-label]")].map((b) => b.getAttribute("aria-label")),
+    );
+
+    // Found live: switched on after an ordinary answer, that answer was offered as a plan to run.
+    const bridge = (window as unknown as { opendesktop: Record<string, Record<string, unknown>> }).opendesktop;
+    const patches: Record<string, unknown>[] = [];
+    (window as unknown as { opendesktop: unknown }).opendesktop = new Proxy(bridge, {
+      get: (target, key) =>
+        key === "sessions"
+          ? new Proxy(target.sessions, {
+              get: (sessions, method) =>
+                method === "update"
+                  ? (_id: string, patch: Record<string, unknown>) => {
+                      patches.push(patch);
+                      return Promise.resolve(null);
+                    }
+                  : sessions[method as string],
+            })
+          : target[key as string],
+    });
+    doing.querySelector<HTMLButtonElement>('[aria-label="Plan first"]')?.click();
+    await settle();
+    (window as unknown as { opendesktop: unknown }).opendesktop = bridge;
+    check(
+      "switching it on records when, so only what comes after counts as a plan",
+      patches.length === 1 && patches[0].planMode === true && typeof patches[0].planSince === "number",
+      patches,
+    );
+
+    const answered: Message[] = [
+      { id: "p1", sessionId: session.id, role: "user", parts: [{ type: "text", text: "plan it" }], createdAt: 1 } as Message,
+      {
+        id: "p2",
+        sessionId: session.id,
+        role: "assistant",
+        parts: [{ type: "text", text: "1. Edit a.ts. 2. Run the tests." }],
+        createdAt: 2,
+        completedAt: 3,
+      } as Message,
+    ];
+    useStore.setState({ messages: { [session.id]: answered } });
+    const ready = mount(<PlanReady session={{ ...session, planMode: true, status: "idle" }} />, 700);
+    const busy = mount(<PlanReady session={{ ...session, planMode: true, status: "running" }} />, 700);
+    const off = mount(<PlanReady session={{ ...session, status: "idle" }} />, 700);
+    await settle();
+    check(
+      "a finished plan offers to run it",
+      [...ready.querySelectorAll("button")].some((b) => /Run this plan/.test(b.textContent ?? "")),
+      ready.textContent,
+    );
+    check(
+      "but not while it is still being written, nor outside plan mode",
+      (busy.textContent ?? "") === "" && (off.textContent ?? "") === "",
+      [busy.textContent, off.textContent],
+    );
+    const stale = mount(<PlanReady session={{ ...session, planMode: true, planSince: 10, status: "idle" }} />, 700);
+    await settle();
+    check("nor for an answer given before plan mode was switched on", (stale.textContent ?? "") === "", stale.textContent);
+    // Found live: in a wide window the bar ran edge to edge while the box under it is 760px.
+    const wide = mount(<PlanReady session={{ ...session, planMode: true, status: "idle" }} />, 1400);
+    await settle();
+    const bar = wide.firstElementChild?.querySelector("button")?.parentElement;
+    check(
+      "and in a wide window it lines up with the box, not the window",
+      bar !== null && bar !== undefined && bar.getBoundingClientRect().width <= 760,
+      bar?.getBoundingClientRect().width,
+    );
+    const list = mount(
+      <TodoList session={{ ...session, status: "running", todos: [{ text: "Step", status: "pending" as const }] }} />,
+      1400,
+    );
+    REPLIES["learn.suggestions"] = [{ pattern: "pnpm test*", count: 4, example: "pnpm test --run" }];
+    const learnt = mount(<ApprovalSuggestion session={session} />, 1400);
+    await settle();
+    await settle();
+    delete REPLIES["learn.suggestions"];
+    const widths = [list, learnt].map((host) => (host.firstElementChild as HTMLElement | null)?.getBoundingClientRect().width ?? -1);
+    check(
+      "as do the checklist and the learned-approval bar above the box",
+      widths.every((width) => width > 0 && width <= 760),
+      widths,
+    );
+    useStore.setState({ messages: {} });
+  }
+
+  section("toasts");
+  {
+    // Found live: "Saved the conversation to …" sat over the composer for minutes.
+    useStore.setState({ toasts: [] });
+    useStore.getState().pushToast("info", "Saved it");
+    useStore.getState().pushToast("error", "It broke");
+    await new Promise((resolve) => setTimeout(resolve, TOAST_MS + 200));
+    const left = useStore.getState().toasts.map((t) => t.message);
+    check("a note goes away on its own, an error stays until dismissed", JSON.stringify(left) === '["It broke"]', left);
+    useStore.setState({ toasts: [] });
+  }
+
+  section("exporting a conversation");
+  {
+    const menu = mount(<SessionMenu session={session} />, 400);
+    await settle();
+    menu.querySelector("button")?.click();
+    await settle();
+    check(
+      "the session menu offers it as Markdown",
+      /Export as Markdown/.test(document.body.textContent ?? ""),
+      (menu.textContent ?? "").slice(0, 200),
+    );
+    menu.querySelector("button")?.click();
+    await settle();
+  }
+
+  section("learning from approvals");
+  {
+    REPLIES["learn.suggestions"] = [{ pattern: "pnpm test*", count: 4, example: "pnpm test --run" }];
+    const offer = mount(<ApprovalSuggestion session={session} />, 700);
+    await settle();
+    const text = offer.textContent ?? "";
+    check(
+      "a command approved again and again is offered for the allowlist, with how often",
+      text.includes("pnpm test*") && text.includes("4") &&
+        [...offer.querySelectorAll("button")].some((b) => /allowlist/i.test(b.textContent ?? "")) &&
+        [...offer.querySelectorAll("button")].some((b) => /Not this one/.test(b.textContent ?? "")),
+      text,
+    );
+    REPLIES["learn.suggestions"] = [];
+    const quiet = mount(<ApprovalSuggestion session={session} />, 700);
+    await settle();
+    check("and nothing is shown when there is nothing to offer", (quiet.textContent ?? "") === "", quiet.textContent);
+    delete REPLIES["learn.suggestions"];
+  }
+
+  section("trying the rules on recent calls");
+  {
+    REPLIES["policy.rehearse"] = [
+      { sessionId: "s1", title: "Fix the readme", action: "bash: git push origin main", allowed: false, rule: "Git Push", reason: "nobody asked for a push" },
+      { sessionId: "s1", title: "Fix the readme", action: "write: README.md", allowed: true },
+    ];
+    const rules = mount(
+      <AutoModeRules policy={{ environment: [], allow: [], deny: ["Git Push: no pushing"] }} onSave={() => undefined} />,
+      900,
+    );
+    await settle();
+    [...rules.querySelectorAll("button")].find((b) => /recent calls/i.test(b.textContent ?? ""))?.click();
+    await settle();
+    const said = rules.textContent ?? "";
+    check(
+      "the rules can be tried on recent calls before they are relied on",
+      /Would refuse 1 of 2/.test(said) && said.includes("git push origin main") && said.includes("Git Push"),
+      said.slice(-300),
+    );
+    delete REPLIES["policy.rehearse"];
+  }
+
+  section("a run of tool calls, collapsed");
+  {
+    const group = mount(
+      <ToolGroup
+        blocks={[
+          block({ id: "g1", tool: "edit", title: "edit", input: { path: "src/foo.ts" } }),
+          block({ id: "g2", tool: "mcp", title: "close_issue", input: {} }),
+          block({ id: "g3", tool: "mcp", title: "list_issues", input: {} }),
+          block({ id: "g4", tool: "bulk_read", title: "bulk_read", input: {} }),
+        ]}
+      />,
+    );
+    await settle();
+    check(
+      "counts the tools it has no word for, instead of leaving them out",
+      (group.textContent ?? "").includes("Updated foo.ts, used 3 tools"),
+      group.textContent,
+    );
+  }
+
+  section("a number typed into a settings field");
+  {
+    // What a person does: one key at a time onto whatever the field shows, each one parsed and saved.
+    const typeInto = async (input: HTMLInputElement, text: string): Promise<void> => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      input.focus();
+      setter.call(input, "");
+      for (const key of text) {
+        setter.call(input, input.value + key);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        await settle();
+      }
+      input.blur();
+      await settle();
+    };
+    // Like the settings pages: every keystroke saves a fresh config object, so the page re-renders.
+    const Field = ({ parse }: { parse: (text: string) => number | undefined }): React.ReactElement => {
+      const [saved, setSaved] = React.useState<{ value?: number }>({});
+      return (
+        <div>
+          <RowInput
+            value={saved.value === undefined ? "" : String(saved.value)}
+            onChange={(text) => setSaved({ value: parse(text) })}
+          />
+          <span data-saved>{String(saved.value)}</span>
+        </div>
+      );
+    };
+
+    const price = mount(<Field parse={money} />);
+    await settle();
+    await typeInto(price.querySelector("input")!, "0.25");
+    check(
+      "a price keeps its decimal point while it is typed",
+      price.querySelector("[data-saved]")?.textContent === "0.25",
+      price.querySelector("[data-saved]")?.textContent,
+    );
+
+    const clamped = mount(<Field parse={(text) => Math.max(10_000, Number(text) || 10_000)} />);
+    await settle();
+    await typeInto(clamped.querySelector("input")!, "500000");
+    check(
+      "and a floor applied as it is typed does not eat the first digit",
+      clamped.querySelector("[data-saved]")?.textContent === "500000",
+      clamped.querySelector("[data-saved]")?.textContent,
+    );
+  }
+
   section("the composer footer, by the width of its pane");
   {
     // A container query, not a media query: what has room is a property of the
@@ -1039,6 +1561,13 @@ async function run(): Promise<void> {
       "the settings page does not run off the side",
       host.scrollWidth <= host.clientWidth + 1,
       { scroll: host.scrollWidth, client: host.clientWidth },
+    );
+    // The effort dial's hint sends people here to mark a model as reasoning, so the switch must exist.
+    check(
+      "a model can be marked as reasoning, beside vision",
+      [...host.querySelectorAll("button")].some((b) => b.textContent === "reasoning") &&
+        [...host.querySelectorAll("button")].some((b) => b.textContent === "vision"),
+      [...host.querySelectorAll("button")].map((b) => b.textContent).filter(Boolean).slice(0, 20),
     );
     const narrow = mount(<ModelsTab />, 620);
     await settle();
@@ -1546,6 +2075,24 @@ async function run(): Promise<void> {
       !offered.includes("How it is configured"),
     );
 
+    // Picking the other model changed only the button; the row kept describing the first one.
+    const picker = host.querySelector("select") as HTMLSelectElement | null;
+    if (picker) {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(picker, "qwen3-4b");
+      picker.dispatchEvent(new Event("change", { bubbles: true }));
+      await settle();
+    }
+    check(
+      "the row describes the model picked, not the one it started with",
+      (host.textContent ?? "").includes("The default: the reliable one."),
+      host.textContent?.slice(0, 400),
+    );
+    if (picker) {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(picker, "qwen2.5-3b-instruct");
+      picker.dispatchEvent(new Event("change", { bubbles: true }));
+      await settle();
+    }
+
     // An interrupted download is the common case for two gigabytes on a
     // laptop, and it is resumed: the row offers what is left, not the lot.
     pushEvent({
@@ -1829,6 +2376,16 @@ async function run(): Promise<void> {
         /60 steps/.test(smart),
       smart,
     );
+    // Anthropic cannot be asked for no thinking, so the bottom of the scale sends `minimal`.
+    const lowest = mount(<EffortDial session={{ ...session, effort: 1 }} />, 200);
+    await settle();
+    lowest.querySelector("button")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await settle();
+    check(
+      "and at the bottom it says what is really sent, not 'No thinking'",
+      /Thinking minimal/.test(lowest.textContent ?? ""),
+      lowest.textContent,
+    );
     useStore.setState({ config: before });
   }
 
@@ -1915,6 +2472,42 @@ async function run(): Promise<void> {
         right?.textContent,
       );
     }
+
+    // With the editor or the files docked, the chat got 240px in a real window; the ring was cut off there.
+    const docked = mount(<Composer session={loaded} />, 240);
+    await settle();
+    const dockedRow = docked.querySelector("[data-footer]") as HTMLElement | null;
+    const percent = [...docked.querySelectorAll("[data-footer-right] span")].find((span) =>
+      /%$/.test(span.textContent ?? ""),
+    ) as HTMLElement | undefined;
+    check(
+      "with a pane docked beside it, the ring still fits on the line",
+      Boolean(dockedRow && percent) &&
+        percent!.getBoundingClientRect().right <= dockedRow!.getBoundingClientRect().right + 1 &&
+        dockedRow!.getBoundingClientRect().height < 30,
+      {
+        ring: Math.round(percent?.getBoundingClientRect().right ?? 0),
+        row: Math.round(dockedRow?.getBoundingClientRect().right ?? 0),
+        height: Math.round(dockedRow?.getBoundingClientRect().height ?? 0),
+      },
+    );
+
+    // Found live: with Files docked, the auto-approve and plan switches were clipped off the line.
+    const left = dockedRow?.firstElementChild as HTMLElement | null;
+    const switches = ['[aria-label="Asks before acting"], [aria-label="Auto-approve is on"]', '[aria-label="Plan first"], [aria-label="Plan mode is on"]'].map(
+      (selector) => docked.querySelector(selector) as HTMLElement | null,
+    );
+    check(
+      "and so do the auto-approve and plan switches",
+      Boolean(left) &&
+        switches.every(
+          (chip) => chip !== null && chip.getBoundingClientRect().right <= left!.getBoundingClientRect().right + 1,
+        ),
+      {
+        left: Math.round(left?.getBoundingClientRect().right ?? 0),
+        chips: switches.map((chip) => Math.round(chip?.getBoundingClientRect().right ?? -1)),
+      },
+    );
 
     // The path is what gives way, because it is the one thing here that is
     // long, repetitive and already in the title bar.
@@ -2546,6 +3139,22 @@ async function run(): Promise<void> {
       "the pane says what happened instead of throwing",
       (missing.textContent ?? "").includes("no such file or directory"),
       missing.textContent?.slice(0, 120),
+    );
+
+    // A turn updates the session every few seconds; the pane must not reload (and leave the folder) each time.
+    const entry = (name: string) => ({ name, path: `/w/${name}`, directory: false, size: 1, modifiedAt: 0 });
+    REPLIES.list = { path: "/w", entries: [entry("first.txt")] };
+    const browsing = mount(<FilesPane />, 420);
+    await settle();
+    REPLIES.list = { path: "/w", entries: [entry("reloaded.txt")] };
+    useStore.setState({
+      sessions: useStore.getState().sessions.map((s) => ({ ...s, status: "running" as const })),
+    });
+    await settle();
+    check(
+      "a session update that is not a move does not reload the pane",
+      (browsing.textContent ?? "").includes("first.txt") && !(browsing.textContent ?? "").includes("reloaded.txt"),
+      browsing.textContent?.slice(0, 160),
     );
     REPLIES.list = saved;
   }
@@ -3239,6 +3848,39 @@ async function run(): Promise<void> {
     await settle();
     check("back at the end, it follows again", distance() <= 4, distance());
 
+    // Output landing inside a block grows the transcript without a render of the
+    // chat: the reported bug was a turn whose end slid out of view while you watched.
+    const output = document.createElement("div");
+    output.style.height = "300px";
+    (el.firstElementChild as HTMLElement).appendChild(output);
+    await settle();
+    check(
+      "output growing inside a block while you are at the end keeps you at the end",
+      distance() <= 4,
+      distance(),
+    );
+    output.remove();
+    el.scrollTop = el.scrollHeight;
+    await settle();
+
+    // Approving is a click at the end too, and what follows it is the turn going on.
+    (el.firstElementChild as HTMLElement).dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    const after = document.createElement("div");
+    after.style.height = "300px";
+    (el.firstElementChild as HTMLElement).appendChild(after);
+    await settle();
+    check(
+      "a click that opens nothing, like approving, does not stop the view following",
+      distance() <= 4,
+      distance(),
+    );
+    after.remove();
+    el.scrollTop = el.scrollHeight;
+    await settle();
+
+    // What a person does to open something: they click it. That is the signal it is not output.
+    (el.firstElementChild as HTMLElement).dispatchEvent(new Event("pointerdown", { bubbles: true }));
     const filler = document.createElement("div");
     filler.style.height = "600px";
     (el.firstElementChild as HTMLElement).appendChild(filler);
@@ -3279,6 +3921,18 @@ async function run(): Promise<void> {
         distance: distance(),
       },
     );
+
+    // Found live: a side answer above the box made it taller, and the turn's end slid under it.
+    const taller = document.createElement("div");
+    taller.style.cssText = "height:200px;flex-shrink:0";
+    el.parentElement!.appendChild(taller);
+    await settle();
+    check(
+      "the box growing below the chat keeps the end in view",
+      distance() <= 4,
+      distance(),
+    );
+    taller.remove();
 
     useStore.setState({ messages: {} });
   }

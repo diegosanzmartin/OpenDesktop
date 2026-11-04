@@ -6,13 +6,13 @@ import type { AgentConfig, AppConfig, Block, Permissions } from '@shared/types'
 import { type Savings } from '@shared/savings'
 import {
   PermissionDenied,
-  autoApproveNow,
   decide,
   isGranted,
   pathsWrittenOutside,
   requestApproval,
   withoutPrompts
 } from '../approvals'
+import { hasPolicy, judgeCall, policyPaused } from '../auto-policy'
 import { diffStats, renderDiff } from '../diff'
 import { shellQuote, type Runtime } from '../runtime'
 import {
@@ -126,29 +126,55 @@ interface PermissionSpec {
  * runs, then asks, then writes — and asks with exactly the same wording,
  * denylist and session grants as every other one.
  */
-async function askPermission(ctx: ToolContext, block: Block, spec: PermissionSpec): Promise<void> {
-  /*
-   * Read at the moment of the question, not when the turn began.
-   *
-   * The switch is turned on *while* a turn is stopped at a prompt, and a value
-   * captured at the top of the turn made that click look like it did nothing:
-   * the card in front of the person went on asking. Reading it here also makes
-   * the app-wide default apply to a session that never chose for itself, rather
-   * than the value the config held on the day that session was made.
-   */
-  const autoApprove = autoApproveNow(
-    store.getSession(ctx.sessionId),
-    ctx.config,
-    ctx.runtime.kind === 'container'
-  )
-  // The context already holds the session's permissions; this only lifts the
-  // `ask` out of them. Lifted here rather than in the runner so that the
-  // answer is the one the switch has at this moment, not the one it had when
-  // the turn started — the switch is usually flipped while a turn is parked on
-  // exactly this question.
-  const permissions = autoApprove ? withoutPrompts(ctx.permissions) : ctx.permissions
+// The conversation's switch, read now: it can be flipped while a turn runs. Never flipped, the turn's value stands.
+function autoNow(ctx: ToolContext): boolean {
+  if (ctx.runtime.kind === 'container') return false
+  const session = store.getSession(ctx.sessionId)
+  return (session ? store.rootOf(session).autoApprove : undefined) ?? ctx.autoApprove === true
+}
 
-  const decision = decide(permissions, spec.key, spec.command)
+function needsPerson(
+  ctx: ToolContext,
+  tool: string,
+  spec: PermissionSpec,
+  decision: ReturnType<typeof decide>,
+  auto: boolean
+): boolean {
+  const outsideWrite = (spec.writesOutside?.length ?? 0) > 0 && !auto
+  const mode = (spec.outsideCwd || outsideWrite) && decision.mode === 'allow' && !auto ? 'ask' : decision.mode
+  return (
+    mode === 'ask' &&
+    (outsideWrite || ((!decision.preapproved || spec.forceAsk === true) && !isGranted(ctx.sessionId, tool, spec.command)))
+  )
+}
+
+// What the policy judge is shown: the call as the approval card would show it.
+function actionOf(block: Block, spec: PermissionSpec): string {
+  const outside = spec.writesOutside?.length ? `\nWrites outside the working folder: ${spec.writesOutside.join(', ')}` : ''
+  const preview = spec.preview ? `\n${spec.preview.slice(0, 1500)}` : ''
+  return `${block.tool}: ${spec.command ?? spec.detail}${outside}${preview}`
+}
+
+// Plan mode, read now so switching it reaches a running turn; a subagent follows its conversation.
+function planModeOn(ctx: ToolContext): boolean {
+  const session = store.getSession(ctx.sessionId)
+  return session ? store.rootOf(session).planMode === true : false
+}
+
+// What plan mode lets through: reading, fetching, and shell commands the allowlist calls read-only.
+function readOnly(ctx: ToolContext, spec: PermissionSpec): boolean {
+  if (spec.key === 'read' || spec.key === 'fetch') return true
+  return spec.key === 'bash' && decide(ctx.permissions, 'bash', spec.command).preapproved
+}
+
+async function askPermission(ctx: ToolContext, block: Block, spec: PermissionSpec): Promise<void> {
+  if (planModeOn(ctx) && !readOnly(ctx, spec)) {
+    const why = 'plan mode — nothing is changed until the person approves the plan; put this step in it'
+    store.updateBlock(ctx.sessionId, block.id, { status: 'error', error: `Not run: ${why}`, endedAt: Date.now() })
+    throw new PermissionDenied(spec.detail, why)
+  }
+  const auto = autoNow(ctx)
+  const decision = decide(auto ? withoutPrompts(ctx.permissions) : ctx.permissions, spec.key, spec.command)
   if (decision.mode === 'deny') {
     store.updateBlock(ctx.sessionId, block.id, {
       status: 'error',
@@ -160,12 +186,26 @@ async function askPermission(ctx: ToolContext, block: Block, spec: PermissionSpe
     throw new PermissionDenied(spec.detail, decision.deniedBy ?? `${spec.key} is set to deny`)
   }
 
-  const outsideWrite = (spec.writesOutside?.length ?? 0) > 0 && !autoApprove
-  const mode = (spec.outsideCwd || outsideWrite) && decision.mode === 'allow' && !autoApprove ? 'ask' : decision.mode
-  const needsAsk =
-    mode === 'ask' &&
-    (outsideWrite ||
-      ((!decision.preapproved || spec.forceAsk === true) && !isGranted(ctx.sessionId, block.tool, spec.command)))
+  let needsAsk = needsPerson(ctx, block.tool, spec, decision, auto)
+  const asksWithoutAuto = () => needsPerson(ctx, block.tool, spec, decide(ctx.permissions, spec.key, spec.command), false)
+  let cardNote: string | undefined
+  if (auto && hasPolicy(ctx.config) && asksWithoutAuto()) {
+    const action = actionOf(block, spec)
+    const paused = policyPaused(ctx.sessionId)
+    const verdict = paused ? null : await judgeCall(ctx.config, ctx.sessionId, action, ctx.cwd)
+    if (verdict && !verdict.allowed) {
+      const why = `auto-approve policy — ${verdict.rule || 'a deny rule'}: ${verdict.reason || 'no reason given'}`
+      store.updateBlock(ctx.sessionId, block.id, {
+        status: 'error',
+        error: `Blocked by the ${why}`,
+        endedAt: Date.now(),
+        policyBlocked: { action }
+      })
+      throw new PermissionDenied(spec.detail, why)
+    }
+    needsAsk = verdict === null
+    cardNote = paused ?? (verdict === null ? 'The auto-approve judge could not answer; this one is yours to decide.' : undefined)
+  }
   if (!needsAsk) return
 
   const was = store.getBlock(ctx.sessionId, block.id)?.status
@@ -180,11 +220,13 @@ async function askPermission(ctx: ToolContext, block: Block, spec: PermissionSpe
     summary: block.subtitle,
     preview: spec.preview,
     command: spec.command,
-    ...(outsideWrite ? { outside: spec.writesOutside } : {}),
+    ...(spec.writesOutside?.length ? { outside: spec.writesOutside } : {}),
+    ...(cardNote ? { note: cardNote } : {}),
     environmentId: ctx.environmentId,
     cwd: ctx.cwd
   })
-  store.setSessionStatus(ctx.sessionId, 'running')
+  // A card refused by Stop: the session is idle already, and running again announced a second end.
+  if (!ctx.signal.aborted) store.setSessionStatus(ctx.sessionId, 'running')
   if (answer === 'reject') {
     store.updateBlock(ctx.sessionId, block.id, {
       status: 'canceled',
@@ -396,6 +438,19 @@ export async function externalTools(
       }
     )
   )
+}
+
+const writing = new Map<string, Promise<unknown>>()
+
+/** Runs one change to a file after the last one finished, so two edits in a step both land. */
+function oneAtATime<T>(path: string, change: () => Promise<T>): Promise<T> {
+  const previous = writing.get(path) ?? Promise.resolve()
+  const next = previous.catch(() => undefined).then(change)
+  writing.set(path, next)
+  void next.finally(() => {
+    if (writing.get(path) === next) writing.delete(path)
+  }).catch(() => undefined)
+  return next
 }
 
 export function createTools(ctx: ToolContext): ToolSet {
@@ -767,7 +822,7 @@ export function createTools(ctx: ToolContext): ToolSet {
         }
         const after = replace_all
           ? before.split(old_string).join(new_string)
-          : before.replace(old_string, new_string)
+          : before.replace(old_string, () => new_string)
         const preview = renderDiff(before, after)
         const stats = diffStats(before, after)
         return withBlock(
@@ -781,13 +836,26 @@ export function createTools(ctx: ToolContext): ToolSet {
             removed: stats.removed,
             permission: { key: 'edit', detail: `Edit ${resolved}`, preview }
           },
-          async (block) => {
-            const warning = writeWarning(ctx.sessionId, resolved)
-            await ctx.runtime.writeFile(resolved, after)
-            recordWrite(ctx.sessionId, resolved)
-            store.appendBlockOutput(ctx.sessionId, block.id, preview)
-            return { output: `Edited ${resolved} (+${stats.added} −${stats.removed}).` + warning }
-          }
+          async (block) =>
+            oneAtATime(resolved, async () => {
+              // Applied to the file as it is now: another edit may have landed since it was read above.
+              const current = await ctx.runtime.readFile(resolved)
+              const found = current.split(old_string).length - 1
+              if (found === 0 || (found > 1 && !replace_all)) {
+                throw new Error(
+                  `${resolved} changed while this edit waited and old_string now appears ${found} times. ` +
+                    'Read the file again and match the exact text.'
+                )
+              }
+              const applied = replace_all
+                ? current.split(old_string).join(new_string)
+                : current.replace(old_string, () => new_string) // a function: `$$` or `$&` in the text stay as written
+              const warning = writeWarning(ctx.sessionId, resolved)
+              await ctx.runtime.writeFile(resolved, applied)
+              recordWrite(ctx.sessionId, resolved)
+              store.appendBlockOutput(ctx.sessionId, block.id, preview)
+              return { output: `Edited ${resolved} (+${stats.added} −${stats.removed}).` + warning }
+            })
         )
       }
     })
@@ -1387,6 +1455,36 @@ export function createTools(ctx: ToolContext): ToolSet {
    * credential only a person has, a decision that is not the agent's to make.
    * Without this the agent's only options are to guess or to give up quietly.
    */
+  /*
+   * The agent's checklist, as Claude Code, Cursor and OpenCode keep one: the
+   * whole list each time, so there is nothing to reconcile, kept on the session
+   * and drawn above the composer rather than as a block in the transcript.
+   */
+  tools.todo = tool({
+    description:
+      'Keep a checklist of the steps of the work in hand, shown to the person as you go. Use it ' +
+      'for work of three or more steps; skip it for a one-step answer. Send the whole list every ' +
+      'time. Keep exactly one step in_progress while you work, and mark a step done as soon as it is. ' +
+      'Send each update in the same step as your next other call, not as a step of its own: every ' +
+      'step resends the conversation.',
+    inputSchema: z.object({
+      items: z
+        .array(
+          z.object({
+            text: z.string().describe('The step, as a short imperative.'),
+            status: z.enum(['pending', 'in_progress', 'done'])
+          })
+        )
+        .describe('The whole list, in order.')
+    }),
+    execute: async ({ items }) => {
+      store.updateSession(ctx.sessionId, { todos: items })
+      const done = items.filter((item) => item.status === 'done').length
+      const now = items.find((item) => item.status === 'in_progress')
+      return { output: `Checklist saved: ${done} of ${items.length} done${now ? `; now: ${now.text}` : ''}.` }
+    }
+  })
+
   tools.need_human = tool({
     description:
       'Stop and hand this task back to a person. Use when you cannot continue without ' +

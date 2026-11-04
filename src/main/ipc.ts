@@ -8,6 +8,7 @@ import {
   CONFIG_PATH,
   rawConfig,
   readConfigText,
+  normalizeConfig,
   resolvedConfig,
   saveConfig,
   writeConfigText,
@@ -28,7 +29,7 @@ import {
 } from "./local-model";
 import { meterSnapshot, resetMeter } from "./meter";
 import { logLine, logPath } from "./log";
-import { notificationsSupported, testNotification } from "./notifications";
+import { notificationsSupported, takePendingFocus, testNotification } from "./notifications";
 import { describeError } from "@shared/errors";
 import { readForEditor, writeFromEditor } from "./editor";
 import { describeNeighbours } from "./coordination";
@@ -53,12 +54,17 @@ import * as history from "./history";
 import {
   compactNow,
   isRunning,
-  queueFollowUp,
-  runTurn,
   stop,
+  allowAndRetry,
 } from "./agent/runner";
+import { acceptSuggestion, dismissSuggestion, recordApproval, suggestions } from "./learn";
+import { askAside } from "./aside";
+import { sendMessage } from "./send";
+import { rehearsePolicy } from "./auto-policy";
+import { exportSession } from "./export";
 import { forkFrom, rewind } from "./rewind";
 import {
+  approveWaiting,
   deniedSegment,
   listPending,
   releasePending,
@@ -483,7 +489,9 @@ export function registerIpc(): void {
           bus.emit({ type: "toast", level: "warn", message: removal.error });
         else store.updateSession(id, { worktree: undefined });
       }
-      return store.updateSession(id, patch);
+      const updated = store.updateSession(id, patch);
+      if (patch.autoApprove === true) approveWaiting(resolvedConfig(), id);
+      return updated;
     },
   );
   /**
@@ -617,6 +625,9 @@ export function registerIpc(): void {
     },
   );
   ipcMain.handle("session:compact", (_e, id: string) => compactNow(id));
+  ipcMain.handle("session:aside", (_e, id: string, question: string) =>
+    askAside(id, question),
+  );
   ipcMain.handle("session:rewind", (_e, id: string, messageId: string) =>
     rewind(id, messageId),
   );
@@ -865,61 +876,44 @@ export function registerIpc(): void {
   /* ---------- turns ---------- */
   ipcMain.handle(
     "turn:send",
-    async (_e, sessionId: string, text: string, attachments?: Attachment[]) => {
-      // On a board, the column the card sits in decides whether this runs now
-      // or joins the queue. That is what the column is for: a task in To do
-      // means "do this when there is room", and honouring it here is what lets
-      // a person line up ten tasks through the ordinary composer.
-      const session = store.getSession(sessionId);
-      const board = session?.boardId ? getBoard(session.boardId) : undefined;
-      const column = board && findColumn(board, session!.columnId);
-
-      if (
-        session &&
-        column &&
-        (column.kind === "todo" || column.kind === "backlog")
-      ) {
-        store.updateSession(session.id, {
-          queuedPrompt: text,
-          status: column.kind === "todo" ? "queued" : "idle",
-          title:
-            session.title === "New task" || session.title === "New session"
-              ? text.replace(/\s+/g, " ").slice(0, 70) || session.title
-              : session.title,
-        });
-        void tick();
-        return true;
-      }
-
-      /*
-       * Typing while it works is not an error. The message waits and goes as
-       * the next turn the moment this one stops — the alternative was a silent
-       * refusal, and the thought being gone by the time the turn ended.
-       */
-      if (isRunning(sessionId)) {
-        queueFollowUp(sessionId, text);
-        return true;
-      }
-
-      void runTurn({ sessionId, userText: text, attachments }).catch(
-        () => undefined,
-      );
-      return true;
-    },
+    (_e, sessionId: string, text: string, attachments?: Attachment[]) =>
+      sendMessage(sessionId, text, attachments),
   );
   ipcMain.handle("turn:stop", (_e, sessionId: string) => stop(sessionId));
 
   /* ---------- approvals ---------- */
   ipcMain.handle("approval:list", () => listPending());
   ipcMain.handle(
+    "approval:allowBlocked",
+    (_e, sessionId: string, blockId: string) => {
+      // Not awaited: when no turn is running this starts one, which takes as long as it takes.
+      void allowAndRetry(sessionId, blockId).catch(() => undefined);
+    },
+  );
+  ipcMain.handle(
     "approval:resolve",
-    (_e, id: string, answer: ApprovalAnswer, note?: unknown) =>
+    (_e, id: string, answer: ApprovalAnswer, note?: unknown) => {
+      // Only a person's own yes counts towards an allowlist suggestion.
+      const request = listPending().find((pending) => pending.id === id);
+      if (request && answer !== "reject") recordApproval(request);
       resolveApproval(
         id,
         answer,
         typeof note === "string" ? note.slice(0, 2000) : undefined,
-      ),
+      );
+    },
   );
+  ipcMain.handle("learn:suggestions", () => suggestions(resolvedConfig()));
+  ipcMain.handle("policy:rehearse", (_e, rules: unknown) => {
+    // Sanitised the way the config is, since these come from boxes being typed in.
+    const policy = normalizeConfig({ autoMode: rules }).autoMode;
+    return policy ? rehearsePolicy(resolvedConfig(), policy) : [];
+  });
+  ipcMain.handle("learn:accept", (_e, pattern: string) => {
+    acceptSuggestion(pattern);
+    bus.emit({ type: "config.updated", config: rawConfig() });
+  });
+  ipcMain.handle("learn:dismiss", (_e, pattern: string) => dismissSuggestion(pattern));
 
   /* ---------- activity ---------- */
   ipcMain.handle("blocks:all", (_e, limit?: number) =>
@@ -1136,6 +1130,16 @@ export function registerIpc(): void {
    * fetched over the same connection that made it rather than needing the user
    * to go and find it there.
    */
+  ipcMain.handle("session:export", async (_e, id: string) => {
+    const session = store.getSession(id);
+    if (!session) return { saved: false };
+    const name = `${(session.title || "conversation").replace(/[^\w\- ]+/g, "").trim().slice(0, 60) || "conversation"}.md`;
+    const result = await dialog.showSaveDialog({ defaultPath: name, title: "Export conversation" });
+    if (result.canceled || !result.filePath) return { saved: false };
+    exportSession(id, result.filePath);
+    bus.emit({ type: "toast", level: "info", message: `Saved the conversation to ${result.filePath}` });
+    return { saved: true, path: result.filePath };
+  });
   ipcMain.handle(
     "fs:download",
     async (_e, environmentId: string, path: string, sessionId?: string) => {
@@ -1172,6 +1176,7 @@ export function registerIpc(): void {
     return result.canceled ? null : result.filePaths[0];
   });
   ipcMain.handle("host:logPath", () => logPath());
+  ipcMain.handle("host:pendingFocus", () => takePendingFocus());
   ipcMain.handle("host:revealLog", () => shell.showItemInFolder(logPath()));
   ipcMain.handle("host:openExternal", (_e, url: string) =>
     /^https?:\/\//i.test(url) ? shell.openExternal(url) : undefined,

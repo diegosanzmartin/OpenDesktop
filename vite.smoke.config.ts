@@ -21,7 +21,8 @@ export default defineConfig({
         'ui-check': resolve('src/main/ui-check.ts'),
         'local-check': resolve('src/main/local-check.ts'),
         'mcp-check': resolve('src/main/mcp-check.ts'),
-        'live-check': resolve('src/main/live-check.ts')
+        'live-check': resolve('src/main/live-check.ts'),
+        'policy-check': resolve('src/main/policy-check.ts')
       },
       external: [...Object.keys(pkg.dependencies), 'ai/test', 'electron', 'cpu-features', /^node:/],
       output: { format: 'esm', entryFileNames: '[name].mjs' }

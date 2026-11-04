@@ -3,7 +3,10 @@ import { DEFAULT_NOTIFICATIONS, decideNotice, noticeContent } from '../src/share
 import * as store from '../src/main/store'
 import { boot, newSession } from './helpers'
 
-const os = vi.hoisted(() => ({ shown: [] as { options: { title: string; body: string }; emit: (event: string, ...args: unknown[]) => void }[] }))
+const os = vi.hoisted(() => ({
+  shown: [] as { options: { title: string; body: string }; emit: (event: string, ...args: unknown[]) => void }[],
+  appEvents: [] as string[]
+}))
 
 vi.mock('electron', async () => {
   const { EventEmitter } = await import('node:events')
@@ -16,10 +19,10 @@ vi.mock('electron', async () => {
       os.shown.push(this)
     }
   }
-  return { Notification, BrowserWindow: { getAllWindows: () => [] }, app: { setAppUserModelId: () => {} } }
+  return { Notification, BrowserWindow: { getAllWindows: () => [] }, app: { setAppUserModelId: () => {}, emit: (event: string) => os.appEvents.push(event) } }
 })
 
-const { startNotifications, testNotification } = await import('../src/main/notifications')
+const { startNotifications, takePendingFocus, testNotification } = await import('../src/main/notifications')
 
 beforeAll(() => {
   boot()
@@ -83,5 +86,20 @@ describe('the notifications the app sends', () => {
     const result = testNotification()
     os.shown[0].emit('failed', {}, 'not allowed')
     expect(await result).toBe(false)
+  })
+})
+
+describe('a click with every window closed', () => {
+  // macOS keeps the app running with no window; the click used to do nothing at all.
+  test('opens a window and leaves the conversation for it to show', () => {
+    const session = newSession({ title: 'Closed window' })
+    store.setSessionStatus(session.id, 'running')
+    store.setSessionStatus(session.id, 'idle')
+    const notice = os.shown.at(-1)
+    expect(notice).toBeDefined()
+    notice!.emit('click')
+    expect(os.appEvents).toContain('activate')
+    expect(takePendingFocus()).toBe(session.id)
+    expect(takePendingFocus()).toBeNull()
   })
 })

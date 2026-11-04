@@ -35,10 +35,14 @@ import { isAbort } from "@shared/errors";
 import { budgetFor } from "@shared/context";
 import { effectivePermissions, resolvedConfig } from "../config";
 import { bus } from "../bus";
+import { allowOnce, resetPolicyBreaker } from "../auto-policy";
+import { runVerify, verifyCommandFor } from "../verify";
+import { checkCompletion, unfinishedNote } from "../completion";
 import {
   PermissionDenied,
+  autoApproving,
   cancelSessionApprovals,
-  withoutPrompts,
+  changesFiles,
 } from "../approvals";
 import { resolveModel } from "../providers";
 import { getRuntime, type Runtime } from "../runtime";
@@ -67,6 +71,23 @@ import { modelAcceptsImages, readAttachment } from "../attachments";
 
 const controllers = new Map<string, AbortController>();
 
+/** The conversation as the running turn's latest step was handed it: every call already has its result. */
+const live = new Map<string, ModelMessage[]>();
+
+/** What a side question sees of a turn still running; nothing once it ends. */
+export function liveConversation(sessionId: string): ModelMessage[] | undefined {
+  return live.get(sessionId);
+}
+
+/** Steps between readings of the pinned instructions within one turn (step 0 always). */
+const PIN_EVERY = 8;
+
+/** How many times one message may be carried on because a check found it unfinished. */
+const MAX_COMPLETION_CHECKS = 2;
+
+/** Tool calls in a turn after which an agent without a checklist is asked to keep one. */
+const PLAN_AFTER_CALLS = 6;
+
 export function isRunning(sessionId: string): boolean {
   return controllers.has(sessionId);
 }
@@ -74,11 +95,8 @@ export function isRunning(sessionId: string): boolean {
 /**
  * Adds something to say to a turn that is already running.
  *
- * It is not delivered mid-turn. The model is in the middle of a step with a
- * prefix it has already been charged for, and splicing a message into that is
- * how a tool call ends up answered by the wrong turn. It goes as the next turn
- * instead, the moment this one stops — which is what the person meant by
- * typing it, and what other clients do with the same gesture.
+ * The running turn reads it before its next step, after the results it is
+ * waiting on; typed during the last step, it goes as a turn of its own.
  */
 export function queueFollowUp(sessionId: string, text: string): void {
   const session = store.getSession(sessionId);
@@ -86,6 +104,67 @@ export function queueFollowUp(sessionId: string, text: string): void {
   store.updateSession(sessionId, {
     queuedFollowUps: [...(session.queuedFollowUps ?? []), text.trim()],
   });
+}
+
+/** What was typed for a running turn and not yet taken by it; empties the queue. */
+function takeQueued(sessionId: string): string[] {
+  const waiting = store.getSession(sessionId)?.queuedFollowUps ?? [];
+  if (waiting.length > 0) store.updateSession(sessionId, { queuedFollowUps: undefined });
+  return waiting;
+}
+
+/** A message typed mid-turn, and where it joined: after `at` of the turn's own messages. */
+interface Steered {
+  at: number;
+  text: string;
+}
+
+/**
+ * The messages with what was typed mid-turn put back where it joined.
+ *
+ * The SDK hands each step the conversation without what an earlier step's
+ * prepareStep added, so it is re-inserted on every step — at the same place,
+ * which keeps the prefix (and the provider's cache) the same from step to step.
+ */
+function withSteering<T>(messages: T[], from: number, steered: Steered[], toMessage: (text: string) => T): T[] {
+  if (steered.length === 0) return messages;
+  const out = messages.slice(0, from);
+  const rest = messages.slice(from);
+  let next = 0;
+  for (let i = 0; i <= rest.length; i++) {
+    while (next < steered.length && steered[next].at === i) out.push(toMessage(steered[next++].text));
+    if (i < rest.length) out.push(rest[i]);
+  }
+  return out;
+}
+
+/**
+ * The person overrules a refusal of the auto-approve rules: that exact call is
+ * allowed once, and the agent is told to make it again — at its next step when
+ * a turn is running, as a turn of its own otherwise.
+ */
+export async function allowAndRetry(sessionId: string, blockId: string): Promise<void> {
+  const block = store.getBlock(sessionId, blockId);
+  const action = block?.policyBlocked?.action;
+  if (!block || !action) return;
+  allowOnce(sessionId, action);
+  const call =
+    typeof block.input.command === "string" ? block.input.command : block.title;
+  const text = `I allow the call the auto-approve rules refused; make it again exactly as before: ${call}`;
+  if (isRunning(sessionId)) {
+    queueFollowUp(sessionId, text);
+    return;
+  }
+  /*
+   * A subagent that has finished cannot be woken as a turn of its own: run at
+   * the top level, its answer would reach nobody. The conversation the person
+   * opened makes the call instead, allowed once there too.
+   */
+  const session = store.getSession(sessionId);
+  const root = session ? store.rootOf(session).id : sessionId;
+  if (root !== sessionId) allowOnce(root, action);
+  if (isRunning(root)) queueFollowUp(root, text);
+  else await runTurn({ sessionId: root, userText: text });
 }
 
 /**
@@ -155,6 +234,7 @@ export function stop(sessionId: string): void {
   cancelSessionApprovals(sessionId);
   controllers.get(sessionId)?.abort();
   controllers.delete(sessionId);
+  live.delete(sessionId);
   store.setSessionStatus(sessionId, "idle");
 }
 
@@ -1017,7 +1097,8 @@ interface TurnInput {
    * already there. `attempt` counts how many times it has been asked, so a
    * model that says nothing however often it is asked is eventually left alone.
    */
-  continuation?: { attempt: number; messageId: string };
+  /** `missing`: carried on because a check found part of the request undone; `checks`: how many times so far. */
+  continuation?: { attempt: number; messageId: string; missing?: string; checks?: number };
 }
 
 /**
@@ -1136,7 +1217,7 @@ export async function runTurn(input: TurnInput): Promise<string> {
    * answer belongs at the end of it, under the blocks it is about, rather than
    * as a second reply with no question in front of it.
    */
-  const assistant: Message =
+  let assistant: Message =
     (continuing
       ? store
           .listMessages(session.id)
@@ -1169,6 +1250,9 @@ export async function runTurn(input: TurnInput): Promise<string> {
    * (both belong to the end of a turn, not to an attempt).
    */
   let willContinue = false;
+  // A check after the turn found part of the request undone: carry on with this.
+  let unfinished: string | null = null;
+  let callsThisTurn = 0;
 
   /**
    * Armed when the request goes out, cleared by the first thing that comes
@@ -1363,9 +1447,10 @@ export async function runTurn(input: TurnInput): Promise<string> {
     // an exploit is the opposite of the "explicit supervision" the whole feature
     // is built around, so the container kind overrides the switch.
     const autoApprove =
-      runtime.kind === "container"
-        ? false
-        : (session.autoApprove ?? config.autoApprove ?? false);
+      runtime.kind === "container" ? false : autoApproving(config, session.id);
+    const planMode = store.rootOf(session).planMode === true;
+    // A judge that kept refusing last turn is trusted again: the person has spoken since.
+    resetPolicyBreaker(session.id);
     const savings = await announceSavingsProblems({
       config,
       sessionId: session.id,
@@ -1417,14 +1502,12 @@ export async function runTurn(input: TurnInput): Promise<string> {
       // model ends up with five schemas instead of a dozen.
       agent: harness,
       /*
-       * The session's own permissions. Auto-approve is read from the session,
-       * falling back to the app's default, and it only ever removes the
-       * prompt: `deny` stays denied and the denylist is checked before any of
-       * this is consulted.
+       * The session's own permissions, as configured. Auto-approve is applied
+       * when a call would ask (`askPermission`), so flipping the switch reaches
+       * a turn already running; it only ever removes the prompt: `deny` stays
+       * denied and the denylist is checked before any of this is consulted.
        */
-      permissions: autoApprove
-        ? withoutPrompts(effectivePermissions(config, agent.id))
-        : effectivePermissions(config, agent.id),
+      permissions: effectivePermissions(config, agent.id),
       autoApprove,
       sessionId: session.id,
       environmentId: session.environmentId,
@@ -1525,7 +1608,9 @@ export async function runTurn(input: TurnInput): Promise<string> {
      * had asked twice.
      */
     const lead = continuing
-      ? continuationNote(continuing.attempt)
+      ? continuing.missing
+        ? unfinishedNote(continuing.missing)
+        : continuationNote(continuing.attempt)
       : (input.handover ?? "") +
         expanded.prompt +
         mentionDirective(config, input.userText);
@@ -1581,6 +1666,12 @@ export async function runTurn(input: TurnInput): Promise<string> {
         ? `\n\n# Language\nWrite every message to the user in ${config.language.trim()}, ` +
           `whatever language the files, the tools or these instructions are in.`
         : "") +
+      (planMode
+        ? `\n\n# Plan mode\nThe person wants a plan before any change. Read, search and run ` +
+          `read-only commands as you need; anything that writes, edits or changes state is refused. ` +
+          `End your answer with the plan: numbered steps, the files involved, and how you will check ` +
+          `the result. The person runs it when they approve it.`
+        : "") +
       (brief ? briefSection(brief) : "") +
       (slim
         ? ""
@@ -1635,6 +1726,15 @@ export async function runTurn(input: TurnInput): Promise<string> {
         : {}),
     };
 
+    const verifyCommand = verifyCommandFor(config, session.cwd);
+    let planReminded = false;
+    // Messages typed mid-turn: where each joined the model's view, and which the transcript has yet to show.
+    const steered: Steered[] = [];
+    const toShow: string[] = [];
+    let opening = 0;
+    // Messages this turn has added between steps, so a typed message's place among the turn's own is known.
+    let added = 0;
+    let budgetNoted = false;
     const result = streamText({
       model: resolved.model,
       system: systemText,
@@ -1687,50 +1787,117 @@ export async function runTurn(input: TurnInput): Promise<string> {
        * what is left, at the end of the messages so the prefix — and the
        * cache — is untouched. The ceiling stays as the backstop it should be.
        */
-      prepareStep: ({ messages: soFar, stepNumber, steps: done }) => {
-        const base = dropReasoning
-          ? pruneMessages({ messages: soFar, reasoning: "all" })
-          : soFar;
-        // The first step is the one the conversation already opened with.
-        if (stepNumber === 0) return dropReasoning ? { messages: base } : {};
+      prepareStep: async ({ messages: soFar, stepNumber, steps: done }) => {
+        /*
+         * What this returns is where the next step starts: the SDK carries it on.
+         * So everything here is added once, at the end, and never re-added — which
+         * also keeps the prefix, and the provider's cache, the same from step to
+         * step. Re-adding it every step piled up copies (found live: a message
+         * typed mid-turn reached the model three times).
+         */
+        live.set(session.id, soFar);
+        if (stepNumber === 0) opening = soFar.length;
         const notes: string[] = [];
-        const { count: repeats, call: repeated } = repeatedCalls(done);
-        if (repeats >= LOOP_WARN_AT) {
-          notes.push(
-            `<loop>You have made the same call ${repeats} times in a row with the same result: ` +
-              `${repeated.slice(0, 200)}. It will not change. Use what you already have: answer, ` +
-              `or try something different. The turn stops at ${LOOP_STOP_AT}.</loop>`,
-          );
+        // Typed while the turn works: it joins here, after the last step's results.
+        const typed = stepNumber > 0 ? takeQueued(session.id) : [];
+        if (typed.length > 0) {
+          const said = typed.join("\n\n");
+          // Its place among the turn's own messages, for the conversation as saved.
+          steered.push({ at: soFar.length - opening - added, text: said });
+          toShow.push(said);
+          notes.push(said);
         }
-        const ceiling = config.maxTurnTokens ?? 0;
-        if (ceiling > 0) {
-          const used = spent();
-          if (used >= ceiling * 0.6) {
-            const left = Math.max(0, ceiling - used);
+        if (stepNumber > 0) {
+          // The person's check for this folder, after a step that changed a file.
+          const edited = done
+            .at(-1)
+            ?.toolResults.some(
+              (r) =>
+                r.toolName === "write" ||
+                r.toolName === "edit" ||
+                (r.toolName === "bash" &&
+                  typeof (r.input as { command?: unknown }).command === "string" &&
+                  changesFiles((r.input as { command: string }).command)),
+            );
+          if (edited && verifyCommand) {
+            const failed = await runVerify({
+              command: verifyCommand,
+              runtime,
+              cwd: session.cwd,
+              sessionId: session.id,
+              messageId: assistant.id,
+              environmentId: session.environmentId,
+              agentId: agent.id,
+              signal: controller.signal,
+            });
+            if (failed) notes.push(failed);
+          }
+          const { count: repeats, call: repeated } = repeatedCalls(done);
+          // Every step of a loop, on purpose: it must be the last thing read before the stop,
+          // and the copies are bounded by LOOP_STOP_AT, unlike the budget note's.
+          if (repeats >= LOOP_WARN_AT) {
             notes.push(
-              `<budget>This turn has been charged for ${used.toLocaleString("en-US")} tokens of ` +
-                `the ${ceiling.toLocaleString("en-US")} it may spend; about ` +
-                `${left.toLocaleString("en-US")} are left. Bring what you are doing to a close and ` +
-                `report what you have — findings, what is still open, and what you would do next. ` +
-                `Do not start anything new, and do not re-read what you have already read.</budget>`,
+              `<loop>You have made the same call ${repeats} times in a row with the same result: ` +
+                `${repeated.slice(0, 200)}. It will not change. Use what you already have: answer, ` +
+                `or try something different. The turn stops at ${LOOP_STOP_AT}.</loop>`,
+            );
+          }
+          const ceiling = config.maxTurnTokens ?? 0;
+          if (ceiling > 0 && !budgetNoted) {
+            const used = spent();
+            if (used >= ceiling * 0.6) {
+              budgetNoted = true;
+              const left = Math.max(0, ceiling - used);
+              notes.push(
+                `<budget>This turn has been charged for ${used.toLocaleString("en-US")} tokens of ` +
+                  `the ${ceiling.toLocaleString("en-US")} it may spend; about ` +
+                  `${left.toLocaleString("en-US")} are left. Bring what you are doing to a close and ` +
+                  `report what you have — findings, what is still open, and what you would do next. ` +
+                  `Do not start anything new, and do not re-read what you have already read.</budget>`,
+              );
+            }
+          }
+          if (
+            silentCalls >= SILENT_CALLS_BEFORE_NUDGE &&
+            progressNudges < MAX_PROGRESS_NUDGES
+          ) {
+            const calls = silentCalls;
+            progressNudges++;
+            silentCalls = 0;
+            notes.push(
+              `<progress>That is ${calls} tool calls since you last said anything to the user. ` +
+                `Before the next one, write one short line — what you are doing, or what you have ` +
+                `found — then carry on. A sentence, not a report: the reader has been watching ` +
+                `blocks arrive with no account of what they add up to.</progress>`,
+            );
+          }
+          // Rules in a tool description were not enough for DeepSeek: past a few calls, ask once.
+          const calls = done.reduce((n, step) => n + step.toolCalls.length, 0);
+          const keepsList = done.some((step) => step.toolCalls.some((call) => call.toolName === "todo"));
+          if (!planReminded && calls >= PLAN_AFTER_CALLS && !keepsList) {
+            planReminded = true;
+            notes.push(
+              `<plan>This is turning into several steps. Call the todo tool now with the steps you see, ` +
+                `keep one in_progress, and update it as you finish each.</plan>`,
             );
           }
         }
-        if (
-          silentCalls >= SILENT_CALLS_BEFORE_NUDGE &&
-          progressNudges < MAX_PROGRESS_NUDGES
-        ) {
-          const calls = silentCalls;
-          progressNudges++;
-          silentCalls = 0;
+        // Read again every few steps, so a long turn does not drift from them; never saved.
+        if (config.pinned && stepNumber % PIN_EVERY === 0) {
+          notes.push(`<pinned>${config.pinned}</pinned>`);
+        }
+        // A conversation that just ran a plan reads as "keep editing"; the last word says otherwise.
+        if (planMode && stepNumber === 0) {
           notes.push(
-            `<progress>That is ${calls} tool calls since you last said anything to the user. ` +
-              `Before the next one, write one short line — what you are doing, or what you have ` +
-              `found — then carry on. A sentence, not a report: the reader has been watching ` +
-              `blocks arrive with no account of what they add up to.</progress>`,
+            `<plan-mode>Plan mode is on for this message: change nothing. Read what you need, ` +
+              `then answer with the plan.</plan-mode>`,
           );
         }
+        const base = dropReasoning
+          ? pruneMessages({ messages: soFar, reasoning: "all" })
+          : soFar;
         if (notes.length === 0) return dropReasoning ? { messages: base } : {};
+        added += notes.length;
         return {
           messages: [
             ...base,
@@ -1914,6 +2081,23 @@ export async function runTurn(input: TurnInput): Promise<string> {
           );
           break;
         }
+        case "start-step": {
+          // In stream order, so whatever the last step still had to show is already above it.
+          if (toShow.length === 0) break;
+          const said = toShow.splice(0).join("\n\n");
+          store.updateMessage(session.id, assistant.id, { completedAt: Date.now() });
+          store.addMessage({ sessionId: session.id, role: "user", parts: [{ type: "text", text: said }] });
+          assistant = store.addMessage({
+            sessionId: session.id,
+            role: "assistant",
+            parts: [],
+            agentId: agent.id,
+            model: session.model,
+          });
+          textPartIndex = -1;
+          reasoningPartIndex = -1;
+          break;
+        }
         case "finish-step": {
           steps++;
           cacheRead += part.usage.inputTokenDetails?.cacheReadTokens ?? 0;
@@ -2002,6 +2186,7 @@ export async function runTurn(input: TurnInput): Promise<string> {
           break;
         }
         case "tool-call":
+          callsThisTurn++;
           // The block is created by the tool itself, which knows its own shape.
           // Resetting the text cursor keeps prose after a tool call in its own bubble.
           textPartIndex = -1;
@@ -2049,7 +2234,12 @@ export async function runTurn(input: TurnInput): Promise<string> {
       );
     }
 
-    const responseMessages = (await result.responseMessages) as ModelMessage[];
+    const responseMessages = withSteering(
+      (await result.responseMessages) as ModelMessage[],
+      0,
+      steered,
+      (content): ModelMessage => ({ role: "user", content }),
+    );
     history.appendHistory(
       session.id,
       dropReasoning
@@ -2124,13 +2314,63 @@ export async function runTurn(input: TurnInput): Promise<string> {
     const attempts = continuing?.attempt ?? 0;
     willContinue = silentEnding && attempts < SILENT_CONTINUATIONS;
 
+    const checks = continuing?.checks ?? 0;
+    if (
+      !willContinue &&
+      config.completionCheck !== false &&
+      !planMode &&
+      (input.depth ?? 0) === 0 &&
+      (callsThisTurn > 0 || continuing?.missing !== undefined) &&
+      checks < MAX_COMPLETION_CHECKS &&
+      streamFailure === null &&
+      !deniedStopped &&
+      !controller.signal.aborted &&
+      store.getSession(session.id)?.status !== "blocked" &&
+      !(store.getSession(session.id)?.queuedFollowUps?.length) &&
+      !input.collectFinalText
+    ) {
+      const did = [
+        ...store
+          .listBlocks(session.id)
+          .filter((block) => block.createdAt >= startedAt && block.tool !== "completion")
+          .map((block) => `- ${block.tool}: ${block.title} (${block.status})`),
+        "",
+        `Last words: ${finalText.slice(-2000)}`,
+      ].join("\n");
+      const verdict = await checkCompletion(config, { asked: input.userText, did });
+      if (verdict) {
+        logLine(
+          "info",
+          `turn ${session.id} completion check: ${verdict.done ? "finished" : `not finished — ${verdict.missing ?? ""}`}`,
+        );
+      }
+      if (verdict && !verdict.done) {
+        unfinished = verdict.missing || "part of the request";
+        const note = store.createBlock({
+          sessionId: session.id,
+          messageId: assistant.id,
+          tool: "completion",
+          title: `Not finished yet: ${unfinished}`,
+          subtitle: "Carrying on",
+          input: {},
+          cwd: session.cwd,
+          environmentId: session.environmentId,
+          agentId: agent.id,
+          status: "success",
+          startedAt: Date.now(),
+          endedAt: Date.now(),
+        });
+        store.pushPart(session.id, assistant.id, { type: "block", blockId: note.id });
+      }
+    }
+
     const ended = store.getSession(session.id);
     // Only the difference. The steps have already been credited, and anything
     // else that spent against this session mid-turn — a delegated read, a
     // subagent's report — is in those totals too and must not be overwritten.
     creditSession(inputTokens, outputTokens, turnCost);
     store.updateSession(session.id, {
-      status: willContinue
+      status: willContinue || unfinished !== null
         ? // Still running: the next attempt starts in the `finally`, and a
           // moment of idle here would announce a turn that has not finished.
           "running"
@@ -2280,10 +2520,15 @@ export async function runTurn(input: TurnInput): Promise<string> {
     if (silence) clearTimeout(silence);
     if (clock) clearTimeout(clock);
     controllers.delete(session.id);
+    live.delete(session.id);
     // A turn being carried on is still running; saying otherwise here would
     // announce a finish that has not happened, to the notification and to the
     // sidebar both.
-    if (!willContinue && store.getSession(session.id)?.status === "running")
+    if (
+      !willContinue &&
+      unfinished === null &&
+      store.getSession(session.id)?.status === "running"
+    )
       store.setSessionStatus(session.id, "idle");
     store.flush();
 
@@ -2318,6 +2563,27 @@ export async function runTurn(input: TurnInput): Promise<string> {
         parentBlockId: input.parentBlockId,
         coordinationNote: input.coordinationNote,
         continuation: { attempt, messageId: assistant.id },
+      }).catch(() => {
+        // runTurn records its own failures; nothing to add here.
+      });
+    } else if (unfinished !== null) {
+      // Awaited like the silent case: the same turn, carrying on with what was left.
+      logLine(
+        "info",
+        `turn ${session.id} checked as unfinished (${unfinished.slice(0, 120)}); carrying on`,
+      );
+      await runTurn({
+        sessionId: session.id,
+        userText: input.userText,
+        depth: input.depth,
+        parentBlockId: input.parentBlockId,
+        coordinationNote: input.coordinationNote,
+        continuation: {
+          attempt: 0,
+          messageId: assistant.id,
+          missing: unfinished,
+          checks: (input.continuation?.checks ?? 0) + 1,
+        },
       }).catch(() => {
         // runTurn records its own failures; nothing to add here.
       });

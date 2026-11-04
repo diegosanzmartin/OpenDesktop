@@ -32,8 +32,9 @@ export function dayBucket(ts: number): string {
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
   if (ts >= startOfToday) return 'Today'
   if (ts >= startOfToday - 86_400_000) return 'Yesterday'
-  if (ts >= startOfToday - 7 * 86_400_000) return 'Earlier this week'
-  if (ts >= startOfToday - 30 * 86_400_000) return 'Earlier this month'
+  // Rolling windows, named as such: "this week" put last Wednesday under this one.
+  if (ts >= startOfToday - 7 * 86_400_000) return 'Previous 7 days'
+  if (ts >= startOfToday - 30 * 86_400_000) return 'Previous 30 days'
   return new Date(ts).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })
 }
 

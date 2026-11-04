@@ -1,5 +1,8 @@
 import clsx from 'clsx'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { TodoList } from './TodoList'
+import { PlanReady } from './PlanReady'
+import { ApprovalSuggestion } from './ApprovalSuggestion'
 import { Check, Copy, FileText, GitBranch, RotateCcw } from 'lucide-react'
 import type { Attachment, Block, Message, Session } from '@shared/types'
 import { isManager } from '@shared/types'
@@ -278,7 +281,7 @@ function StatusLine({
         ✳
       </span>
       <span>{duration(seconds)}</span>
-      {total > 0 ? <span>· {tokens(total)} tokens</span> : null}
+      {total > 0 ? <span>· {tokens(total)} token{total === 1 ? '' : 's'}</span> : null}
       {/* Absent when the model has no price declared: nothing, not "$0.00". */}
       {message.usage?.cost !== undefined ? <span>· {formatCost(message.usage.cost)}</span> : null}
       {rate !== null ? <span>· {rate} tok/s</span> : null}
@@ -330,6 +333,52 @@ export function ChatView({ session }: { session: Session }): ReactNode {
     atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 4
   }
 
+  /*
+   * And between renders. Output landing inside a block, a card loading, a
+   * diff drawing — the transcript grows without this component rendering, so
+   * the check above next ran with the end already out of view and the turn
+   * slid away while you watched. Following is lost only to what a person does:
+   * scrolling up, or opening something with a click; reaching the end again
+   * restores it. The browser's own scroll anchoring is off: it pinned the view
+   * in some layouts and not in others, which is two behaviours to reason about.
+   */
+  const following = useRef(true)
+  const content = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = scroller.current
+    const inner = content.current
+    if (!el || !inner) return
+    let last = { top: el.scrollTop, height: el.scrollHeight, client: el.clientHeight }
+    const onScroll = (): void => {
+      const now = { top: el.scrollTop, height: el.scrollHeight, client: el.clientHeight }
+      const resized = now.height !== last.height || now.client !== last.client
+      if (now.height - now.top - now.client <= 4) following.current = true
+      else if (!resized && now.top < last.top) following.current = false
+      last = now
+    }
+    // A click is what opens things; growth right after one is that, not output.
+    let clickedAt = -Infinity
+    const onPointer = (): void => {
+      clickedAt = performance.now()
+    }
+    const observer = new ResizeObserver(() => {
+      const opening = el.scrollHeight > last.height && performance.now() - clickedAt < 400
+      if (opening) following.current = false
+      else if (following.current) el.scrollTop = el.scrollHeight
+      last = { top: el.scrollTop, height: el.scrollHeight, client: el.clientHeight }
+    })
+    observer.observe(inner)
+    // The view shrinks too when the box below it grows: a side answer, a long draft.
+    observer.observe(el)
+    el.addEventListener('scroll', onScroll, { passive: true })
+    inner.addEventListener('pointerdown', onPointer)
+    return () => {
+      observer.disconnect()
+      el.removeEventListener('scroll', onScroll)
+      inner.removeEventListener('pointerdown', onPointer)
+    }
+  }, [])
+
   // Your own message always takes you to the end, wherever you were reading:
   // you just wrote it, and the answer comes after it.
   const tail = messages[messages.length - 1]
@@ -345,13 +394,14 @@ export function ChatView({ session }: { session: Session }): ReactNode {
     shown.current = session.id
     const own = mine !== null && mine !== sent.current
     if (own) sent.current = mine
+    if (own || opened) following.current = true
     if (atBottom.current || own || opened) el.scrollTop = el.scrollHeight
   }, [messages, approvals, mine, session.id])
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
-        <div className="mx-auto max-w-[760px] space-y-6">
+      <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto px-6 py-5 [overflow-anchor:none]">
+        <div ref={content} className="mx-auto max-w-[760px] space-y-6">
           {messages.length === 0 ? (
             <div className="text-ink-500 py-20 text-center">
               <div className="text-ink-300 mb-1.5 text-[16px]">Ready when you are.</div>
@@ -370,6 +420,9 @@ export function ChatView({ session }: { session: Session }): ReactNode {
           ))}
         </div>
       </div>
+      <TodoList session={session} />
+      <PlanReady session={session} />
+      <ApprovalSuggestion session={session} />
       <Composer session={session} />
     </div>
   )

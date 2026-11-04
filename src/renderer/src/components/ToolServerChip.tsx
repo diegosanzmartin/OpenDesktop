@@ -106,7 +106,7 @@ export function ToolServerChip({ session }: { session: Session }): ReactNode {
                     <span className="text-ink-200 block text-[12px]">{server.name || server.id}</span>
                     <span className="text-ink-600 block text-[11px]">
                       {state?.state === 'ready'
-                        ? `${state.tools.length} tools · ${tokens(state.tokens)} tokens`
+                        ? `${state.tools.length} tool${state.tools.length === 1 ? '' : 's'} · ${tokens(state.tokens)} tokens`
                         : state?.state === 'failed'
                           ? 'would not start'
                           : 'not asked yet'}

@@ -18,7 +18,9 @@ const ACTIVITY: Record<string, string> = {
   glob: 'Finding files',
   list: 'Listing a directory',
   fetch: 'Fetching a page',
-  task: 'Waiting on a subagent'
+  task: 'Waiting on a subagent',
+  verify: 'Checking the edit',
+  todo: 'Updating its plan'
 }
 
 export function activityOf(message: Message, blocks: Block[]): string {

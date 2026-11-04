@@ -147,10 +147,13 @@ export function limitLabel(allowance: Allowance): string {
 }
 
 /** What has gone against that limit, in whichever unit the limit is set in. */
+// Both when both are set: the percentage beside it is whichever runs out first, and may be either.
 export function spendLabel(spent: Spent, allowance: Allowance): string {
-  if (allowance.usd) return `${formatCost(spent.cost ?? 0)} of ${formatCost(allowance.usd)} used`
+  const parts: string[] = []
+  if (allowance.usd) parts.push(`${formatCost(spent.cost ?? 0)} of ${formatCost(allowance.usd)}`)
   if (allowance.tokens) {
-    return `${spent.tokens.toLocaleString('en-US')} of ${allowance.tokens.toLocaleString('en-US')} used`
+    parts.push(`${spent.tokens.toLocaleString('en-US')} of ${allowance.tokens.toLocaleString('en-US')} tokens`)
   }
-  return `${spent.tokens.toLocaleString('en-US')} counted here`
+  if (parts.length === 0) return `${spent.tokens.toLocaleString('en-US')} counted here`
+  return `${parts.join(' · ')} used`
 }

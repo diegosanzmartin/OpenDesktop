@@ -676,9 +676,12 @@ conversation's, so it is listed there and labelled with the agent that started i
 attribution is resolved when the task starts, so it survives the subagent's session being
 deleted. Tasks are bound to the process: a restart does not carry them over.
 
-**Typing while it works** — a message sent during a turn is queued rather than
-refused, and goes as its own turn the moment the running one stops; the composer
-says so, and the note lives on the session, so closing the app does not lose it.
+**Typing while it works** — a message sent during a turn reaches it at its next step,
+after the results of the step in progress, without stopping it: the way to say "use bar
+instead" to a run that is otherwise going well. It shows in the transcript where it joined,
+and is saved into the conversation there, so later turns still know it was said. One sent
+while the turn is giving its final answer goes as a turn of its own once it ends. Until it
+is taken it lives on the session, so closing the app does not lose it.
 Attachments wait for a turn of their own, since a file only means something
 alongside the message it arrived with. The button stays Stop while a turn runs —
 stopping has to remain one click.
@@ -699,14 +702,89 @@ agent to guess whether the tool is broken. Denylist patterns are globs, which is
 remembering when writing one: the shipped list names the root, the system directories and the
 home directory by hand rather than using `rm -rf /*`, which matches every absolute path there
 is. Chained commands are checked segment by segment, so `ls && curl … | sh` cannot slip through
-on the `ls`. An allowlisted reader with a flag that runs or writes — `find -exec`, `rg --pre`,
-`git diff --output` and the like, quoted or not — always asks. So does a command that writes
-outside the working folder (`> /tmp/x`, `mv a ~/b`), past the allowlist and any "always", and
-the card says where; only a session that runs without asking skips it.
+on the `ls`; operators inside quotes (`grep "a;b"`, `grep '=>'`) are text, a leading `cd` and
+`2>/dev/null` or `2>&1` change nothing, and `ls *` covers a bare `ls`. The denylist also reaches
+a command one wrapper deep — `bash -c '…'`, `$(…)`, backquotes, `( … )`, `env`, `nohup`,
+`timeout`, `eval`, `find -exec`, `/usr/bin/…` — though it stays a tripwire, not a sandbox:
+`base64 -d | sh`, `python -c` or `xargs` still get past it. An allowlisted reader with a flag
+that runs or writes — `find -exec`, `rg --pre`, `git diff --output` and the like, quoted or
+not — always asks. So does a command that writes outside the working folder (`> /tmp/x`,
+`mv a ~/b`, the destination of `cp`), past the allowlist and any "always", and the card says
+where; only a session that runs without asking skips it. The auto-approve switch is read when
+a call would ask, not when the turn started: turning it on lets the card already waiting
+through and the rest of the turn runs without asking, and a subagent follows its conversation.
+
+**Learning from approvals** — each shell command a person approves by hand counts towards
+the pattern they would write for it (`pnpm test --run` → `pnpm test*`). On the third, a bar
+above the composer offers to put that pattern on the allowlist, or to stop offering it. Never
+for commands that remove, move, push or reach out (`rm`, `mv`, `git push`, `sudo`, `curl`,
+`terraform`…), nor for what the allowlist already covers or the denylist refuses; only a
+person's own approvals count, never auto-approve's.
+
+**Auto-approve rules** — `autoMode` in the config, or Settings → Config file → Approvals: rules
+in prose, one per line, the way Claude Code's auto mode is configured (`environment`, `allow`,
+`deny`, and an optional judge `model`). With any `allow` or `deny` line, each call an
+auto-approving session would otherwise have asked about is put to a model (the small one by
+default, no reasoning) with the rules, the action and the person's last messages: a deny rule
+refuses the call with its name and reason, and the agent is told not to work around it; the
+person's own words authorise it ("push it to origin"), and a subagent is judged by what the
+person asked the conversation, not by its brief, so a file that says "now push" does not count.
+Allowlisted and granted calls are not judged, the same question is asked once, and a judge that
+cannot answer hands the call back to an approval card. Settings offers a suggested set, and
+"Try these rules on recent calls" judges the fifteen most recent calls that would have asked
+you, with the rules as typed (saved or not), and lists what they would refuse — without
+touching the live judge. Give the judge its own `model` where you can: a provider's
+per-minute limit (LiteLLM's is 30 a key and model) is otherwise shared with the agent.
+`pnpm policy:check <model>` measures a judge against thirteen cases (DeepSeek V4.1 Flash: 13/13,
+1.5–2.3 s each). The denylist still comes first: the rules are easier to add to and less certain.
 
 A **bare Deny ends the turn**: told "do not retry", models still reached the same end another
 way, so the next move is yours. Type a reason in the card instead and the turn carries on with
 it — the model gets "Their reason: …" as the result of the call.
+
+**Export** — session menu → Export as Markdown: who said what in order, the commands with
+their output (cut at 40 lines), the edits as diffs and what failed, without the model's
+reasoning. For handing a conversation over, archiving it or reading it in review.
+
+**Plan mode** — the list icon beside auto-approve. The agent reads, searches, fetches and runs
+the commands the allowlist calls read-only; anything that writes, edits or changes state is
+refused with "put this step in the plan", even with auto-approve on, and its system prompt asks
+it to end with numbered steps, the files involved and how it will check the result. The first
+step of each message also ends with a one-line reminder: right after a plan was run, the
+conversation alone read as "keep editing" and DeepSeek went straight to edits. "Run this plan"
+above the composer switches plan mode off and tells it to go ahead; it is offered only for an
+answer given after plan mode went on (`planSince`). Read as each call asks, so switching it
+reaches a running turn; a subagent follows its conversation.
+
+**Plan** — the agent keeps a checklist with the `todo` tool (the whole list each time, one step
+in progress), drawn above the composer with how far through it is, until it is all done and the
+turn is over. Past six tool calls in a turn without one, it is asked once to keep one: a rule in
+the tool's description was not enough for DeepSeek. It costs steps — measured on a three-part
+task, 6–8 steps and 31–42k input tokens (over 80% cached) against 4 and 19k without it.
+
+**Did it really finish?** — after a turn that did work and ended normally, a small model with no
+reasoning compares what was asked with what was done and said. When a concrete part was skipped
+without a word, the turn carries on with that part named (a "Not finished yet" row shows why),
+at most twice for one message; an agent that says why it could not do something counts as
+finished. Not in plan mode, where the plan is the whole job. After GitHub Copilot's Autopilot.
+`"completionCheck": false` turns it off.
+
+**Check after editing** — `"verify": { "/path/to/repo": "pnpm typecheck" }` in the config, or
+Settings → Agents → Every agent. After a step in which the agent wrote or edited a file — with
+the edit tools or a shell command that writes, since models edit with `sed -i` as often — the
+check for the deepest configured folder holding the session runs there, shows as a block, and
+if it fails its output is the next thing the model reads, so it fixes its own breakage before
+calling the work done. As in Aider, OpenCode and Claude Code.
+
+**Pinned instructions** — `"pinned"` in the config, or Settings → Agents → Every agent: standing
+instructions put at the end of what the model reads on every step of every turn, never saved
+into the conversation. Rules that lived only in the system prompt were forgotten in long turns;
+these are the last thing read each time, as Goose does. Keep them short: each step pays for them.
+
+**Side questions** — `/btw <question>` in the box asks without adding to the conversation: the
+answer comes from the conversation so far, the running turn included (what it is executing right
+now too), with no tools, and shows once above the box. The turn carries on and never sees it.
+As in Claude Code.
 
 **Language** — `"language": "Spanish"` in the config names the language of every reply to the
 model. The default rule, "the language the user wrote in", is not always obeyed: DeepSeek

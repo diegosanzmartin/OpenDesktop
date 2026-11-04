@@ -112,6 +112,16 @@ export function BlockCard({ block }: { block: Block; compact?: boolean }): React
               {block.error}
             </pre>
           ) : null}
+          {block.policyBlocked && block.status === 'error' ? (
+            <button
+              type="button"
+              title="Let this exact call through once and tell the agent to make it again"
+              onClick={() => void window.opendesktop.approvals.allowBlocked(block.sessionId, block.id)}
+              className="border-ink-700 text-ink-200 hover:bg-ink-800 mb-2 rounded-md border px-2 py-1 text-[11.5px]"
+            >
+              Allow and retry
+            </button>
+          ) : null}
 
           <div className="max-h-[420px] overflow-auto">
             {output ? (

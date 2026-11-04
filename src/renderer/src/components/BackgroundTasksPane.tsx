@@ -114,7 +114,7 @@ function TaskCard({ task, now }: { task: BackgroundTask; now: number }): ReactNo
             <span>{task.agentId}</span>
             {task.readOffset < task.output.length ? (
               <span className="text-warn ml-auto">
-                {task.output.length - task.readOffset} characters the agent has not read yet
+                {task.output.length - task.readOffset} character{task.output.length - task.readOffset === 1 ? '' : 's'} the agent has not read yet
               </span>
             ) : null}
           </div>

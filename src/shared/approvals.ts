@@ -16,6 +16,8 @@ export function approvalQuestion(request: ApprovalRequest, agentName: string): s
 
   // read/write/edit already read as an instruction: "Edit /path", "Create /path".
   const detail = request.detail?.trim()
+  // An MCP detail is "<server>: <tool>", and a server name is free text, not a verb.
+  if (request.tool === 'mcp' && detail) return `Allow ${who} to use ${detail}?`
   if (detail && /^[A-Za-z]+\s/.test(detail)) return `Allow ${who} to ${lowerFirst(detail)}?`
 
   return `Allow ${who} to use ${request.tool}?`

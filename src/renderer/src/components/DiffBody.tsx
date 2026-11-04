@@ -39,7 +39,7 @@ export function DiffBody({ text, max = 2000 }: { text: string; max?: number }): 
         )
       })}
       {lines.length > max ? (
-        <div className="text-ink-600 px-3 py-1">… {lines.length - max} more lines</div>
+        <div className="text-ink-600 px-3 py-1">… {lines.length - max} more line{lines.length - max === 1 ? '' : 's'}</div>
       ) : null}
     </pre>
   )

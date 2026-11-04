@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import { approvalDetail, approvalQuestion } from '../src/shared/approvals'
-import { autoApproveNow, decide, isGranted, listPending, pathsWrittenOutside, releaseAutoApproved, requestApproval, resolveApproval, splitCommand } from '../src/main/approvals'
+import { autoApproveNow, changesFiles, decide, isGranted, listPending, pathsWrittenOutside, releaseAutoApproved, requestApproval, resolveApproval, splitCommand } from '../src/main/approvals'
 import { defaultConfig } from '../src/main/config'
 
 async function answerAlways(sessionId: string, tool: string, command?: string): Promise<void> {
@@ -103,6 +103,12 @@ describe('the approval question reads as a sentence', () => {
     expect(approvalQuestion(ask('Negative test of checker and fence parity'), 'Auto')).toBe('Allow Auto to run this command?')
     expect(approvalDetail(ask('Negative test of checker and fence parity'))).toBe('Negative test of checker and fence parity')
   })
+
+  test('a tool server call names the server and the tool, whatever the server is called', () => {
+    const mcp = (detail: string) => ({ ...ask(), tool: 'mcp', detail }) as const
+    expect(approvalQuestion(mcp('Ticket tracker: close_issue'), 'Auto')).toBe('Allow Auto to use Ticket tracker: close_issue?')
+    expect(approvalQuestion(mcp('github: list_issues'), 'Auto')).toBe('Allow Auto to use github: list_issues?')
+  })
 })
 
 describe('writes outside the working folder', () => {
@@ -115,6 +121,15 @@ describe('writes outside the working folder', () => {
     expect(pathsWrittenOutside(cwd, 'cp /work/repo/a /work/repo/b', '/home/u')).toEqual([])
   })
 
+})
+
+describe('a shell command that changes files', () => {
+  test('is told from one that only reads, quotes and harmless redirects included', () => {
+    for (const command of ["sed -i '' 's/a/b/' f.txt", 'echo x > f.txt', 'cat a | tee b', 'mv a b', 'cd src && perl -pi -e "s/a/b/" f', 'mkdir -p out'])
+      expect(changesFiles(command), command).toBe(true)
+    for (const command of ['ls 2>/dev/null', 'grep -n "a > b" f.txt', "sed -n '1,5p' f.txt", 'git status', 'node test.js 2>&1 | tail'])
+      expect(changesFiles(command), command).toBe(false)
+  })
 })
 
 describe('what "running without asking" means, read when the question is asked', () => {

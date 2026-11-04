@@ -44,6 +44,9 @@ export function LocalModelSection(): ReactNode {
   // An interrupted download is resumed rather than repeated, so the row says
   // what is left rather than what it started as.
   const partial = status.model.partialBytes ?? 0
+  // Until one is on disk or on its way, the row describes the model picked in the menu.
+  const picked = LOCAL_MODELS.find((m) => m.id === choice)
+  const shown = !installed && stage !== 'installing' && stage !== 'running' && picked ? picked : spec
   const remaining = Math.max(0, spec.bytes - partial)
   const share = progress && progress.total > 0 ? progress.received / progress.total : 0
 
@@ -69,7 +72,7 @@ export function LocalModelSection(): ReactNode {
         </Row>
       ) : (
         <Row
-          label={spec.name}
+          label={shown.name}
           description={
             stage === 'installing' && progress ? (
               <>
@@ -91,16 +94,16 @@ export function LocalModelSection(): ReactNode {
               </>
             ) : (
               <>
-                {spec.blurb}{' '}
-                {partial > 0 ? (
+                {shown.blurb}{' '}
+                {partial > 0 && shown.id === spec.id ? (
                   <>
                     {formatBytes(partial)} of the weights is already here from an interrupted
                     download, so {formatBytes(remaining)} is left.
                   </>
                 ) : (
                   <>
-                    It needs {formatBytes(spec.bytes)} of weights plus about 30 MB of runtime, and
-                    around {formatBytes(spec.ramBytes)} of memory while it answers.
+                    It needs {formatBytes(shown.bytes)} of weights plus about 30 MB of runtime, and
+                    around {formatBytes(shown.ramBytes)} of memory while it answers.
                   </>
                 )}
               </>

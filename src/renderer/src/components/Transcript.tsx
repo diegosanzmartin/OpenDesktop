@@ -19,6 +19,9 @@ function filePath(block: Block): string | null {
   return typeof block.input.path === 'string' ? block.input.path : null
 }
 
+// The tools the summary has a verb for; the rest (MCP, bulk_read, …) are counted as tools.
+const NAMED_TOOLS = new Set(['write', 'edit', 'bash', 'read', 'grep', 'glob', 'list', 'fetch', 'verify'])
+
 function count(n: number, one: string, many: string): string {
   return n === 1 ? `a ${one}` : `${n} ${many}`
 }
@@ -40,9 +43,17 @@ function summarize(blocks: Block[]): string {
   if (overwritten.length === 1) parts.push(`rewrote ${basename(filePath(overwritten[0]) ?? 'a file')}`)
   else if (overwritten.length > 1) parts.push(`rewrote ${overwritten.length} files`)
 
+  // Files, not calls: the same file edited three times is one file updated.
+  const files = (list: Block[]): string[] => [...new Set(list.map((b) => filePath(b) ?? b.id))]
   const edits = by('edit')
-  if (edits.length === 1) parts.push(`updated ${basename(filePath(edits[0]) ?? 'a file')}`)
-  else if (edits.length > 1) parts.push(`updated ${edits.length} files`)
+  const updated = files(edits.filter((b) => b.status !== 'error' && b.status !== 'canceled'))
+  const failed = files(edits.filter((b) => b.status === 'error' || b.status === 'canceled')).filter(
+    (path) => !updated.includes(path)
+  )
+  if (updated.length === 1) parts.push(`updated ${basename(updated[0])}`)
+  else if (updated.length > 1) parts.push(`updated ${updated.length} files`)
+  if (failed.length === 1) parts.push(`couldn't update ${basename(failed[0])}`)
+  else if (failed.length > 1) parts.push(`couldn't update ${failed.length} files`)
 
   const commands = by('bash')
   if (commands.length > 0) parts.push(`ran ${count(commands.length, 'command', 'commands')}`)
@@ -59,6 +70,12 @@ function summarize(blocks: Block[]): string {
 
   const fetches = by('fetch')
   if (fetches.length > 0) parts.push(`fetched ${count(fetches.length, 'page', 'pages')}`)
+
+  const checks = by('verify')
+  if (checks.length > 0) parts.push(`ran ${count(checks.length, 'check', 'checks')}`)
+
+  const other = blocks.filter((b) => !NAMED_TOOLS.has(b.tool)).length
+  if (other > 0) parts.push(`used ${count(other, 'tool', 'tools')}`)
 
   if (parts.length === 0) return 'Ran a tool'
   const text = parts.join(', ')
@@ -155,8 +172,10 @@ export function ToolGroup({ blocks }: { blocks: Block[] }): ReactNode {
   const rest = blocks.filter((b) => b.tool !== 'task')
 
   const summary = useMemo(() => summarize(rest), [rest])
-  const added = rest.reduce((sum, b) => sum + (b.added ?? 0), 0)
-  const removed = rest.reduce((sum, b) => sum + (b.removed ?? 0), 0)
+  // A refused or failed edit changed nothing, so its lines are not counted.
+  const applied = rest.filter((b) => b.status !== 'error' && b.status !== 'canceled')
+  const added = applied.reduce((sum, b) => sum + (b.added ?? 0), 0)
+  const removed = applied.reduce((sum, b) => sum + (b.removed ?? 0), 0)
 
   const running = rest.some((b) => b.status === 'running' || b.status === 'pending')
   const awaiting = rest.some((b) => b.status === 'awaiting-approval')

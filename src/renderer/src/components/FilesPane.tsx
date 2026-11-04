@@ -40,16 +40,20 @@ export function FilesPane(): ReactNode {
   const openInEditor = useStore((s) => s.openInEditor);
   const editing = useStore((s) => s.editorFile);
 
+  // By id, not by the session object: a running turn replaces that every few seconds and each
+  // new one reloaded the pane, throwing away the folder being browsed.
+  const sessionId = session?.id;
+  const environmentId = session?.environmentId;
   const load = useCallback(
     async (target: string) => {
-      if (!session) return;
+      if (!sessionId || !environmentId) return;
       setLoading(true);
       setError(null);
       try {
         const result = await window.opendesktop.files.list(
-          session.environmentId,
+          environmentId,
           target,
-          session.id,
+          sessionId,
         );
         setPath(result.path);
         setEntries(result.entries);
@@ -66,7 +70,7 @@ export function FilesPane(): ReactNode {
         setLoading(false);
       }
     },
-    [session],
+    [sessionId, environmentId],
   );
 
   useEffect(() => {

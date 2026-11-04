@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import type { ReactNode, SelectHTMLAttributes } from 'react'
+import { useState, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from 'react'
 import { ChevronDown } from 'lucide-react'
 
 /**
@@ -77,6 +77,41 @@ export function Row({
   )
 }
 
+/**
+ * An input that shows what is being typed while it has focus.
+ *
+ * The pages parse and save on every key, and a field that showed the parsed value
+ * back rewrote itself under the cursor: `0.` became `0` (a $0.25 price was saved
+ * as $25) and a floor of 10,000 turned `500000` into 1,000,000,000.
+ */
+export function DraftInput({
+  value,
+  onFocus,
+  onChange,
+  onBlur,
+  ...rest
+}: InputHTMLAttributes<HTMLInputElement> & { value: string }): ReactNode {
+  const [draft, setDraft] = useState<string | null>(null)
+  return (
+    <input
+      {...rest}
+      value={draft ?? value}
+      onFocus={(event) => {
+        setDraft(value)
+        onFocus?.(event)
+      }}
+      onChange={(event) => {
+        setDraft(event.target.value)
+        onChange?.(event)
+      }}
+      onBlur={(event) => {
+        setDraft(null)
+        onBlur?.(event)
+      }}
+    />
+  )
+}
+
 /** A value you can type. Right-aligned like the rest of a row's answers. */
 export function RowInput({
   value,
@@ -96,7 +131,7 @@ export function RowInput({
   disabled?: boolean
 }): ReactNode {
   return (
-    <input
+    <DraftInput
       value={value}
       type={type}
       disabled={disabled}

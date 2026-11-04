@@ -20,6 +20,7 @@ import {
   Download,
   Gauge,
   ImageIcon,
+  ListChecks,
   Paperclip,
   Square,
   X,
@@ -33,6 +34,7 @@ import {
   type Savings,
 } from "@shared/savings";
 import { NeighbourBar } from "./NeighbourBar";
+import { Markdown } from "./Markdown";
 import { ScopeGate, ForensicLine } from "./ScopeGate";
 import { ContextMeter } from "./ContextMeter";
 import { ToolServerChip } from "./ToolServerChip";
@@ -54,13 +56,14 @@ function Picker({
   options: { value: string; label: string }[];
   title: string;
 }): ReactNode {
+  // Shrinks before anything else on the line: a model name cut to "DeepSeek V4…" still says which.
   return (
-    <div className="relative inline-flex items-center">
+    <div className="relative inline-flex min-w-0 items-center">
       <select
         title={title}
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="text-ink-400 hover:text-ink-200 cursor-pointer appearance-none bg-transparent pr-4 text-[11.5px] outline-none"
+        className="text-ink-400 hover:text-ink-200 min-w-0 max-w-full cursor-pointer appearance-none truncate bg-transparent pr-4 text-[11.5px] outline-none"
       >
         {options.map((option) => (
           <option
@@ -297,7 +300,7 @@ function SavingsChip({ session }: { session: Session }): ReactNode {
                 </div>
               ) : null}
               <div className="text-ink-600 px-2 py-1 text-[11px]">
-                Neither is Direct. Defaults are in Settings → Models.
+                Neither is Direct. Defaults are in Settings → Routing & limits.
               </div>
             </div>,
             document.body,
@@ -353,6 +356,39 @@ function ApprovalChip({ session }: { session: Session }): ReactNode {
       ) : (
         <ShieldCheck className="h-3.5 w-3.5" />
       )}
+    </button>
+  );
+}
+
+/**
+ * Plan mode, per session: read-only until the person approves a plan. Its own
+ * chip beside auto-approve, since the two answer different questions — whether
+ * to ask, and whether to change anything yet.
+ */
+function PlanChip({ session }: { session: Session }): ReactNode {
+  const on = session.planMode === true;
+  return (
+    <button
+      type="button"
+      aria-label={on ? "Plan mode is on" : "Plan first"}
+      title={
+        on
+          ? "Plan mode: the agent reads and plans, and changes nothing until you run the plan. Click to let it act."
+          : "Plan first: the agent explores read-only and writes a plan for you to approve."
+      }
+      onClick={() =>
+        void window.opendesktop.sessions.update(
+          session.id,
+          on ? { planMode: false } : { planMode: true, planSince: Date.now() },
+        )
+      }
+      className={clsx(
+        "flex shrink-0 items-center gap-1 rounded-md px-1.5 py-[3px] text-[12px] transition-colors",
+        on ? "text-info hover:bg-info/10" : "text-ink-500 hover:text-ink-200",
+      )}
+    >
+      <ListChecks className="h-3.5 w-3.5" />
+      {on ? <span className="hidden @[620px]:inline">Plan</span> : null}
     </button>
   );
 }
@@ -545,6 +581,44 @@ function AttachmentChip({
   );
 }
 
+const SIDE_QUESTION =
+  "Ask on the side: sees this conversation, is not added to it, and does not stop a turn.";
+
+type Aside = { question: string; answer?: string; error?: string };
+
+/** The question in `/btw <question>`, or null for anything else. */
+function sideQuestion(value: string): string | null {
+  return /^\/btw\s+(\S[\s\S]*)$/.exec(value)?.[1].trim() ?? null;
+}
+
+/** A side answer: shown once above the box, never part of the conversation. */
+function AsideCard({ aside, onDismiss }: { aside: Aside; onDismiss: () => void }): ReactNode {
+  return (
+    <div className="border-ink-700 bg-ink-850/60 mb-2 rounded-lg border px-3 py-2 text-[12.5px]">
+      <div className="flex items-start gap-2">
+        <span className="text-ink-500 flex-1 truncate">btw · {aside.question}</span>
+        <button
+          type="button"
+          aria-label="Dismiss the side answer"
+          onClick={onDismiss}
+          className="text-ink-600 hover:text-ink-300"
+        >
+          <X className="h-3 w-3" />
+        </button>
+      </div>
+      <div className="text-ink-200 mt-1 max-h-60 overflow-y-auto">
+        {aside.error ? (
+          <span className="text-bad">{aside.error}</span>
+        ) : aside.answer ? (
+          <Markdown text={aside.answer} />
+        ) : (
+          <span className="text-ink-500">Thinking…</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function Composer({ session }: { session: Session }): ReactNode {
   /*
    * What is typed belongs to the conversation, not to this component.
@@ -611,14 +685,20 @@ export function Composer({ session }: { session: Session }): ReactNode {
           colour: agent.color,
         }));
     }
-    return skills
-      .filter((skill) => hit(skill.id, skill.name))
-      .slice(0, 8)
-      .map((skill) => ({
-        key: skill.id,
-        label: `/${skill.id}`,
-        description: skill.description,
-      }));
+    const builtIn: Suggestion[] = hit("btw", "side question")
+      ? [{ key: "btw", label: "/btw", description: SIDE_QUESTION }]
+      : [];
+    return [
+      ...builtIn,
+      ...skills
+        .filter((skill) => hit(skill.id, skill.name))
+        .slice(0, 8)
+        .map((skill) => ({
+          key: skill.id,
+          label: `/${skill.id}`,
+          description: skill.description,
+        })),
+    ];
   }, [skills, agents, query, menu]);
 
   const syncMenu = (value: string, caret: number): void => {
@@ -691,9 +771,36 @@ export function Composer({ session }: { session: Session }): ReactNode {
   const managed = isManager(session.agentId);
   const model = models.find((m) => m.ref === session.model);
 
+  const [aside, setAside] = useState<Aside | null>(null);
+  useEffect(() => {
+    setAside(null);
+  }, [session.id]);
+
+  const askAside = (question: string): void => {
+    setAside({ question });
+    void window.opendesktop.sessions
+      .aside(session.id, question)
+      .then((reply) =>
+        setAside((current) =>
+          current?.question !== question
+            ? current
+            : reply && "text" in reply
+              ? { question, answer: reply.text }
+              : { question, error: reply?.error ?? "No answer." },
+        ),
+      );
+  };
+
   const submit = (): void => {
     const value = text.trim();
     if (!value && attachments.length === 0) return;
+    const side = sideQuestion(value);
+    if (side) {
+      setText("");
+      setMenu(null);
+      askAside(side);
+      return;
+    }
     /*
      * Sending while it works queues the message rather than refusing it: the
      * thought is now, and the turn may have ten minutes left. Attachments wait
@@ -753,6 +860,8 @@ export function Composer({ session }: { session: Session }): ReactNode {
         {inSandbox ? <ForensicLine session={session} /> : null}
         <NeighbourBar session={session} />
         <ChangesBar session={session} />
+
+        {aside ? <AsideCard aside={aside} onDismiss={() => setAside(null)} /> : null}
 
         {attachError ? (
           <div className="border-warn/40 bg-warn/10 text-warn mb-2 flex items-start gap-2 rounded-lg border px-3 py-1.5 text-[11.5px]">
@@ -914,11 +1023,13 @@ export function Composer({ session }: { session: Session }): ReactNode {
 
         {busy && (text.trim() || (session.queuedFollowUps?.length ?? 0) > 0) ? (
           <div className="text-ink-500 mt-1.5 px-1 text-[11.5px]">
-            {text.trim()
-              ? "↵ adds this to the queue — it goes as the next turn when this one stops."
+            {sideQuestion(text.trim())
+              ? "↵ asks this on the side: the turn carries on and never sees it."
+              : text.trim()
+              ? "↵ sends this to the agent at its next step, without stopping the turn."
               : `${session.queuedFollowUps?.length} message${
                   (session.queuedFollowUps?.length ?? 0) === 1 ? "" : "s"
-                } queued — they go when this turn stops.`}
+                } waiting for the agent's next step — or the next turn, if this one is finishing.`}
           </div>
         ) : null}
 
@@ -933,7 +1044,7 @@ export function Composer({ session }: { session: Session }): ReactNode {
          * the right.
          */}
         <div data-footer className="mt-1.5 flex items-center gap-x-2.5 px-1">
-          <div className="flex min-w-0 flex-1 items-center gap-x-2.5 overflow-hidden">
+          <div className="flex min-w-[62px] flex-1 items-center gap-x-2.5 overflow-hidden">
             {/*
              * Just the icon when the folder is the conversation's own: the path
              * is `…/workspaces/94adVYh3JLDa`, which is an id nobody typed and
@@ -951,7 +1062,7 @@ export function Composer({ session }: { session: Session }): ReactNode {
                     : `${session.cwd} — click to change it, ⌘R to search for one`
               }
               onClick={() => openFolderPicker(session.id)}
-              className="text-ink-500 hover:text-ink-200 flex min-w-0 shrink items-center gap-1.5 text-[11.5px]"
+              className="text-ink-500 hover:text-ink-200 hidden min-w-0 shrink items-center gap-1.5 text-[11.5px] @[360px]:flex"
             >
               {/* On a branch of its own the path is `…/worktrees/<id>`, which is
                 an id nobody typed. The branch is the name of the work. */}
@@ -991,35 +1102,43 @@ export function Composer({ session }: { session: Session }): ReactNode {
               </span>
             ) : null}
 
-            <Picker
-              title="Environment"
-              value={session.environmentId}
-              onChange={(next) => {
-                const cwd = config?.environment[next]?.cwd;
-                patch({ environmentId: next, ...(cwd ? { cwd } : {}) });
-              }}
-              options={environments.map((e) => ({
-                value: e.id,
-                label: e.name,
-              }))}
-            />
+            {/* In a docked pane these give way, so the two switches that change
+              what the agent may do stay on the line. */}
+            <span className="hidden @[360px]:contents">
+              <Picker
+                title="Environment"
+                value={session.environmentId}
+                onChange={(next) => {
+                  const cwd = config?.environment[next]?.cwd;
+                  patch({ environmentId: next, ...(cwd ? { cwd } : {}) });
+                }}
+                options={environments.map((e) => ({
+                  value: e.id,
+                  label: e.name,
+                }))}
+              />
 
-            <SavingsChip session={session} />
+              <SavingsChip session={session} />
+            </span>
 
             <ApprovalChip session={session} />
 
+            <PlanChip session={session} />
+
             {/* Only when servers are declared: a control for a thing you do not
               have is furniture. */}
-            <ToolServerChip session={session} />
+            <span className="hidden @[360px]:contents">
+              <ToolServerChip session={session} />
+            </span>
           </div>
 
           {/* The right-hand end: what is answering, how hard it is trying, and
               how full its window is. In that order because that is the order
               you ask about them in, and because the two that open a panel are
-              nearest the corner the panel comes out of. Never wraps, never
-              shrinks: with both savings switches and auto-approve on, this is
-              what used to drop onto a second line. */}
-          <div data-footer-right className="flex shrink-0 items-center gap-1.5">
+              nearest the corner the panel comes out of. Never wraps: with both
+              savings switches and auto-approve on, this is what used to drop
+              onto a second line. Only the model name shrinks, for a docked pane. */}
+          <div data-footer-right className="flex min-w-0 items-center gap-1.5">
             {!model && models.length > 0 ? (
               <span className="text-warn text-[11px]">unknown model</span>
             ) : null}

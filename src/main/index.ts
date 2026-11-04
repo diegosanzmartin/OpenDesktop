@@ -28,6 +28,7 @@ import { startWedgeWatch, stopWedgeWatch } from "./watchdog";
 import { disposeLocalModel } from "./local-model";
 import { disposeMcp } from "./mcp";
 import { disposeSandbox } from "./sandbox";
+import { startKeepAwake } from "./keep-awake";
 import { disposeForensics } from "./forensics";
 import { isOwnWorkspace, makeWorkspaceDir } from "./workspace";
 import { deliverQueuedFollowUps } from "./agent/runner";
@@ -192,6 +193,7 @@ void app.whenReady().then(async () => {
   // After the window: what it has to say about focus is the window's, and a
   // notification that arrives before there is one has nowhere to be clicked to.
   startNotifications();
+  startKeepAwake();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

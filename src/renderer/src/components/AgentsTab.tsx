@@ -5,6 +5,8 @@ import type { AgentConfig, AgentMode } from '@shared/types'
 import { useStore } from '../state/store'
 import { Label, Select } from './ui'
 import { Hint, IconButton, Row, Section } from './settings-ui'
+import { PinnedInstructions } from './PinnedInstructions'
+import { VerifyChecks } from './VerifyChecks'
 
 const TOOLS = ['bash', 'read', 'write', 'edit', 'grep', 'glob', 'list', 'fetch', 'task']
 
@@ -216,6 +218,25 @@ export function AgentsTab(): ReactNode {
 
   return (
     <>
+      {config ? (
+        <Section
+          title="Every agent"
+          description="What applies to all of them, whichever one runs."
+        >
+          <PinnedInstructions
+            value={config.pinned}
+            onSave={(pinned) => {
+              void window.opendesktop.config.save({ ...config, pinned }).then(() => refreshConfig())
+            }}
+          />
+          <VerifyChecks
+            value={config.verify}
+            onSave={(verify) => {
+              void window.opendesktop.config.save({ ...config, verify }).then(() => refreshConfig())
+            }}
+          />
+        </Section>
+      ) : null}
       <Section
         title="Agents"
         description={

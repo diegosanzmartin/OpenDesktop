@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type {
   AgentConfig,
   AppConfig,
+  AutoModePolicy,
+  Rehearsal,
   AppEvent,
   ApprovalRequest,
   Attachment,
@@ -193,6 +195,9 @@ const api = {
   },
   sessions: {
     list: (): Promise<Session[]> => ipcRenderer.invoke("session:list"),
+    /** Asks where, then writes the conversation there as Markdown. */
+    exportMarkdown: (id: string): Promise<{ saved: boolean; path?: string }> =>
+      ipcRenderer.invoke("session:export", id),
     /** Other conversations that have changed the same files as this one. */
     neighbours: (sessionId: string): Promise<Neighbour[]> =>
       ipcRenderer.invoke("coordination:neighbours", sessionId),
@@ -235,6 +240,11 @@ const api = {
       ipcRenderer.invoke("session:fork", id, target),
     compact: (id: string): Promise<boolean> =>
       ipcRenderer.invoke("session:compact", id),
+    aside: (
+      id: string,
+      question: string,
+    ): Promise<{ text: string } | { error: string }> =>
+      ipcRenderer.invoke("session:aside", id, question),
     rewind: (
       id: string,
       messageId: string,
@@ -339,6 +349,17 @@ const api = {
     stop: (sessionId: string): Promise<void> =>
       ipcRenderer.invoke("turn:stop", sessionId),
   },
+  /** Auto-approve rules tried on recent calls before they are relied on. */
+  policy: {
+    rehearse: (rules: AutoModePolicy): Promise<Rehearsal[]> => ipcRenderer.invoke("policy:rehearse", rules),
+  },
+  /** Commands approved by hand often enough to offer for the allowlist. */
+  learn: {
+    suggestions: (): Promise<{ pattern: string; count: number; example: string }[]> =>
+      ipcRenderer.invoke("learn:suggestions"),
+    accept: (pattern: string): Promise<void> => ipcRenderer.invoke("learn:accept", pattern),
+    dismiss: (pattern: string): Promise<void> => ipcRenderer.invoke("learn:dismiss", pattern),
+  },
   approvals: {
     list: (): Promise<ApprovalRequest[]> => ipcRenderer.invoke("approval:list"),
     resolve: (
@@ -347,6 +368,8 @@ const api = {
       note?: string,
     ): Promise<void> =>
       ipcRenderer.invoke("approval:resolve", id, answer, note),
+    allowBlocked: (sessionId: string, blockId: string): Promise<void> =>
+      ipcRenderer.invoke("approval:allowBlocked", sessionId, blockId),
   },
   activity: {
     all: (limit?: number): Promise<Block[]> =>
@@ -489,6 +512,7 @@ const api = {
     pickFolder: (): Promise<string | null> =>
       ipcRenderer.invoke("host:pickFolder"),
     logPath: (): Promise<string> => ipcRenderer.invoke("host:logPath"),
+    pendingFocus: (): Promise<string | null> => ipcRenderer.invoke("host:pendingFocus"),
     revealLog: (): Promise<void> => ipcRenderer.invoke("host:revealLog"),
     openExternal: (url: string): Promise<void> =>
       ipcRenderer.invoke("host:openExternal", url),

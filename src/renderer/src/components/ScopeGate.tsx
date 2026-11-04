@@ -54,7 +54,7 @@ export function ForensicLine({ session }: { session: Session }): ReactNode {
     <div className={clsx('mb-2 flex items-center gap-2 rounded-lg border px-3 py-1.5', tone)}>
       <Activity className={clsx('h-3.5 w-3.5 shrink-0', worst === 'info' && 'text-ink-500')} />
       <span className="text-ink-300 min-w-0 flex-1 truncate text-[12px]">{headline}</span>
-      <span className="text-ink-600 shrink-0 text-[11px]">forensics · {report.samples} samples</span>
+      <span className="text-ink-600 shrink-0 text-[11px]">forensics · {report.samples} sample{report.samples === 1 ? '' : 's'}</span>
     </div>
   )
 }

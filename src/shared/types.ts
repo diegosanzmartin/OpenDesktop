@@ -310,6 +310,36 @@ export function isManager(agentId: string | undefined): boolean {
   return agentId === MANAGER_AGENT || agentId === AUTO_AGENT || !agentId;
 }
 
+/** One step of the agent's checklist. */
+export interface TodoItem {
+  text: string;
+  status: "pending" | "in_progress" | "done";
+}
+
+/** Auto-approve rules in prose, one per line, as Claude Code's auto mode writes them. */
+export interface AutoModePolicy {
+  /** Context the judge needs: what this machine is, what is trusted. */
+  environment: string[];
+  /** Exceptions: what is fine even when a deny rule seems to reach it. */
+  allow: string[];
+  /** What is refused unless the person asked for it in the conversation. */
+  deny: string[];
+  /** The judge, as `provider/model`. Unset, the small model, else the main one. */
+  model?: string;
+}
+
+/** One recent call, and what auto-approve rules being tried would have said about it. */
+export interface Rehearsal {
+  sessionId: string;
+  title: string;
+  action: string;
+  allowed: boolean;
+  rule?: string;
+  reason?: string;
+  /** The judge gave no answer: a person would have been asked. */
+  unanswered?: boolean;
+}
+
 export interface AppConfig {
   $schema?: string;
   model: string;
@@ -329,6 +359,21 @@ export interface AppConfig {
   mode?: LegacyMode;
   /** Whether a new session starts without approval prompts. */
   autoApprove?: boolean;
+  /**
+   * Rules in prose for a session that runs without asking: each call that would
+   * otherwise have asked is judged against them by a model. The denylist and a
+   * tool set to `deny` still come first. No `allow` or `deny` line, no judging.
+   */
+  autoMode?: AutoModePolicy;
+  /**
+   * The person's standing instructions, put at the end of what the model reads on
+   * every step rather than once in the system prompt, where long turns forgot them.
+   */
+  pinned?: string;
+  /** The check run after a step that edited files, per folder: `{ "/work/shop": "pnpm typecheck" }`. */
+  verify?: Record<string, string>;
+  /** After a turn that did work, check it finished what was asked and carry on if not. On unless false. */
+  completionCheck?: boolean;
   /**
    * What shunt delegates reading to, as `provider/model`. Unset, the cheapest
    * model that clears the capability floor is chosen for each job.
@@ -473,6 +518,8 @@ export interface Block {
   /** Set when the block is a subagent's work, pointing at the parent task block. */
   parentBlockId?: string;
   approvalId?: string;
+  /** Refused by the auto-approve rules: the exact action, so a person can allow it once. */
+  policyBlocked?: { action: string };
 }
 
 export type MessagePartType = "text" | "reasoning" | "block" | "error";
@@ -605,15 +652,18 @@ export interface Session {
     /** Skills expanded into the message, when any were named. */
     skills?: number;
   };
+  /** Read-only until the person approves a plan: nothing that changes anything runs. */
+  planMode?: boolean;
+  /** When plan mode was switched on: only an answer after it is a plan to run. */
+  planSince?: number;
   /**
-   * What was typed while the turn was still running.
-   *
-   * Sending used to be refused outright, which is the wrong answer to "I have
-   * one more thing you should know": the thought is gone by the time the turn
-   * ends. They queue here instead, survive a restart, and go as the next turn
-   * the moment this one stops.
+   * What was typed while the turn was still running: read by the turn before
+   * its next step, or sent as a turn of its own if typed during the last one.
+   * Kept here so it survives a restart.
    */
   queuedFollowUps?: string[];
+  /** The agent's own checklist for the work in hand, as it last wrote it. */
+  todos?: TodoItem[];
   /** Parent session when this was spawned by a `task` tool call. */
   parentSessionId?: string;
   /** Short label for a subagent session, shown on its subchat. */
@@ -670,6 +720,8 @@ export interface ApprovalRequest {
   command?: string;
   /** Paths the command writes outside the working directory, said on the card. */
   outside?: string[];
+  /** Why a person is asked although the session runs without asking. */
+  note?: string;
   environmentId: string;
   cwd: string;
   createdAt: number;

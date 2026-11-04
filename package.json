@@ -20,7 +20,8 @@
     "ui:check": "vite build -c vite.uicheck.config.ts && vite build -c vite.smoke.config.ts && electron out/smoke/ui-check.mjs",
     "local:check": "vite build -c vite.smoke.config.ts && node out/smoke/local-check.mjs",
     "mcp:check": "vite build -c vite.smoke.config.ts && node out/smoke/mcp-check.mjs",
-    "live:check": "vite build -c vite.smoke.config.ts && OPENDESKTOP_HOME=\"$(mktemp -d)\" node out/smoke/live-check.mjs"
+    "live:check": "vite build -c vite.smoke.config.ts && OPENDESKTOP_HOME=\"$(mktemp -d)\" node out/smoke/live-check.mjs",
+    "policy:check": "vite build -c vite.smoke.config.ts && OPENDESKTOP_HOME=\"$(mktemp -d)\" node out/smoke/policy-check.mjs"
   },
   "build": {
     "appId": "com.opendesktop.app",

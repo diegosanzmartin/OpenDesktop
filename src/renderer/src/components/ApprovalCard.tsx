@@ -115,6 +115,9 @@ export function ApprovalCard({
             Writes outside the working folder: {request.outside.join(', ')}
           </div>
         ) : null}
+        {request.note ? (
+          <div className="text-warn mt-1.5 text-[12.5px] leading-[1.5]">{request.note}</div>
+        ) : null}
       </div>
 
       <div className="px-4 pt-3">

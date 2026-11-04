@@ -19,6 +19,7 @@ import {
   FolderOpen,
   GitBranch,
   GitFork,
+  FileDown,
   MoreVertical,
   Pencil,
   Pin,
@@ -306,6 +307,12 @@ export function SessionMenu({ session }: { session: Session }): ReactNode {
         const forked = await window.opendesktop.sessions.fork(session.id);
         if (forked) await selectSession(forked.id);
       },
+    },
+    {
+      key: "export",
+      label: "Export as Markdown",
+      icon: <FileDown className="h-3.5 w-3.5" />,
+      onSelect: () => void window.opendesktop.sessions.exportMarkdown(session.id),
     },
     {
       key: "fork-to",

@@ -9,7 +9,7 @@ import {
 import { bus } from "./bus";
 import { rawConfig } from "./config";
 import { logLine } from "./log";
-import { getSession, listMessages, listSessions } from "./store";
+import { getSession, listMessages, listSessions, rootOf } from "./store";
 
 /**
  * Telling somebody a turn ended, from the app itself.
@@ -37,6 +37,14 @@ const asked = new Set<string>();
 const onScreen = new Set<Notification>();
 
 let started = false;
+let pendingFocus: string | null = null;
+
+/** The conversation a notification asked for before there was a window to show it in. */
+export function takePendingFocus(): string | null {
+  const sessionId = pendingFocus;
+  pendingFocus = null;
+  return sessionId;
+}
 
 export function startNotifications(): void {
   if (started) return;
@@ -133,17 +141,6 @@ function lastFailure(sessionId: string): string | undefined {
   return last?.parts.filter((part) => part.type === "error").at(-1)?.text;
 }
 
-/** The conversation a person actually opened: a subagent's top-level parent. */
-function rootOf(session: Session): Session {
-  let current = session;
-  for (let depth = 0; current.parentSessionId && depth < 10; depth += 1) {
-    const parent = getSession(current.parentSessionId);
-    if (!parent) break;
-    current = parent;
-  }
-  return current;
-}
-
 function show(session: Session, kind: NoticeKind): void {
   const settings = notificationSettings(rawConfig().notifications);
   const root = rootOf(session);
@@ -212,11 +209,16 @@ function send(
     // it. Selecting the session is the renderer's job — it is the only side
     // that knows what the panes are showing — so it is asked for as an event.
     const win = BrowserWindow.getAllWindows()[0];
-    if (win && !win.isDestroyed()) {
-      if (win.isMinimized()) win.restore();
-      win.show();
-      win.focus();
+    if (!win || win.isDestroyed()) {
+      // Every window closed (macOS keeps the app running): open one the way the Dock would,
+      // and leave the conversation for its renderer to ask for once it has loaded.
+      pendingFocus = sessionId ?? null;
+      app.emit("activate");
+      return;
     }
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
     if (sessionId) bus.emit({ type: "session.focus", sessionId });
   });
 

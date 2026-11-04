@@ -20,7 +20,6 @@ import { DATA_DIR, rawConfig } from "./config";
 import { copyHistory } from "./history";
 import type { Savings } from "@shared/savings";
 import { bus } from "./bus";
-import { autoApproveNow, releasePending, setAutoApproveResolver } from "./approvals";
 
 const SESSIONS_DIR = join(DATA_DIR, "sessions");
 const INDEX_PATH = join(DATA_DIR, "index.json");
@@ -34,19 +33,6 @@ interface SessionFile {
 const sessions = new Map<string, SessionFile>();
 const dirty = new Set<string>();
 let flushTimer: NodeJS.Timeout | null = null;
-
-/*
- * The switch is read live, and the answer needs both the config and the stored
- * session — neither of which this file may import the other way round without
- * closing a cycle. So the store hands the answer over once, here.
- */
-setAutoApproveResolver((sessionId) => {
-  const session = getSession(sessionId);
-  const config = rawConfig();
-  const container =
-    config.environment[session?.environmentId ?? ""]?.kind === "container";
-  return autoApproveNow(session, config, container);
-});
 
 function ensureDirs(): void {
   mkdirSync(SESSIONS_DIR, { recursive: true });
@@ -134,6 +120,17 @@ export function getSession(id: string): Session | undefined {
   return sessions.get(id)?.session;
 }
 
+/** The conversation a person actually opened: a subagent's top-level parent. */
+export function rootOf(session: Session): Session {
+  let current = session;
+  for (let depth = 0; current.parentSessionId && depth < 10; depth += 1) {
+    const parent = getSession(current.parentSessionId);
+    if (!parent) break;
+    current = parent;
+  }
+  return current;
+}
+
 export function createSession(input: {
   title?: string;
   cwd: string;
@@ -147,6 +144,7 @@ export function createSession(input: {
   /** Ids of the tool servers this session carries. */
   mcp?: string[];
   parentSessionId?: string;
+  planMode?: boolean;
 }): Session {
   const now = Date.now();
   const session: Session = {
@@ -165,6 +163,7 @@ export function createSession(input: {
     updatedAt: now,
     usage: { input: 0, output: 0, cost: 0 },
     parentSessionId: input.parentSessionId,
+    planMode: input.planMode,
   };
   sessions.set(session.id, { session, messages: [], blocks: [] });
   markDirty(session.id);
@@ -181,14 +180,7 @@ export function updateSession(
   Object.assign(file.session, patch, { updatedAt: Date.now() });
   markDirty(id);
   bus.emit({ type: "session.updated", session: file.session });
-  /*
-   * A turn parked at a prompt is waiting on a promise, not polling anything, so
-   * changing the switch has to reach it from here. Doing it in this one place —
-   * rather than in the interface that happens to flip it — is the difference
-   * between a fix and a fix for one code path: the store is what every caller
-   * goes through, including the tests.
-   */
-  if (patch.autoApprove !== undefined) releasePending();
+  // A turn parked at a prompt hears about the switch through this event (approvals.ts).
   return file.session;
 }
 

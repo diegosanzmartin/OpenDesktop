@@ -32,7 +32,7 @@ const STATUS_FILTERS: BlockStatus[] = ['running', 'awaiting-approval', 'success'
 const RANGES: { label: string; value: number | null }[] = [
   { label: 'All time', value: null },
   { label: 'Last hour', value: 3_600_000 },
-  { label: 'Today', value: 86_400_000 },
+  { label: 'Last 24 hours', value: 86_400_000 },
   { label: 'Last 7 days', value: 7 * 86_400_000 }
 ]
 

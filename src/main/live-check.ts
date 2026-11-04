@@ -5,12 +5,15 @@
  * Run with: OD_LIVE_KEY_FILE=~/key OD_LIVE_BASE_URL=https://… pnpm live:check <model> [<model>…]
  * Writes a JSON summary to OD_LIVE_OUT when set.
  */
+import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { defaultConfig, loadConfig, saveConfig, setAgentLoader } from './config'
 import { listAgents, seedBuiltins } from './agents'
-import { runTurn } from './agent/runner'
+import { queueFollowUp, runTurn } from './agent/runner'
+import { askAside, type AsideAnswer } from './aside'
+import { getHistory } from './history'
 import { logPath } from './log'
 import * as store from './store'
 
@@ -101,6 +104,16 @@ interface Scenario {
   name: string
   turns: string[]
   verify: (dir: string, answer: string) => boolean
+  /** Something typed while the first turn is working, after this long. */
+  steer?: { afterMs: number; text: string }
+  /** The check run after edits in this scenario's folder (`verify` in the config). */
+  check?: string
+  /** The agent should have kept a checklist for it. */
+  todos?: boolean
+  /** Run in plan mode: read-only until a plan is approved. */
+  planMode?: boolean
+  /** A side question (/btw) asked while the first turn works, and what its answer must say. */
+  aside?: { afterMs: number; question: string; expect: RegExp }
 }
 
 const SCENARIOS: Scenario[] = [
@@ -127,6 +140,48 @@ const SCENARIOS: Scenario[] = [
     verify: (_dir, answer) => answer.includes('listo-25')
   },
   {
+    name: 'steer',
+    turns: ['Ejecuta `sleep 6` y, cuando termine, crea nota.txt con el texto foo.'],
+    steer: { afterMs: 2000, text: 'Cambio de planes: el texto de nota.txt tiene que ser bar, no foo.' },
+    verify: (dir) => existsSync(join(dir, 'nota.txt')) && read(dir, 'nota.txt').trim() === 'bar'
+  },
+  {
+    name: 'verify',
+    turns: ['Renombra la función calcTotal a sumAll. El proyecto tiene que seguir funcionando.'],
+    verify: (dir) => {
+      try {
+        execFileSync('node', ['test.js'], { cwd: dir, stdio: 'pipe' })
+        return read(dir, 'util.js').includes('sumAll')
+      } catch {
+        return false
+      }
+    },
+    check: 'node test.js'
+  },
+  {
+    name: 'plan',
+    // Six parts, each its own call: the reminder only starts past six calls without a list.
+    turns: [
+      'Seis cosas, en orden y cada una por separado: lee util.js, lee test.js, añade a util.js una ' +
+        'función average que devuelva la media, añade a test.js un test para average, ejecuta los ' +
+        'tests y, por último, ejecuta git status.'
+    ],
+    todos: true,
+    verify: (dir) => read(dir, 'util.js').includes('average') && read(dir, 'test.js').includes('average')
+  },
+  {
+    name: 'plan-mode',
+    planMode: true,
+    turns: ['Añade a util.js una función average que devuelva la media de una lista.'],
+    verify: (dir, answer) => !read(dir, 'util.js').includes('average') && /\n\s*1[.)]/.test(answer)
+  },
+  {
+    name: 'aside',
+    turns: ['Ejecuta `sleep 10 && echo marca-7781` y dime lo que imprime.'],
+    aside: { afterMs: 5000, question: '¿Qué comando estás ejecutando ahora? Solo el comando.', expect: /sleep 10/ },
+    verify: (_dir, answer) => answer.includes('marca-7781')
+  },
+  {
     name: 'follow-up',
     turns: ['Lee util.js y dime en una frase qué hace.', '¿Y qué devuelve si le paso una lista vacía?'],
     verify: (_dir, answer) => /\b0\b|cero|zero/i.test(answer)
@@ -150,14 +205,35 @@ async function run(model: string, scenario: Scenario): Promise<TurnReport[]> {
     environmentId: 'local',
     agentId: 'manager',
     model: `${providerFor(model)}/${model}`,
-    autoApprove: true
+    autoApprove: true,
+    planMode: scenario.planMode
   })
   const reports: TurnReport[] = []
+  if (scenario.check) {
+    const config = loadConfig()
+    saveConfig({ ...config, verify: { ...config.verify, [dir]: scenario.check } })
+  }
   for (const [index, text] of scenario.turns.entries()) {
     const began = Date.now()
+    const steer = index === 0 ? scenario.steer : undefined
+    const timer = steer ? setTimeout(() => queueFollowUp(session.id, steer.text), steer.afterMs) : null
+    const side = index === 0 ? scenario.aside : undefined
+    const asked = side
+      ? new Promise<AsideAnswer>((resolve) =>
+          setTimeout(() => void askAside(session.id, side.question).then(resolve), side.afterMs)
+        )
+      : null
     await runTurn({ sessionId: session.id, userText: text }).catch((error: Error) => {
       console.log(`  turn threw: ${error.message}`)
     })
+    if (timer) clearTimeout(timer)
+    let asideOk = true
+    if (side && asked) {
+      const answer = await asked
+      const kept = JSON.stringify(getHistory(session.id)).includes(side.question)
+      console.log(`  side answer: ${JSON.stringify(answer).slice(0, 200)}${kept ? ' (and it leaked into the history)' : ''}`)
+      asideOk = 'text' in answer && side.expect.test(answer.text) && !kept
+    }
     const log = turnLog(session.id)
     const said = narration(session.id)
     const last = index === scenario.turns.length - 1
@@ -166,7 +242,11 @@ async function run(model: string, scenario: Scenario): Promise<TurnReport[]> {
       ...said,
       scenario: `${scenario.name}#${index + 1}`,
       model,
-      ok: last ? scenario.verify(dir, said.answer) : said.textParts > 0,
+      ok: last
+        ? scenario.verify(dir, said.answer) &&
+          asideOk &&
+          (!scenario.todos || (store.getSession(session.id)?.todos?.length ?? 0) > 0)
+        : said.textParts > 0,
       status: store.getSession(session.id)?.status ?? 'gone',
       ms: log.ms || Date.now() - began
     })

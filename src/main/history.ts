@@ -15,13 +15,37 @@ function pathFor(sessionId: string): string {
   return join(HISTORY_DIR, `${sessionId}.json`)
 }
 
+/**
+ * A tool call must be followed by its result, or no provider accepts the
+ * conversation again — every later turn fails before it starts. A message
+ * typed mid-turn was once saved between the two; anything found there is moved
+ * to just after the result, so a conversation saved that way works again.
+ */
+export function mendToolPairs(messages: ModelMessage[]): ModelMessage[] {
+  const out: ModelMessage[] = []
+  for (let i = 0; i < messages.length; i++) {
+    out.push(messages[i])
+    const calls = Array.isArray(messages[i].content)
+      ? (messages[i].content as { type: string }[]).some((part) => part.type === 'tool-call')
+      : false
+    if (!calls || messages[i].role !== 'assistant') continue
+    const between: ModelMessage[] = []
+    let j = i + 1
+    while (j < messages.length && messages[j].role !== 'tool' && messages[j].role !== 'assistant') between.push(messages[j++])
+    if (between.length === 0 || messages[j]?.role !== 'tool') continue
+    out.push(messages[j], ...between)
+    i = j
+  }
+  return out
+}
+
 export function getHistory(sessionId: string): ModelMessage[] {
   const cached = memory.get(sessionId)
   if (cached) return cached
   const path = pathFor(sessionId)
   if (existsSync(path)) {
     try {
-      const parsed = revive(JSON.parse(readFileSync(path, 'utf8')) as ModelMessage[])
+      const parsed = mendToolPairs(revive(JSON.parse(readFileSync(path, 'utf8')) as ModelMessage[]))
       memory.set(sessionId, parsed)
       return parsed
     } catch {

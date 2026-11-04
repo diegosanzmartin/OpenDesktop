@@ -467,7 +467,7 @@ export function FolderPicker(): ReactNode {
 
             <div className="text-ink-600 flex items-center gap-3 px-5 py-2 text-[11.5px]">
               <span>
-                {index ? `${matches.length} of ${index.dirs.length}` : 'reading the tree…'}
+                {index ? `${matches.length >= 300 ? '300+' : matches.length} of ${index.dirs.length}` : 'reading the tree…'}
               </span>
               {index?.truncated ? <span className="text-warn">tree is capped</span> : null}
               <span className="ml-auto">↑↓ move · ⏎ select · ⇥ browse it · esc back</span>

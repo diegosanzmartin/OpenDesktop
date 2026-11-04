@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import type {
   AgentConfig,
   AppConfig,
+  AutoModePolicy,
   EnvironmentConfig,
   Permissions,
   ProviderConfig,
@@ -316,6 +317,24 @@ function wallClock(raw: Record<string, unknown>): number {
   return written;
 }
 
+function lines(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((line): line is string => typeof line === "string")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+// Folder → command, keeping only commands that are text with something in them.
+function verifyOf(raw: unknown): Record<string, string> | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const out: Record<string, string> = {};
+  for (const [folder, command] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof command === "string" && command.trim()) out[folder] = command.trim();
+  }
+  return out;
+}
+
 /**
  * The keymap as it is allowed to be: command ids this build knows, values that
  * parse as a binding, and nothing else.
@@ -340,6 +359,19 @@ function normalizeKeymap(raw: unknown): Record<string, string> {
     out[id] = binding.trim();
   }
   return out;
+}
+
+// Hand-editable: only lines of text count as rules, whatever else is in there.
+function autoModeOf(raw: unknown): AutoModePolicy | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const policy = raw as Record<string, unknown>;
+  const model = typeof policy.model === "string" ? policy.model.trim() : "";
+  return {
+    environment: lines(policy.environment),
+    allow: lines(policy.allow),
+    deny: lines(policy.deny),
+    ...(model ? { model } : {}),
+  };
 }
 
 /** Recent folders: paths only, per environment, and never more than the cap. */
@@ -373,6 +405,13 @@ export function normalizeConfig(raw: Record<string, unknown>): AppConfig {
     // Only ever true when it says true: a config is hand-editable, and
     // "yes" or 1 must not be what turns the prompts off.
     autoApprove: raw.autoApprove === true,
+    autoMode: autoModeOf(raw.autoMode),
+    verify: verifyOf(raw.verify),
+    completionCheck: raw.completionCheck === false ? false : undefined,
+    pinned:
+      typeof raw.pinned === "string" && raw.pinned.trim()
+        ? raw.pinned.trim()
+        : undefined,
     // Only the two switches this app has, and only as booleans: a config is
     // hand-editable, and `"rtk": "yes"` should not switch anything on.
     savings: {
