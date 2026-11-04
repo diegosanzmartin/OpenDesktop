@@ -881,10 +881,26 @@ export function Composer({ session }: { session: Session }): ReactNode {
           onDrop={(event) => {
             event.preventDefault();
             setDropping(false);
-            const paths = Array.from(event.dataTransfer.files).map((file) =>
+            const files = Array.from(event.dataTransfer.files);
+            const paths = files.map((file) =>
               window.opendesktop.attachments.pathFor(file),
             );
             void attachPaths(paths.filter(Boolean));
+            // In a browser a dropped file has no path on the machine the agent works on: send its bytes.
+            files
+              .filter((_file, index) => !paths[index])
+              .forEach((file) => {
+                void file.arrayBuffer().then(async (buffer) =>
+                  take(
+                    await window.opendesktop.attachments.addBytes(
+                      session.id,
+                      file.name,
+                      file.type || "application/octet-stream",
+                      new Uint8Array(buffer),
+                    ),
+                  ),
+                );
+              });
           }}
           onPaste={(event) => {
             // A pasted screenshot has no path, so it arrives as bytes.

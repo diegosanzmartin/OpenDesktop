@@ -1,4 +1,4 @@
-import { writeFileSync } from 'node:fs'
+import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterAll, beforeAll, expect, test } from 'vitest'
 import { forgetSecrets, rememberSecret } from '@shared/errors'
@@ -12,9 +12,11 @@ beforeAll(() => {
   boot()
   rememberSecret(SECRET)
   process.env.FAKE_PROVIDER_KEY = SECRET
-  process.env.SHELL = '/bin/zsh'
+  // zsh where there is one (macOS), bash otherwise: a Linux runner has no zsh.
+  const zsh = existsSync('/bin/zsh')
+  process.env.SHELL = zsh ? '/bin/zsh' : '/bin/bash'
   // The login shell re-reads this, which is how a key stripped from the app's env came back.
-  writeFileSync(join(process.env.HOME!, '.zprofile'), `export FAKE_PROVIDER_KEY='${SECRET}'\n`)
+  writeFileSync(join(process.env.HOME!, zsh ? '.zprofile' : '.bash_profile'), `export FAKE_PROVIDER_KEY='${SECRET}'\n`)
 })
 
 afterAll(() => {

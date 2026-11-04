@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 
@@ -32,10 +33,20 @@ function mergePath(shellPath: string | null): boolean {
   return true
 }
 
+/**
+ * The person's shell, or the first one this machine has. A container or a
+ * service starts with no SHELL at all, and a Linux image rarely has zsh: a
+ * fixed `/bin/zsh` there is `spawn ENOENT` and a terminal pane that never opens.
+ */
+export function defaultShell(): string {
+  if (process.env.SHELL) return process.env.SHELL
+  return ['/bin/zsh', '/bin/bash', '/bin/sh'].find((path) => existsSync(path)) ?? '/bin/sh'
+}
+
 export async function loadShellEnvironment(): Promise<{ loaded: string[]; error?: string }> {
   if (process.platform === 'win32') return { loaded: [] }
 
-  const shell = process.env.SHELL || '/bin/zsh'
+  const shell = defaultShell()
   // A marker keeps the parse honest: login shells print banners, version
   // notices and whatever else the user's rc files decide to echo.
   const marker = '__opendesktop_env__'

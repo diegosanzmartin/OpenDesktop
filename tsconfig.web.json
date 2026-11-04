@@ -12,5 +12,5 @@
     "noEmit": true,
     "paths": { "@shared/*": ["./src/shared/*"], "@/*": ["./src/renderer/src/*"] }
   },
-  "include": ["src/renderer/**/*", "src/shared/**/*"]
+  "include": ["src/web/**/*", "src/preload/**/*", "src/renderer/**/*", "src/shared/**/*"]
 }

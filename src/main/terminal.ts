@@ -4,6 +4,7 @@ import { nanoid } from "nanoid";
 import type { ClientChannel } from "ssh2";
 import type { EnvironmentKind } from "@shared/types";
 import { bus } from "./bus";
+import { defaultShell } from "./shell-env";
 import { getRuntime } from "./runtime";
 import { SshRuntime } from "./runtime/ssh";
 
@@ -160,7 +161,7 @@ export async function createTerminal(input: {
     channel.on("close", () => close(session, 0));
     channel.write(`cd ${JSON.stringify(input.cwd)} 2>/dev/null; clear\n`);
   } else {
-    const shell = process.env.SHELL || "/bin/zsh";
+    const shell = defaultShell();
     const python = pythonBinary();
     const cols = input.cols ?? 80;
     const rows = input.rows ?? 24;
