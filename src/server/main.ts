@@ -49,15 +49,26 @@ function fileFor(url: string): string | null {
 }
 
 /*
+ * The host the browser sees. Behind the Cloud Workstations gateway that is not
+ * the Host header that reaches this process — the gateway rewrites it — but
+ * `<port>-$WEB_HOST`, which Workstations publishes to the container.
+ */
+const PUBLIC_HOSTS = process.env.WEB_HOST
+  ? [`${PORT}-${process.env.WEB_HOST}`, ...(PORT === 80 ? [process.env.WEB_HOST] : [])]
+  : [];
+
+/*
  * A WebSocket handshake carries the gateway's cookies and is not subject to
  * CORS, so any page open in the same browser could otherwise connect and drive
- * the agent. Only the page this server served — same host — may.
+ * the agent. Only the page this server served may: same host, or this server's
+ * own address on the gateway.
  */
 function sameOrigin(req: IncomingMessage): boolean {
   const origin = req.headers.origin;
   if (!origin) return false;
   try {
-    return new URL(origin).host === req.headers.host;
+    const host = new URL(origin).host;
+    return host === req.headers.host || PUBLIC_HOSTS.includes(host);
   } catch {
     return false;
   }
@@ -119,7 +130,10 @@ async function main(): Promise<void> {
   const sockets = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 * 1024 });
   server.on("upgrade", (req, socket, head) => {
     if (new URL(req.url ?? "/", "http://x").pathname !== "/ws" || !sameOrigin(req)) {
-      logLine("warn", `web: refused a socket from origin ${req.headers.origin ?? "(none)"}`);
+      logLine(
+        "warn",
+        `web: refused a socket from origin ${req.headers.origin ?? "(none)"} (host ${req.headers.host ?? "(none)"}, public ${PUBLIC_HOSTS.join(", ") || "(WEB_HOST unset)"})`,
+      );
       socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
       socket.destroy();
       return;
@@ -127,7 +141,11 @@ async function main(): Promise<void> {
     sockets.handleUpgrade(req, socket, head, (ws) => serve(ws));
   });
 
-  server.listen(PORT, HOST, () => console.log(`OpenDesktop on http://${HOST}:${PORT}`));
+  server.listen(PORT, HOST, () =>
+    console.log(
+      `OpenDesktop on http://${HOST}:${PORT}${PUBLIC_HOSTS.length > 0 ? `, public as https://${PUBLIC_HOSTS[0]}` : ""}`,
+    ),
+  );
 
   const stop = (): void => {
     stopCore();
